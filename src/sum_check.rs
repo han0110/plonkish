@@ -65,8 +65,7 @@ where
 mod test {
     use crate::{
         plonk::test::{
-            hyperplonk_expression, hyperplonk_plus_expression, rand_hyperplonk_assignments,
-            rand_hyperplonk_plus_assignments,
+            plonk_expression, plonkup_expression, rand_plonk_assignments, rand_plonkup_assignments,
         },
         poly::multilinear::{compute_rotation_eval, MultilinearPolynomial},
         sum_check::{prove, verify, VirtualPolynomial, VirtualPolynomialInfo},
@@ -126,10 +125,9 @@ mod test {
     }
 
     #[test]
-    fn test_sum_check_hyperplonk() {
-        run_sum_check(2..16, hyperplonk_expression(), |num_vars| {
-            let (polys, chalenges) =
-                rand_hyperplonk_assignments(num_vars, |idx| Fr::from(idx as u64), OsRng);
+    fn test_sum_check_plonk() {
+        run_sum_check(2..16, plonk_expression(), |num_vars| {
+            let (polys, chalenges) = rand_plonk_assignments(num_vars, OsRng);
             (
                 polys.to_vec(),
                 chalenges.to_vec(),
@@ -139,11 +137,9 @@ mod test {
     }
 
     #[test]
-    fn test_sum_check_hyperplonk_plus() {
-        run_sum_check(2..16, hyperplonk_plus_expression(), |num_vars| {
-            dbg!(num_vars);
-            let (polys, chalenges) =
-                rand_hyperplonk_plus_assignments(num_vars, |idx| Fr::from(idx as u64), OsRng);
+    fn test_sum_check_plonkup() {
+        run_sum_check(2..16, plonkup_expression(), |num_vars| {
+            let (polys, chalenges) = rand_plonkup_assignments(num_vars, OsRng);
             (
                 polys.to_vec(),
                 chalenges.to_vec(),

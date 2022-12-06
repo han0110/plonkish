@@ -28,11 +28,8 @@ pub fn consistency_check<F: PrimeField>(
     Ok(*challenge_evals.last().unwrap())
 }
 
-fn evaluate_at_challenge<F: PrimeField>(points: &[usize], rounds: &[(Vec<F>, F)]) -> Vec<F> {
-    let points = points
-        .iter()
-        .map(|point| F::from(*point as u64))
-        .collect_vec();
+fn evaluate_at_challenge<F: PrimeField>(points: &[u64], rounds: &[(Vec<F>, F)]) -> Vec<F> {
+    let points = points.iter().cloned().map(F::from).collect_vec();
     let weights = barycentric_weights(&points);
     let mut challenge_evals = vec![F::zero(); rounds.len()];
     parallelize(&mut challenge_evals, |(challenge_evals, start)| {

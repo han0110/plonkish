@@ -20,9 +20,10 @@ pub struct ProvingState<'a, F: PrimeField> {
     virtual_poly: &'a VirtualPolynomial<'a, F>,
     lagranges: HashMap<(i32, usize), (bool, F)>,
     eq_xys: Vec<MultilinearPolynomial<F>>,
+    identities: Vec<F>,
     polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
     round: usize,
-    next: Vec<usize>,
+    next_map: Vec<usize>,
 }
 
 impl<'a, F: PrimeField> ProvingState<'a, F> {
@@ -43,6 +44,15 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             .ys
             .iter()
             .map(|y| MultilinearPolynomial::eq_xy(y))
+            .collect_vec();
+        let identities = (0..=virtual_poly
+            .info
+            .expression()
+            .used_identity()
+            .into_iter()
+            .last()
+            .unwrap_or_default())
+            .map(|idx| F::from((idx as u64) << virtual_poly.info.num_vars()))
             .collect_vec();
         let polys = {
             let query_idx_to_poly = virtual_poly
@@ -70,75 +80,56 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             virtual_poly,
             lagranges,
             eq_xys,
+            identities,
             polys,
             round: 0,
-            next: bh.next_map(),
+            next_map: bh.next_map(),
         }
     }
 
     pub fn sample_evals(&self) -> Vec<F> {
-        let expression = self.virtual_poly.info.expression();
-        let points = self.virtual_poly.info.sample_points();
-        let mut sums = vec![F::zero(); points.len()];
+        let size = 1 << (self.virtual_poly.info.num_vars() - self.round - 1);
+        let points = self
+            .virtual_poly
+            .info
+            .sample_points()
+            .into_iter()
+            .map(F::from)
+            .collect_vec();
 
-        let evaluate_serial = |range: Range<usize>, point: &F| {
-            let mut sum = F::zero();
-            for b in range {
-                sum += expression.evaluate(
-                    &|scalar| scalar,
-                    &|poly| match poly {
-                        CommonPolynomial::Lagrange(i) => self.lagrange(i, b, point),
-                        CommonPolynomial::EqXY(idx) => {
-                            let poly = &self.eq_xys[idx];
-                            poly[b << 1] + (poly[(b << 1) + 1] - poly[b << 1]) * point
-                        }
-                    },
-                    &|query| {
-                        let (b_0, b_1) = if self.round == 0 {
-                            (
-                                self.rotate(b << 1, query.rotation()),
-                                self.rotate((b << 1) + 1, query.rotation()),
-                            )
-                        } else {
-                            (b << 1, (b << 1) + 1)
-                        };
-                        let poly = &self.polys[query.index()];
-                        poly[b_0] + (poly[b_1] - poly[b_0]) * point
-                    },
-                    &|idx| self.virtual_poly.challenges[idx],
-                    &|scalar| -scalar,
-                    &|lhs, rhs| lhs + &rhs,
-                    &|lhs, rhs| lhs * &rhs,
-                    &|value, scalar| scalar * &value,
-                );
+        let evaluate = |range: Range<usize>, point: &F| {
+            if self.round == 0 {
+                self.evaluate::<true>(range, point)
+            } else {
+                self.evaluate::<false>(range, point)
             }
-            sum
         };
 
-        let size = 1 << (self.virtual_poly.info.num_vars() - self.round - 1);
-        for (point, sum) in points.iter().zip(sums.iter_mut()) {
-            let point = &F::from(*point as u64);
-
-            if size < 32 {
-                *sum = evaluate_serial(0..size, point);
-            } else {
-                let num_threads = num_threads();
-                let chunk_size = Integer::div_ceil(&size, &num_threads);
-                let mut partials = vec![F::zero(); num_threads];
-                parallelize_iter(
-                    partials.iter_mut().zip((0..).step_by(chunk_size)),
-                    |(partial, start)| {
-                        *partial = evaluate_serial(start..start + chunk_size, point);
-                    },
-                );
-                *sum = partials
-                    .into_iter()
-                    .reduce(|acc, partial| acc + &partial)
-                    .unwrap();
-            }
+        if size < 32 {
+            points
+                .iter()
+                .map(|point| evaluate(0..size, point))
+                .collect()
+        } else {
+            let num_threads = num_threads();
+            let chunk_size = Integer::div_ceil(&size, &num_threads);
+            points
+                .iter()
+                .map(|point| {
+                    let mut partials = vec![F::zero(); num_threads];
+                    parallelize_iter(
+                        partials.iter_mut().zip((0..).step_by(chunk_size)),
+                        |(partial, start)| {
+                            *partial = evaluate(start..start + chunk_size, point);
+                        },
+                    );
+                    partials
+                        .into_iter()
+                        .reduce(|acc, partial| acc + &partial)
+                        .unwrap()
+                })
+                .collect()
         }
-
-        sums
     }
 
     pub fn next_round(&mut self, challenge: F) {
@@ -157,6 +148,9 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
         self.eq_xys
             .iter_mut()
             .for_each(|eq_xy| *eq_xy = eq_xy.fix_variables(&[challenge]));
+        self.identities
+            .iter_mut()
+            .for_each(|constant| *constant += challenge * F::from(1 << self.round));
         if self.round == 0 {
             let query_idx_to_rotation = self
                 .virtual_poly
@@ -193,9 +187,50 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 }
             });
         }
-        self.next =
+        self.next_map =
             BooleanHypercube::new(self.virtual_poly.info.num_vars() - self.round - 1).next_map();
         self.round += 1;
+    }
+
+    fn evaluate<const IS_FIRST_ROUND: bool>(&self, range: Range<usize>, point: &F) -> F {
+        let partial_identity_eval = F::from((1 << self.round) as u64) * point;
+
+        let mut sum = F::zero();
+        for b in range {
+            sum += self.virtual_poly.info.expression().evaluate(
+                &|scalar| scalar,
+                &|poly| match poly {
+                    CommonPolynomial::Lagrange(i) => self.lagrange(i, b, point),
+                    CommonPolynomial::EqXY(idx) => {
+                        let poly = &self.eq_xys[idx];
+                        poly[b << 1] + (poly[(b << 1) + 1] - poly[b << 1]) * point
+                    }
+                    CommonPolynomial::Identity(idx) => {
+                        self.identities[idx]
+                            + F::from((b << (self.round + 1)) as u64)
+                            + &partial_identity_eval
+                    }
+                },
+                &|query| {
+                    let (b_0, b_1) = if IS_FIRST_ROUND {
+                        (
+                            self.rotate(b << 1, query.rotation()),
+                            self.rotate((b << 1) + 1, query.rotation()),
+                        )
+                    } else {
+                        (b << 1, (b << 1) + 1)
+                    };
+                    let poly = &self.polys[query.index()];
+                    poly[b_0] + (poly[b_1] - poly[b_0]) * point
+                },
+                &|idx| self.virtual_poly.challenges[idx],
+                &|scalar| -scalar,
+                &|lhs, rhs| lhs + &rhs,
+                &|lhs, rhs| lhs * &rhs,
+                &|value, scalar| scalar * &value,
+            );
+        }
+        sum
     }
 
     fn lagrange(&self, i: i32, b: usize, point: &F) -> F {
@@ -218,7 +253,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             Ordering::Equal => b,
             Ordering::Greater => {
                 for _ in 0..rotation.0 as usize {
-                    b = self.next[b];
+                    b = self.next_map[b];
                 }
                 b
             }

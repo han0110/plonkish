@@ -63,6 +63,7 @@ impl Query {
 pub enum CommonPolynomial {
     Lagrange(i32),
     EqXY(usize),
+    Identity(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +86,10 @@ impl<F: Clone> Expression<F> {
 
     pub fn eq_xy(idx: usize) -> Self {
         Expression::CommonPolynomial(CommonPolynomial::EqXY(idx))
+    }
+
+    pub fn identity(idx: usize) -> Self {
+        Expression::CommonPolynomial(CommonPolynomial::Identity(idx))
     }
 
     pub fn random_linear_combine<'a>(
@@ -187,6 +192,25 @@ impl<F: Clone> Expression<F> {
             &|poly| match poly {
                 CommonPolynomial::Lagrange(i) => Some(BTreeSet::from_iter([i])),
                 CommonPolynomial::EqXY(_) => None,
+                CommonPolynomial::Identity(_) => None,
+            },
+            &|_| None,
+            &|_| None,
+            &|a| a,
+            &merge_left_right,
+            &merge_left_right,
+            &|a, _| a,
+        )
+        .unwrap_or_default()
+    }
+
+    pub fn used_identity(&self) -> BTreeSet<usize> {
+        self.evaluate(
+            &|_| None,
+            &|poly| match poly {
+                CommonPolynomial::Lagrange(_) => None,
+                CommonPolynomial::EqXY(_) => None,
+                CommonPolynomial::Identity(idx) => Some(BTreeSet::from_iter([idx])),
             },
             &|_| None,
             &|_| None,

@@ -1,7 +1,7 @@
 use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{product, BooleanHypercube, Field, PrimeField},
+        arithmetic::{inner_product, product, BooleanHypercube, PrimeField},
         expression::{CommonPolynomial, Expression, Query},
         Itertools,
     },
@@ -14,7 +14,7 @@ pub struct VirtualPolynomialInfo<F> {
     expression: Expression<F>,
 }
 
-impl<F: Field> VirtualPolynomialInfo<F> {
+impl<F: PrimeField> VirtualPolynomialInfo<F> {
     pub fn new(num_vars: usize, expression: Expression<F>) -> Self {
         Self {
             num_vars,
@@ -34,8 +34,8 @@ impl<F: Field> VirtualPolynomialInfo<F> {
         self.expression.degree()
     }
 
-    pub fn sample_points(&self) -> Vec<usize> {
-        (0..self.degree() + 1).collect()
+    pub fn sample_points(&self) -> Vec<u64> {
+        (0..self.degree() as u64 + 1).collect()
     }
 
     pub fn evaluate(
@@ -56,11 +56,15 @@ impl<F: Field> VirtualPolynomialInfo<F> {
             })
             .collect::<HashMap<_, _>>();
         let eq_xys = ys.iter().map(|y| eq_xy_eval(x, y)).collect_vec();
+        let identity = identity_eval(x);
         self.expression().evaluate(
             &|scalar| scalar,
             &|poly| match poly {
                 CommonPolynomial::Lagrange(i) => lagranges[&i],
                 CommonPolynomial::EqXY(idx) => eq_xys[idx],
+                CommonPolynomial::Identity(idx) => {
+                    F::from((idx << self.num_vars) as u64) + identity
+                }
             },
             &|query| evals[&query],
             &|idx| challenges[idx],
@@ -96,7 +100,7 @@ impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
     }
 }
 
-pub fn lagrange_eval<F: Field>(x: &[F], b: usize) -> F {
+pub fn lagrange_eval<F: PrimeField>(x: &[F], b: usize) -> F {
     assert!(!x.is_empty());
 
     product(
@@ -114,7 +118,7 @@ pub fn lagrange_eval<F: Field>(x: &[F], b: usize) -> F {
     )
 }
 
-pub fn eq_xy_eval<F: Field>(x: &[F], y: &[F]) -> F {
+pub fn eq_xy_eval<F: PrimeField>(x: &[F], y: &[F]) -> F {
     assert!(!x.is_empty());
     assert_eq!(x.len(), y.len());
 
@@ -123,4 +127,8 @@ pub fn eq_xy_eval<F: Field>(x: &[F], y: &[F]) -> F {
             .zip(y)
             .map(|(x_i, y_i)| (*x_i * y_i).double() + F::one() - x_i - y_i),
     )
+}
+
+pub fn identity_eval<F: PrimeField>(x: &[F]) -> F {
+    inner_product(x, &(0..x.len()).map(|idx| F::from(1 << idx)).collect_vec())
 }

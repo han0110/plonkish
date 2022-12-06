@@ -13,16 +13,18 @@ pub(crate) mod test {
     use rand::RngCore;
     use std::{array, hash::Hash, iter, mem};
 
-    pub fn hyperplonk_expression<F: Field>() -> Expression<F> {
-        let [q_l, q_r, q_m, q_o, q_c, id_1, id_2, id_3, s_1, s_2, s_3, pi, w_l, w_r, w_o] =
+    /// Gates described in 2019/953 (first row is not copyable)
+    pub fn plonk_expression<F: Field>() -> Expression<F> {
+        let [q_l, q_r, q_m, q_o, q_c, s_1, s_2, s_3, pi, w_l, w_r, w_o] =
             &array::from_fn(|poly| Query::new(poly, poly, Rotation::cur()))
                 .map(Expression::Polynomial);
         let [z, z_next] = &[
-            Query::new(15, 15, Rotation::cur()),
-            Query::new(16, 15, Rotation::next()),
+            Query::new(12, 12, Rotation::cur()),
+            Query::new(13, 12, Rotation::next()),
         ]
         .map(Expression::Polynomial);
         let [beta, gamma, alpha] = &[0, 1, 2].map(Expression::<F>::Challenge);
+        let [id_1, id_2, id_3] = array::from_fn(|idx| Expression::identity(idx));
         let l_1 = Expression::lagrange(1);
         let one = Expression::Constant(F::one());
         let gates = {
@@ -43,30 +45,32 @@ pub(crate) mod test {
         Expression::random_linear_combine(&gates, alpha) * eq
     }
 
-    pub fn hyperplonk_plus_expression<F: Field>() -> Expression<F> {
-        let [q_l, q_r, q_m, q_o, q_c, q_lookup, id_1, id_2, id_3, s_1, s_2, s_3, t_l, t_r, t_o, pi, w_l, w_r, w_o] =
+    /// Gates described in 2022/086 (first row is not copyable)
+    pub fn plonkup_expression<F: Field>() -> Expression<F> {
+        let [q_l, q_r, q_m, q_o, q_c, q_lookup, s_1, s_2, s_3, t_l, t_r, t_o, pi, w_l, w_r, w_o] =
             &array::from_fn(|poly| Query::new(poly, poly, Rotation::cur()))
                 .map(Expression::Polynomial);
-        let [t_l_next, t_r_next, t_o_next] = &[(19, 12), (20, 13), (21, 14)]
+        let [t_l_next, t_r_next, t_o_next] = &[(16, 9), (17, 10), (18, 11)]
             .map(|(idx, poly)| Query::new(idx, poly, Rotation::next()))
             .map(Expression::Polynomial);
         let [h_1, h_1_next, h_2] = &[
-            Query::new(22, 19, Rotation::cur()),
-            Query::new(23, 19, Rotation::next()),
-            Query::new(24, 20, Rotation::cur()),
+            Query::new(19, 16, Rotation::cur()),
+            Query::new(20, 16, Rotation::next()),
+            Query::new(21, 17, Rotation::cur()),
         ]
         .map(Expression::Polynomial);
         let [z_perm, z_perm_next] = &[
-            Query::new(25, 21, Rotation::cur()),
-            Query::new(26, 21, Rotation::next()),
+            Query::new(22, 18, Rotation::cur()),
+            Query::new(23, 18, Rotation::next()),
         ]
         .map(Expression::Polynomial);
         let [z_lookup, z_lookup_next] = &[
-            Query::new(27, 22, Rotation::cur()),
-            Query::new(28, 22, Rotation::next()),
+            Query::new(24, 19, Rotation::cur()),
+            Query::new(25, 19, Rotation::next()),
         ]
         .map(Expression::Polynomial);
         let [theta, beta, gamma, alpha] = &[0, 1, 2, 3].map(Expression::<F>::Challenge);
+        let [id_1, id_2, id_3] = array::from_fn(|idx| Expression::identity(idx));
         let l_1 = &Expression::lagrange(1);
         let one = &Expression::Constant(F::one());
         let gates = {
@@ -98,18 +102,15 @@ pub(crate) mod test {
         Expression::random_linear_combine(&gates, alpha) * eq
     }
 
-    pub fn rand_hyperplonk_assignments<F: Field>(
+    pub fn rand_plonk_assignments<F: PrimeField>(
         num_vars: usize,
-        id: impl Fn(usize) -> F,
         mut rng: impl RngCore,
-    ) -> ([MultilinearPolynomial<F>; 16], [F; 3]) {
+    ) -> ([MultilinearPolynomial<F>; 13], [F; 3]) {
+        let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
+        let idx_map = BooleanHypercube::new(num_vars).idx_map();
         let size = 1 << num_vars;
+
         let mut polys = [(); 9].map(|_| vec![F::zero(); size]);
-        let [id_1, id_2, id_3] = array::from_fn(|idx| {
-            (idx << num_vars..(idx + 1) << num_vars)
-                .map(&id)
-                .collect_vec()
-        });
         let [beta, gamma, alpha] = [(); 3].map(|_| F::random(&mut rng));
 
         let mut cycles = Vec::new();
@@ -156,38 +157,32 @@ pub(crate) mod test {
                 polys[poly][idx] = value;
             }
         }
-        let [s_1, s_2, s_3] = sigmas([&id_1, &id_2, &id_3], &cycles);
+        let [s_1, s_2, s_3] = sigmas(num_vars, &bh, &cycles);
         let z = perm_grand_product(
+            &bh,
             &[&polys[6], &polys[7], &polys[8]],
-            &[&id_1, &id_2, &id_3],
             &[&s_1, &s_2, &s_3],
             beta,
             gamma,
         );
 
         let [q_l, q_r, q_m, q_o, q_c, pi, w_l, w_r, w_o] = polys;
-        let idx_map = BooleanHypercube::new(num_vars).idx_map();
-        let polys = [
-            q_l, q_r, q_m, q_o, q_c, id_1, id_2, id_3, s_1, s_2, s_3, pi, w_l, w_r, w_o, z,
-        ]
-        .map(|poly| (0..size).map(|idx| poly[idx_map[idx]]).collect())
-        .map(MultilinearPolynomial::new);
+        let polys = [q_l, q_r, q_m, q_o, q_c, s_1, s_2, s_3, pi, w_l, w_r, w_o, z]
+            .map(|poly| (0..size).map(|idx| poly[idx_map[idx]]).collect())
+            .map(MultilinearPolynomial::new);
 
         (polys, [beta, gamma, alpha])
     }
 
-    pub fn rand_hyperplonk_plus_assignments<F: PrimeField + Hash>(
+    pub fn rand_plonkup_assignments<F: PrimeField + Hash>(
         num_vars: usize,
-        id: impl Fn(usize) -> F,
         mut rng: impl RngCore,
-    ) -> ([MultilinearPolynomial<F>; 23], [F; 4]) {
+    ) -> ([MultilinearPolynomial<F>; 20], [F; 4]) {
+        let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
+        let idx_map = BooleanHypercube::new(num_vars).idx_map();
         let size = 1 << num_vars;
+
         let mut polys = [(); 10].map(|_| vec![F::zero(); size]);
-        let [id_1, id_2, id_3] = array::from_fn(|idx| {
-            (idx << num_vars..(idx + 1) << num_vars)
-                .map(&id)
-                .collect_vec()
-        });
         let n_bit_xor = 1u64 << ((num_vars >> 1) - num_vars.is_even() as usize);
         let (t_l, t_r, t_o) = iter::once((F::zero(), F::zero(), F::zero()))
             .chain(
@@ -257,14 +252,15 @@ pub(crate) mod test {
                 polys[poly][idx] = value;
             }
         }
-        let [s_1, s_2, s_3] = sigmas([&id_1, &id_2, &id_3], &cycles);
+        let [s_1, s_2, s_3] = sigmas(num_vars, &bh, &cycles);
         let z_perm = perm_grand_product(
+            &bh,
             &[&polys[7], &polys[8], &polys[9]],
-            &[&id_1, &id_2, &id_3],
             &[&s_1, &s_2, &s_3],
             beta,
             gamma,
         );
+
         let f = polys[5]
             .iter()
             .zip(polys[7].iter())
@@ -282,10 +278,9 @@ pub(crate) mod test {
         let z_lookup = lookup_grand_product(&t, &[&f], &[&h_1, &h_2], beta, gamma);
 
         let [q_l, q_r, q_m, q_o, q_c, q_lookup, pi, w_l, w_r, w_o] = polys;
-        let idx_map = BooleanHypercube::new(num_vars).idx_map();
         let polys = [
-            q_l, q_r, q_m, q_o, q_c, q_lookup, id_1, id_2, id_3, s_1, s_2, s_3, t_l, t_r, t_o, pi,
-            w_l, w_r, w_o, h_1, h_2, z_perm, z_lookup,
+            q_l, q_r, q_m, q_o, q_c, q_lookup, s_1, s_2, s_3, t_l, t_r, t_o, pi, w_l, w_r, w_o,
+            h_1, h_2, z_perm, z_lookup,
         ]
         .map(|poly| (0..size).map(|idx| poly[idx_map[idx]]).collect())
         .map(MultilinearPolynomial::new);
@@ -301,11 +296,17 @@ pub(crate) mod test {
         }
     }
 
-    fn sigmas<F: Field, const N: usize>(
-        ids: [&[F]; N],
+    fn sigmas<F: PrimeField, const N: usize>(
+        num_vars: usize,
+        bh: &[usize],
         cycles: &[Vec<(usize, usize)>],
     ) -> [Vec<F>; N] {
-        let mut sigmas = ids.map(|id| id.to_vec());
+        let mut sigmas = array::from_fn(|idx| {
+            let offset = idx << num_vars;
+            (0..1 << num_vars)
+                .map(|idx| F::from((offset + bh[idx]) as u64))
+                .collect_vec()
+        });
         for cycle in cycles.iter() {
             let (i0, j0) = cycle[0];
             let mut last = sigmas[i0][j0];
@@ -367,21 +368,22 @@ pub(crate) mod test {
         hs
     }
 
-    fn perm_grand_product<F: Field>(
+    fn perm_grand_product<F: PrimeField>(
+        bh: &[usize],
         w: &[&[F]],
-        id: &[&[F]],
         s: &[&[F]],
         beta: F,
         gamma: F,
     ) -> Vec<F> {
         let numer = w
             .iter()
-            .zip(id.iter())
-            .map(|(w, id)| {
+            .enumerate()
+            .map(|(idx, w)| {
+                let offset = idx * w.len();
                 w.iter()
-                    .zip(id.iter())
+                    .enumerate()
                     .skip(1)
-                    .map(|(w, id)| beta * id + w)
+                    .map(|(id, w)| beta * F::from((offset + bh[id]) as u64) + w)
                     .collect_vec()
             })
             .collect_vec();

@@ -30,9 +30,8 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
     pub fn new(virtual_poly: &'a VirtualPolynomial<F>) -> Self {
         let bh = BooleanHypercube::new(virtual_poly.info.num_vars());
         let idx_map = bh.idx_map();
-        let lagranges = virtual_poly
-            .info
-            .expression()
+        let expression = virtual_poly.info.expression();
+        let lagranges = expression
             .used_langrange()
             .into_iter()
             .map(|i| {
@@ -45,35 +44,31 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             .iter()
             .map(|y| MultilinearPolynomial::eq_xy(y))
             .collect_vec();
-        let identities = (0..=virtual_poly
-            .info
-            .expression()
-            .used_identity()
-            .into_iter()
-            .last()
-            .unwrap_or_default())
+        let identities = (0..)
             .map(|idx| F::from((idx as u64) << virtual_poly.info.num_vars()))
+            .take(
+                expression
+                    .used_identity()
+                    .into_iter()
+                    .max()
+                    .unwrap_or_default()
+                    + 1,
+            )
             .collect_vec();
         let polys = {
-            let query_idx_to_poly = virtual_poly
-                .info
-                .expression()
+            let query_idx_to_poly = expression
                 .used_query()
                 .into_iter()
                 .map(|query| (query.index(), query.poly()))
                 .collect::<BTreeMap<_, _>>();
-            (0..=query_idx_to_poly
-                .iter()
-                .rev()
-                .next()
-                .map(|(idx, _)| *idx)
-                .unwrap_or_default())
+            (0..)
                 .map(|idx| {
                     query_idx_to_poly
                         .get(&idx)
                         .map(|poly| Cow::Borrowed(virtual_poly.polys[*poly]))
                         .unwrap_or_else(|| Cow::Owned(MultilinearPolynomial::zero()))
                 })
+                .take(query_idx_to_poly.keys().max().cloned().unwrap_or_default() + 1)
                 .collect_vec()
         };
         Self {

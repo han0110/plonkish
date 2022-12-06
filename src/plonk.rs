@@ -45,7 +45,7 @@ pub(crate) mod test {
         Expression::random_linear_combine(&gates, alpha) * eq
     }
 
-    /// Gates described in 2022/086 (first row is not copyable)
+    /// Gates described similar to the one in 2022/086 (first row is not copyable)
     pub fn plonkup_expression<F: Field>() -> Expression<F> {
         let [q_l, q_r, q_m, q_o, q_c, q_lookup, s_1, s_2, s_3, t_l, t_r, t_o, pi, w_l, w_r, w_o] =
             &array::from_fn(|poly| Query::new(poly, poly, Rotation::cur()))
@@ -84,6 +84,7 @@ pub(crate) mod test {
                         * (w_r + beta * s_2 + gamma)
                         * (w_o + beta * s_3 + gamma))
                         * z_perm_next,
+                (z_perm - one) * l_1,
                 {
                     let f = q_lookup * Expression::random_linear_combine([w_l, w_r, w_o], theta);
                     let t = Expression::random_linear_combine([t_l, t_r, t_o], theta);
@@ -94,7 +95,6 @@ pub(crate) mod test {
                             * (h_2 + beta * h_1_next + gamma)
                             * z_lookup_next
                 },
-                (z_perm - one) * l_1,
                 (z_lookup - one) * l_1,
             ]
         };

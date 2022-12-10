@@ -116,7 +116,7 @@ impl BooleanHypercube {
 
     pub fn prev_map(&self) -> Vec<usize> {
         (0..1 << self.num_vars)
-            .map(|b| prev(b, self.primitive))
+            .map(|b| prev(b, self.x_inv))
             .collect()
     }
 

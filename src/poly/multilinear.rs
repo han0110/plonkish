@@ -2,7 +2,7 @@ use crate::{
     poly::impl_index,
     util::{
         arithmetic::{neg_plus_1, BooleanHypercube, Field},
-        num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
+        int_from_bits_be, num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
     },
 };
 use num_integer::Integer;
@@ -105,19 +105,19 @@ impl<F: Field> MultilinearPolynomial<F> {
         let mut bits = Vec::new();
         for x_i in x.iter() {
             if x_i == &F::zero() || x_i == &F::one() {
-                bits.push((x_i == &F::one()) as usize);
+                bits.push(x_i == &F::one());
                 continue;
             }
 
             let distance = bits.len() + 1;
-            let skip = bits.drain(..).rev().fold(0, |skip, bit| (skip << 1) + bit);
+            let skip = int_from_bits_be(bits.drain(..).rev());
             evals = merge!(&evals, x_i, distance, skip).into()
         }
 
         if !bits.is_empty() {
             let distance = bits.len();
             let step = 1 << distance;
-            let skip = bits.drain(..).rev().fold(0, |skip, bit| (skip << 1) + bit);
+            let skip = int_from_bits_be(bits.drain(..).rev());
             let mut next_evals = vec![F::zero(); evals.len() >> distance];
             parallelize(&mut next_evals, |(next_evals, start)| {
                 for (next_eval, eval) in next_evals
@@ -437,7 +437,7 @@ mod test {
     use rand::{rngs::OsRng, RngCore};
     use std::{borrow::Cow, iter};
 
-    fn fix_variables_serial<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
+    fn fix_variables_simple<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
         x.iter()
             .fold(Cow::Borrowed(evals), |evals, x_i| {
                 merge!(&evals, x_i).into()
@@ -458,7 +458,7 @@ mod test {
             for x in (0..num_vars).map(|n| iter::repeat_with(rand_x_i).take(n).collect_vec()) {
                 assert_eq!(
                     poly.fix_variables(&x).evals(),
-                    fix_variables_serial(poly.evals(), &x)
+                    fix_variables_simple(poly.evals(), &x)
                 );
             }
         }

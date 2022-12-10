@@ -70,22 +70,25 @@ mod test {
         poly::multilinear::{compute_rotation_eval, MultilinearPolynomial},
         sum_check::{prove, verify, VirtualPolynomial, VirtualPolynomialInfo},
         util::{
-            expression::{Expression, Rotation},
+            arithmetic::{BooleanHypercube, Field},
+            expression::{Expression, Query, Rotation},
             test::rand_vec,
             transcript::Keccak256Transcript,
+            Itertools,
         },
     };
     use halo2_curves::bn256::{Bn256, Fr};
     use rand::rngs::OsRng;
-    use std::ops::Range;
+    use std::{iter, ops::Range};
 
     fn run_sum_check(
         num_var_range: Range<usize>,
-        expression: Expression<Fr>,
+        expression_fn: impl Fn(usize) -> Expression<Fr>,
         assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
     ) {
         for num_vars in num_var_range {
-            let virtual_poly_info = { VirtualPolynomialInfo::new(num_vars, expression.clone()) };
+            let virtual_poly_info =
+                { VirtualPolynomialInfo::new(num_vars, expression_fn(num_vars)) };
             let (polys, challenges, y) = assignment_fn(num_vars);
             let proof = {
                 let virtual_poly = VirtualPolynomial::new(
@@ -126,26 +129,66 @@ mod test {
     }
 
     #[test]
+    fn test_sum_check_rotation() {
+        run_sum_check(
+            2..16,
+            |num_vars| {
+                let polys = (-(num_vars as i32) + 1..num_vars as i32)
+                    .rev()
+                    .enumerate()
+                    .map(|(idx, rotation)| Expression::Polynomial(Query::new(idx, idx, rotation)))
+                    .collect_vec();
+                let gates = polys
+                    .windows(2)
+                    .map(|polys| &polys[1] - &polys[0])
+                    .collect_vec();
+                let alpha = Expression::Challenge(0);
+                Expression::random_linear_combine(&gates, &alpha)
+            },
+            |num_vars| {
+                let next_map = BooleanHypercube::new(num_vars).next_map();
+                let rotate =
+                    |f: &Vec<Fr>| (0..1 << num_vars).map(|idx| f[next_map[idx]]).collect_vec();
+                let f = rand_vec(1 << num_vars, OsRng);
+                let fs = iter::successors(Some(f), |f| Some(rotate(f)))
+                    .map(MultilinearPolynomial::new)
+                    .take(2 * num_vars - 1)
+                    .collect_vec();
+                let alpha = Fr::random(OsRng);
+                (fs, vec![alpha], rand_vec(num_vars, OsRng))
+            },
+        );
+    }
+
+    #[test]
     fn test_sum_check_plonk() {
-        run_sum_check(2..16, plonk_expression(), |num_vars| {
-            let (polys, chalenges) = rand_plonk_assignments(num_vars, OsRng);
-            (
-                polys.to_vec(),
-                chalenges.to_vec(),
-                rand_vec(num_vars, OsRng),
-            )
-        });
+        run_sum_check(
+            2..16,
+            |_| plonk_expression(),
+            |num_vars| {
+                let (polys, chalenges) = rand_plonk_assignments(num_vars, OsRng);
+                (
+                    polys.to_vec(),
+                    chalenges.to_vec(),
+                    rand_vec(num_vars, OsRng),
+                )
+            },
+        );
     }
 
     #[test]
     fn test_sum_check_plonkup() {
-        run_sum_check(2..16, plonkup_expression(), |num_vars| {
-            let (polys, chalenges) = rand_plonkup_assignments(num_vars, OsRng);
-            (
-                polys.to_vec(),
-                chalenges.to_vec(),
-                rand_vec(num_vars, OsRng),
-            )
-        });
+        run_sum_check(
+            2..16,
+            |_| plonkup_expression(),
+            |num_vars| {
+                let (polys, chalenges) = rand_plonkup_assignments(num_vars, OsRng);
+                (
+                    polys.to_vec(),
+                    chalenges.to_vec(),
+                    rand_vec(num_vars, OsRng),
+                )
+            },
+        );
     }
 }

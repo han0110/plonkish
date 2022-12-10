@@ -117,7 +117,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                     parallelize_iter(
                         partials.iter_mut().zip((0..).step_by(chunk_size)),
                         |(partial, start)| {
-                            *partial = evaluate(start..start + chunk_size, point);
+                            *partial = evaluate(start..(start + chunk_size).min(size), point);
                         },
                     );
                     partials
@@ -163,19 +163,20 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 .enumerate()
                 .map(|(idx, poly)| {
                     match (poly.is_zero(), query_idx_to_rotation.get(&idx).copied()) {
-                        (true, _) => Cow::Owned(MultilinearPolynomial::zero()),
-                        (false, Some(Rotation(0))) => Cow::Owned(poly.fix_variables(&[challenge])),
+                        (true, _) => MultilinearPolynomial::zero(),
+                        (false, Some(Rotation(0))) => poly.fix_variables(&[challenge]),
                         (false, Some(rotation)) => {
                             let poly = MultilinearPolynomial::new(
                                 (0..1 << self.virtual_poly.info.num_vars())
                                     .map(|b| poly[self.rotate(b, rotation)])
                                     .collect_vec(),
                             );
-                            Cow::Owned(poly.fix_variables(&[challenge]))
+                            poly.fix_variables(&[challenge])
                         }
                         _ => unreachable!(),
                     }
                 })
+                .map(Cow::Owned)
                 .collect_vec();
         } else {
             self.polys.iter_mut().for_each(|poly| {

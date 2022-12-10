@@ -49,6 +49,10 @@ impl BitIndex for usize {
     }
 }
 
+pub fn int_from_bits_be(bits: impl Iterator<Item = bool>) -> usize {
+    bits.fold(0, |int, bit| (int << 1) + (bit as usize))
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use crate::util::arithmetic::Field;

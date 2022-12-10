@@ -134,7 +134,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                     parallelize_iter(
                         evals
                             .chunks_mut(chunk_size)
-                            .zip(last_evals.chunks(chunk_size / 2)),
+                            .zip(last_evals.chunks(chunk_size >> 1)),
                         |(evals, last_evals)| expand_serial(evals, last_evals, s_i),
                     );
                 }
@@ -207,7 +207,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                 poly.num_vars()
             )));
         }
-        Ok(variable_base_msm(poly.coeffs(), pp.eq(poly.num_vars())).into())
+        Ok(variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into())
     }
 
     fn batch_commit(
@@ -237,12 +237,12 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             )));
         }
 
-        let mut remainder = poly.coeffs().to_vec();
+        let mut remainder = poly.evals().to_vec();
         let quotients = point
             .iter()
             .enumerate()
             .map(|(idx, x_i)| {
-                let mut quotient = vec![M::Scalar::zero(); remainder.len() / 2];
+                let mut quotient = vec![M::Scalar::zero(); remainder.len() >> 1];
                 parallelize(&mut quotient, |(quotient, start)| {
                     for (quotient, (remainder_0, remainder_1)) in quotient.iter_mut().zip(
                         remainder[2 * start..]
@@ -253,7 +253,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                         *quotient = *remainder_1 - remainder_0;
                     }
                 });
-                let mut next_remainder = vec![M::Scalar::zero(); remainder.len() / 2];
+                let mut next_remainder = vec![M::Scalar::zero(); remainder.len() >> 1];
                 parallelize(&mut next_remainder, |(next_remainder, start)| {
                     for (next_remainder, (remainder_0, remainder_1)) in
                         next_remainder.iter_mut().zip(

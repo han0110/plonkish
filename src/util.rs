@@ -39,6 +39,16 @@ where
     }
 }
 
+pub trait BitIndex {
+    fn nth_bit(&self, nth: usize) -> bool;
+}
+
+impl BitIndex for usize {
+    fn nth_bit(&self, nth: usize) -> bool {
+        (self >> nth) & 1 == 1
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use crate::util::arithmetic::Field;

@@ -23,6 +23,7 @@ pub struct ProvingState<'a, F: PrimeField> {
     identities: Vec<F>,
     polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
     round: usize,
+    prev_map: Vec<usize>,
     next_map: Vec<usize>,
 }
 
@@ -78,6 +79,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             identities,
             polys,
             round: 0,
+            prev_map: bh.prev_map(),
             next_map: bh.next_map(),
         }
     }
@@ -182,8 +184,9 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 }
             });
         }
-        self.next_map =
-            BooleanHypercube::new(self.virtual_poly.info.num_vars() - self.round - 1).next_map();
+        let bh = BooleanHypercube::new(self.virtual_poly.info.num_vars() - self.round - 1);
+        self.prev_map = bh.prev_map();
+        self.next_map = bh.next_map();
         self.round += 1;
     }
 
@@ -244,10 +247,15 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
 
     fn rotate(&self, mut b: usize, rotation: Rotation) -> usize {
         match rotation.0.cmp(&0) {
-            Ordering::Less => unimplemented!("Negative roation is not supported yet"),
             Ordering::Equal => b,
+            Ordering::Less => {
+                for _ in rotation.0..0 {
+                    b = self.prev_map[b];
+                }
+                b
+            }
             Ordering::Greater => {
-                for _ in 0..rotation.0 as usize {
+                for _ in 0..rotation.0 {
                     b = self.next_map[b];
                 }
                 b

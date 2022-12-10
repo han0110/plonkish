@@ -77,15 +77,8 @@ pub fn fe_from_bytes_le<F: PrimeField>(bytes: impl AsRef<[u8]>) -> F {
     F::from_repr(repr).unwrap()
 }
 
-pub fn int_from_fe_bits_le<'a, F: Field>(bits: impl Iterator<Item = &'a F>) -> usize {
-    let mut int = 0;
-    for bit in bits {
-        int <<= 1;
-        if !bit.is_zero_vartime() {
-            int += 1;
-        }
-    }
-    int
+pub fn neg_plus_1<F: Field>(value: impl Borrow<F>) -> F {
+    F::one() - value.borrow()
 }
 
 #[cfg(test)]

@@ -1,10 +1,8 @@
 use std::iter;
 
-/// Integer representation of irreducible fucntion in GF(2) as masks.
-/// Mostly taken from https://www.hpl.hp.com/techreports/98/HPL-98-135.pdf,
-/// some of them don't work initially, but with some tweak now they all work.
-const MASK: [usize; 32] = [
-    0,          // [0]
+/// Integer representation of primitive polynomial in GF(2).
+const PRIMITIVES: [usize; 32] = [
+    1,          // [0]
     3,          // [0, 1]
     7,          // [0, 1, 2]
     11,         // [0, 1, 3]
@@ -38,10 +36,47 @@ const MASK: [usize; 32] = [
     2147483657, // [0, 3, 31]
 ];
 
+/// Integer representation of 1/X in GF(2).
+const X_INVS: [usize; 32] = [
+    0,          // []
+    1,          // [0]
+    3,          // [0, 1]
+    5,          // [0, 2]
+    9,          // [0, 3]
+    18,         // [1, 4]
+    33,         // [0, 5]
+    65,         // [0, 6]
+    142,        // [1, 2, 3, 7]
+    264,        // [3, 8]
+    516,        // [2, 9]
+    1026,       // [1, 10]
+    2089,       // [0, 3, 5, 11]
+    4109,       // [0, 2, 3, 12]
+    8213,       // [0, 2, 4, 13]
+    16385,      // [0, 14]
+    32790,      // [1, 2, 4, 15]
+    65540,      // [2, 16]
+    131091,     // [0, 1, 4, 17]
+    262163,     // [0, 1, 4, 18]
+    524292,     // [2, 19]
+    1048578,    // [1, 20]
+    2097153,    // [0, 21]
+    4194320,    // [4, 22]
+    8388621,    // [0, 2, 3, 23]
+    16777220,   // [2, 24]
+    33554467,   // [0, 1, 5, 25]
+    67108883,   // [0, 1, 4, 26]
+    134217732,  // [2, 27]
+    268435458,  // [1, 28]
+    536870953,  // [0, 3, 5, 29]
+    1073741828, // [2, 30]
+];
+
 #[derive(Debug, Clone, Copy)]
 pub struct BooleanHypercube {
     num_vars: usize,
-    mask: usize,
+    primitive: usize,
+    x_inv: usize,
 }
 
 impl BooleanHypercube {
@@ -49,12 +84,17 @@ impl BooleanHypercube {
         assert!(num_vars <= 31);
         Self {
             num_vars,
-            mask: MASK[num_vars],
+            primitive: PRIMITIVES[num_vars],
+            x_inv: X_INVS[num_vars],
         }
     }
 
-    pub fn mask(&self) -> usize {
-        self.mask
+    pub fn primitive(&self) -> usize {
+        self.primitive
+    }
+
+    pub fn x_inv(&self) -> usize {
+        self.x_inv
     }
 
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
@@ -62,7 +102,7 @@ impl BooleanHypercube {
         iter::once(0)
             .chain(iter::repeat_with(move || {
                 let item = b;
-                b = next(b, self.num_vars, self.mask);
+                b = next(b, self.num_vars, self.primitive);
                 item
             }))
             .take(1 << self.num_vars)
@@ -70,7 +110,13 @@ impl BooleanHypercube {
 
     pub fn next_map(&self) -> Vec<usize> {
         (0..1 << self.num_vars)
-            .map(|b| next(b, self.num_vars, self.mask))
+            .map(|b| next(b, self.num_vars, self.primitive))
+            .collect()
+    }
+
+    pub fn prev_map(&self) -> Vec<usize> {
+        (0..1 << self.num_vars)
+            .map(|b| prev(b, self.primitive))
             .collect()
     }
 
@@ -79,17 +125,22 @@ impl BooleanHypercube {
         let mut b = 1;
         for idx in 1..1 << self.num_vars {
             idx_map[b] = idx;
-            b = next(b, self.num_vars, self.mask);
+            b = next(b, self.num_vars, self.primitive);
         }
         idx_map
     }
 }
 
 #[inline(always)]
-fn next(mut b: usize, num_vars: usize, mask: usize) -> usize {
+fn next(mut b: usize, num_vars: usize, primitive: usize) -> usize {
     b <<= 1;
-    b ^= (b >> num_vars) * mask;
+    b ^= (b >> num_vars) * primitive;
     b
+}
+
+#[inline(always)]
+fn prev(b: usize, x_inv: usize) -> usize {
+    (b >> 1) ^ ((b & 1) * x_inv)
 }
 
 #[cfg(test)]

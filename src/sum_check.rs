@@ -111,8 +111,9 @@ mod test {
                             polys[query.poly()].evaluate(&x)
                         } else {
                             compute_rotation_eval(
-                                &polys[query.poly()].evaluate_for_rotation(&x, query.rotation().0),
                                 &x,
+                                query.rotation().0,
+                                &polys[query.poly()].evaluate_for_rotation(&x, query.rotation().0),
                             )
                         };
                         (query, eval)

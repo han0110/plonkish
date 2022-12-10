@@ -68,7 +68,7 @@ mod enabled {
 mod disabled {
     use crate::util::timer::{Instant, TimerInfo};
 
-    pub fn start_timer(_: impl Fn() -> String) -> TimerInfo {
+    pub fn start_timer<T: ToString>(_: impl Fn() -> T) -> TimerInfo {
         TimerInfo {
             msg: String::new(),
             time: Instant::now(),

@@ -1,5 +1,5 @@
 use crate::{
-    sum_check::VirtualPolynomialInfo,
+    piop::sum_check::VirtualPolynomialInfo,
     util::{
         arithmetic::{BatchInvert, PrimeField},
         parallelize, Itertools,

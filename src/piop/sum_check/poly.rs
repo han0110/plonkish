@@ -51,7 +51,7 @@ impl<F: PrimeField> VirtualPolynomialInfo<F> {
             .used_langrange()
             .into_iter()
             .map(|i| {
-                let b = idx_map[i.rem_euclid(self.num_vars() as i32) as usize];
+                let b = idx_map[i.rem_euclid(self.num_vars as i32) as usize];
                 (i, lagrange_eval(x, b as usize))
             })
             .collect::<HashMap<_, _>>();

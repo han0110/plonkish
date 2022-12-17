@@ -1,3 +1,6 @@
+mod prover;
+mod verifier;
+
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{

@@ -1,7 +1,7 @@
 use crate::{
     pcs::{Evaluation, PolynomialCommitmentScheme},
+    piop::sum_check::{self, eq_xy_eval, VirtualPolynomial, VirtualPolynomialInfo},
     poly::multilinear::MultilinearPolynomial,
-    sum_check::{self, eq_xy_eval, VirtualPolynomial, VirtualPolynomialInfo},
     util::{
         arithmetic::{
             fixed_base_msm, inner_product, powers, variable_base_msm, window_size, window_table,
@@ -395,8 +395,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let powers_of_t = powers(t).take(evals.len()).collect_vec();
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &powers_of_t);
         let (g_prime_eval, challenges) = sum_check::verify(
-            tilde_gs_sum,
             &virtual_poly_info(num_vars, evals),
+            tilde_gs_sum,
             transcript,
         )?;
         let eq_xz_evals = points

@@ -1,6 +1,6 @@
 use crate::{
+    piop::sum_check::VirtualPolynomial,
     poly::multilinear::MultilinearPolynomial,
-    sum_check::VirtualPolynomial,
     util::{
         arithmetic::{BooleanHypercube, PrimeField},
         expression::{CommonPolynomial, Rotation},

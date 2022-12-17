@@ -1,5 +1,5 @@
 use crate::{
-    sum_check::{prover::ProvingState, verifier::consistency_check},
+    piop::sum_check::{prover::ProvingState, verifier::consistency_check},
     util::{
         arithmetic::PrimeField,
         transcript::{TranscriptRead, TranscriptWrite},
@@ -15,11 +15,10 @@ mod verifier;
 
 pub use poly::{eq_xy_eval, VirtualPolynomial, VirtualPolynomialInfo};
 
-pub fn prove<F, T>(virtual_poly: &VirtualPolynomial<F>, transcript: &mut T) -> Result<Vec<F>, Error>
-where
-    F: PrimeField,
-    T: TranscriptWrite<F>,
-{
+pub fn prove<F: PrimeField>(
+    virtual_poly: &VirtualPolynomial<F>,
+    transcript: &mut impl TranscriptWrite<F>,
+) -> Result<Vec<F>, Error> {
     let mut state = ProvingState::new(virtual_poly);
     iter::repeat_with(|| {
         for sample_eval in state.sample_evals() {
@@ -32,18 +31,14 @@ where
         Ok(challenge)
     })
     .take(virtual_poly.info.num_vars())
-    .collect::<Result<Vec<_>, Error>>()
+    .try_collect()
 }
 
-pub fn verify<F, T>(
-    sum: F,
+pub fn verify<F: PrimeField>(
     virtual_poly_info: &VirtualPolynomialInfo<F>,
-    transcript: &mut T,
-) -> Result<(F, Vec<F>), Error>
-where
-    F: PrimeField,
-    T: TranscriptRead<F>,
-{
+    sum: F,
+    transcript: &mut impl TranscriptRead<F>,
+) -> Result<(F, Vec<F>), Error> {
     let rounds = iter::repeat_with(|| {
         Ok((
             transcript.read_n_scalars(virtual_poly_info.degree() + 1)?,
@@ -51,24 +46,23 @@ where
         ))
     })
     .take(virtual_poly_info.num_vars())
-    .collect::<Result<Vec<_>, Error>>()?;
-    consistency_check(virtual_poly_info, &rounds, sum).map(|eval| {
-        let challenges = rounds
-            .into_iter()
-            .map(|(_, challenge)| challenge)
-            .collect_vec();
-        (eval, challenges)
-    })
+    .try_collect::<_, Vec<_>, _>()?;
+    let eval = consistency_check(virtual_poly_info, &rounds, sum)?;
+    let challenges = rounds
+        .into_iter()
+        .map(|(_, challenge)| challenge)
+        .collect_vec();
+    Ok((eval, challenges))
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
-        plonk::test::{
+        piop::sum_check::{prove, verify, VirtualPolynomial, VirtualPolynomialInfo},
+        poly::multilinear::{compute_rotation_eval, MultilinearPolynomial},
+        snark::hyperplonk::test::{
             plonk_expression, plonkup_expression, rand_plonk_assignments, rand_plonkup_assignments,
         },
-        poly::multilinear::{compute_rotation_eval, MultilinearPolynomial},
-        sum_check::{prove, verify, VirtualPolynomial, VirtualPolynomialInfo},
         util::{
             arithmetic::{BooleanHypercube, Field},
             expression::{Expression, Query, Rotation},
@@ -104,7 +98,7 @@ mod test {
             let accept = {
                 let mut transcript = Keccak256Transcript::<_, Bn256>::new(proof.as_slice());
                 let (expected_eval, x) =
-                    verify(Fr::zero(), &virtual_poly_info, &mut transcript).unwrap();
+                    verify(&virtual_poly_info, Fr::zero(), &mut transcript).unwrap();
                 let evals = virtual_poly_info
                     .expression()
                     .used_query()

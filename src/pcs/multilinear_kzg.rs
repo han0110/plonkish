@@ -1,11 +1,13 @@
 use crate::{
-    pcs::PolynomialCommitmentScheme,
+    pcs::{Evaluation, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
+    sum_check::{self, eq_xy_eval, VirtualPolynomial, VirtualPolynomialInfo},
     util::{
         arithmetic::{
-            fixed_base_msm, variable_base_msm, window_size, window_table, Curve, Field,
-            MultiMillerLoop, PrimeCurveAffine,
+            fixed_base_msm, inner_product, powers, variable_base_msm, window_size, window_table,
+            Curve, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
         },
+        expression::{Expression, Query},
         num_threads, parallelize, parallelize_iter,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
@@ -66,32 +68,6 @@ impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MultilinearKzgProof<M: MultiMillerLoop> {
-    pub quotients: Vec<M::G1Affine>,
-}
-
-impl<M: MultiMillerLoop> MultilinearKzgProof<M> {
-    pub fn read(
-        num_vars: usize,
-        transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            quotients: transcript.read_n_commitments(num_vars)?,
-        })
-    }
-
-    pub fn write(
-        &self,
-        transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
-    ) -> Result<(), Error> {
-        for quotient in self.quotients.iter() {
-            transcript.write_commitment(*quotient)?;
-        }
-        Ok(())
-    }
-}
-
 impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKzg<M> {
     type Config = usize;
     type Param = MultilinearKzgParams<M>;
@@ -101,8 +77,6 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type Point = Vec<M::Scalar>;
     type Commitment = M::G1Affine;
     type BatchCommitment = Vec<M::G1Affine>;
-    type Proof = MultilinearKzgProof<M>;
-    type BatchProof = ();
 
     fn setup(num_vars: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
@@ -221,7 +195,9 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         point: &Self::Point,
-    ) -> Result<(M::Scalar, Self::Proof), Error> {
+        eval: &M::Scalar,
+        transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
+    ) -> Result<(), Error> {
         if pp.num_vars() < poly.num_vars() {
             return Err(Error::InvalidPcsParam(format!(
                 "Too many variates of poly to open (param supports variates up to {} but got {})",
@@ -274,19 +250,81 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                 }
             })
             .collect_vec();
-        let eval = remainder[0];
 
-        Ok((eval, Self::Proof { quotients }))
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(&remainder[0], eval);
+        }
+
+        for quotient in quotients {
+            transcript.write_commitment(quotient)?;
+        }
+
+        Ok(())
     }
 
-    // TODO: Implement 2022/1355 3.7
-    fn batch_open(
-        _pp: &Self::ProverParam,
-        _polys: &[Self::Polynomial],
-        _points: &[Self::Point],
-        _transcript: &mut impl TranscriptWrite<M::Scalar>,
-    ) -> Result<(Vec<M::Scalar>, Self::BatchProof), Error> {
-        todo!()
+    fn batch_open<'a>(
+        pp: &Self::ProverParam,
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        points: &[Self::Point],
+        evals: &[Evaluation<M::Scalar>],
+        transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
+    ) -> Result<(), Error> {
+        let num_vars = points.first().expect("to have at least 1 point").len();
+        if pp.num_vars() < num_vars {
+            return Err(Error::InvalidPcsParam(format!(
+                "Too many variates of poly to batch open (param supports variates up to {} but got {})",
+                pp.num_vars(),
+                num_vars
+            )));
+        }
+        let polys = polys.into_iter().collect_vec();
+        for poly in polys.iter() {
+            if poly.num_vars() != num_vars {
+                return Err(Error::InvalidPcsParam(format!(
+                    "Invalid poly to batch open with (expect all polys to have {} variates but got {})",
+                    num_vars,
+                    poly.num_vars()
+                )));
+            }
+        }
+        for point in points.iter() {
+            if point.len() != num_vars {
+                return Err(Error::InvalidPcsParam(format!(
+                    "Invalid point to open (expect point to have {} variates but got {})",
+                    num_vars,
+                    point.len()
+                )));
+            }
+        }
+
+        let t = transcript.squeeze_challenge();
+        let tilde_gs = evals
+            .iter()
+            .zip(powers(t))
+            .map(|(eval, power_of_t)| polys[eval.poly()] * power_of_t)
+            .collect_vec();
+        let virtual_poly_info = virtual_poly_info(num_vars, evals);
+        let virtual_poly =
+            VirtualPolynomial::new(&virtual_poly_info, &tilde_gs, Vec::new(), points.to_vec());
+        let challenges = sum_check::prove(&virtual_poly, transcript).unwrap();
+
+        let eq_xz_evals = points
+            .iter()
+            .map(|point| eq_xy_eval(&challenges, point))
+            .collect_vec();
+        let g_prime = tilde_gs
+            .iter()
+            .zip(evals)
+            .map(|(tilde_g, eval)| tilde_g * eq_xz_evals[eval.point()])
+            .sum::<MultilinearPolynomial<_>>();
+        let g_prime_eval = if cfg!(feature = "sanity-check") {
+            g_prime.evaluate(&challenges)
+        } else {
+            M::Scalar::zero()
+        };
+        Self::open(pp, &g_prime, &challenges, &g_prime_eval, transcript)?;
+
+        Ok(())
     }
 
     fn verify(
@@ -294,7 +332,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         comm: &Self::Commitment,
         point: &Self::Point,
         eval: &M::Scalar,
-        proof: &Self::Proof,
+        transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
         if vp.num_vars() < point.len() {
             return Err(Error::InvalidPcsParam(format!(
@@ -303,13 +341,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                 point.len()
             )));
         }
-        if point.len() != proof.quotients.len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Invalid proof to verify (expect proof to have {} commitments but got {})",
-                point.len(),
-                proof.quotients.len()
-            )));
-        }
+
+        let quotients = transcript.read_n_commitments(point.len())?;
 
         let window_size = window_size(point.len());
         let window_table = window_table(window_size, vp.g2);
@@ -326,33 +359,88 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .collect_vec();
         let lhs = iter::empty()
             .chain(Some((comm.to_curve() - vp.g1 * eval).into()))
-            .chain(proof.quotients.iter().cloned())
+            .chain(quotients.iter().cloned())
             .collect_vec();
         M::pairings_product_is_identity(&lhs.iter().zip_eq(rhs.iter()).collect_vec())
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsProof("Invalid multilinear KZG proof".to_string()))
     }
 
-    // TODO: Implement 2022/1355 3.7
     fn batch_verify(
-        _vp: &Self::VerifierParam,
-        _batch_comm: &Self::BatchCommitment,
-        _points: &[Self::Point],
-        _evals: &[M::Scalar],
-        _batch_proof: &Self::BatchProof,
-        _transcript: &mut impl TranscriptRead<M::Scalar>,
+        vp: &Self::VerifierParam,
+        batch_comm: &Self::BatchCommitment,
+        points: &[Self::Point],
+        evals: &[Evaluation<M::Scalar>],
+        transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        todo!()
+        let num_vars = points.first().expect("to have at least 1 point").len();
+        if vp.num_vars() < num_vars {
+            return Err(Error::InvalidPcsParam(format!(
+                "Too many variates of poly to verify (param supports variates up to {} but got {})",
+                vp.num_vars(),
+                num_vars
+            )));
+        }
+        for point in points.iter() {
+            if point.len() != num_vars {
+                return Err(Error::InvalidPcsParam(format!(
+                    "Invalid point to open (expect point to have {} variates but got {})",
+                    num_vars,
+                    point.len()
+                )));
+            }
+        }
+
+        let t = transcript.squeeze_challenge();
+        let powers_of_t = powers(t).take(evals.len()).collect_vec();
+        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &powers_of_t);
+        let (g_prime_eval, challenges) = sum_check::verify(
+            tilde_gs_sum,
+            &virtual_poly_info(num_vars, evals),
+            transcript,
+        )?;
+        let eq_xz_evals = points
+            .iter()
+            .map(|point| eq_xy_eval(&challenges, point))
+            .collect_vec();
+        let g_prime = variable_base_msm(
+            &evals
+                .iter()
+                .zip(powers_of_t)
+                .map(|(eval, power_of_t)| power_of_t * &eq_xz_evals[eval.point()])
+                .collect_vec(),
+            &evals
+                .iter()
+                .map(|eval| batch_comm[eval.poly()])
+                .collect_vec(),
+        )
+        .into();
+        Self::verify(vp, &g_prime, &challenges, &g_prime_eval, transcript)?;
+
+        Ok(())
     }
+}
+
+fn virtual_poly_info<F: PrimeField>(
+    num_vars: usize,
+    evals: &[Evaluation<F>],
+) -> VirtualPolynomialInfo<F> {
+    let eq_xzs = evals
+        .iter()
+        .map(|eval| Expression::<F>::eq_xy(eval.point()))
+        .collect_vec();
+    let expression = eq_xzs
+        .into_iter()
+        .enumerate()
+        .map(|(idx, eq_xz)| Expression::<F>::Polynomial(Query::new(idx, idx, 0)) * eq_xz)
+        .sum::<Expression<_>>();
+    VirtualPolynomialInfo::new(num_vars, expression)
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::{
-            multilinear_kzg::{MultilinearKzg, MultilinearKzgProof},
-            PolynomialCommitmentScheme,
-        },
+        pcs::{multilinear_kzg::MultilinearKzg, Evaluation, PolynomialCommitmentScheme},
         util::{
             transcript::{self, Transcript, TranscriptRead, TranscriptWrite},
             Itertools,
@@ -383,9 +471,9 @@ mod test {
                 .write_commitment(Pcs::commit(&pp, &poly).unwrap())
                 .unwrap();
             let point = transcript.squeeze_n_challenges(pp.num_vars());
-            let (eval, proof) = Pcs::open(&pp, &poly, &point).unwrap();
+            let eval = poly.evaluate(&point);
             transcript.write_scalar(eval).unwrap();
-            proof.write(&mut transcript).unwrap();
+            Pcs::open(&pp, &poly, &point, &eval, &mut transcript).unwrap();
             transcript.finalize()
         };
         // Verify
@@ -396,16 +484,14 @@ mod test {
                 &transcript.read_commitment().unwrap(),
                 &transcript.squeeze_n_challenges(vp.num_vars()),
                 &transcript.read_scalar().unwrap(),
-                &MultilinearKzgProof::read(vp.num_vars(), &mut transcript).unwrap(),
+                &mut transcript,
             )
             .is_ok()
         };
         assert!(accept);
     }
 
-    // TODO: Finish batch testing
     #[test]
-    #[ignore]
     fn test_batch_commit_open_verify() {
         // Setup
         let (pp, vp) = {
@@ -427,13 +513,16 @@ mod test {
             let points = iter::repeat_with(|| transcript.squeeze_n_challenges(pp.num_vars()))
                 .take(batch_size)
                 .collect_vec();
-            let (evals, _proof) = Pcs::batch_open(&pp, &polys, &points, &mut transcript).unwrap();
-            for eval in evals {
-                transcript.write_scalar(eval).unwrap();
+            let evals = polys
+                .iter()
+                .zip(points.iter())
+                .enumerate()
+                .map(|(idx, (poly, point))| Evaluation::new(idx, idx, poly.evaluate(point)))
+                .collect_vec();
+            for eval in evals.iter() {
+                transcript.write_scalar(*eval.value()).unwrap();
             }
-            // for quotient in proof.quotients {
-            //     transcript.write_commitment(quotient).unwrap();
-            // }
+            Pcs::batch_open(&pp, &polys, &points, &evals, &mut transcript).unwrap();
             transcript.finalize()
         };
         // Batch verify
@@ -445,8 +534,13 @@ mod test {
                 &iter::repeat_with(|| transcript.squeeze_n_challenges(vp.num_vars()))
                     .take(batch_size)
                     .collect_vec(),
-                &transcript.read_n_scalars(batch_size).unwrap(),
-                &(),
+                &transcript
+                    .read_n_scalars(batch_size)
+                    .unwrap()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, eval)| Evaluation::new(idx, idx, eval))
+                    .collect_vec(),
                 &mut transcript,
             )
             .is_ok()

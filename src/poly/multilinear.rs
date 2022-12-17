@@ -1,8 +1,8 @@
 use crate::{
     poly::impl_index,
     util::{
-        arithmetic::{neg_plus_1, BooleanHypercube, Field},
-        int_from_bits_be, num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
+        arithmetic::{ilog2, usize_from_bits_be, BooleanHypercube, Field},
+        num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
     },
 };
 use num_integer::Integer;
@@ -24,7 +24,7 @@ impl<F: Field> MultilinearPolynomial<F> {
         let num_vars = if evals.is_empty() {
             0
         } else {
-            let num_vars = (usize::BITS - 1 - evals.len().leading_zeros()) as usize;
+            let num_vars = ilog2(evals.len());
             assert_eq!(evals.len(), 1 << num_vars);
             num_vars
         };
@@ -110,14 +110,14 @@ impl<F: Field> MultilinearPolynomial<F> {
             }
 
             let distance = bits.len() + 1;
-            let skip = int_from_bits_be(bits.drain(..).rev());
+            let skip = usize_from_bits_be(bits.drain(..).rev());
             evals = merge!(&evals, x_i, distance, skip).into()
         }
 
         if !bits.is_empty() {
             let distance = bits.len();
             let step = 1 << distance;
-            let skip = int_from_bits_be(bits.drain(..).rev());
+            let skip = usize_from_bits_be(bits.drain(..).rev());
             let mut next_evals = vec![F::zero(); evals.len() >> distance];
             parallelize(&mut next_evals, |(next_evals, start)| {
                 for (next_eval, eval) in next_evals
@@ -140,9 +140,10 @@ impl<F: Field> MultilinearPolynomial<F> {
 
         let distance = rotation.unsigned_abs() as usize;
         let num_x = self.num_vars - distance;
+        let flip = |x: &F| F::one() - x;
         if rotation < 0 {
             let x = &x[distance..distance + num_x];
-            let flipped_x = x.iter().map(neg_plus_1).collect_vec();
+            let flipped_x = x.iter().map(flip).collect_vec();
             let pattern = rotation_eval_point_pattern::<false>(self.num_vars, distance);
             let offset_mask = (1 << self.num_vars) - (1 << num_x);
             let mut evals = vec![F::zero(); pattern.len()];
@@ -160,7 +161,7 @@ impl<F: Field> MultilinearPolynomial<F> {
             evals
         } else {
             let x = &x[..num_x];
-            let flipped_x = x.iter().map(neg_plus_1).collect_vec();
+            let flipped_x = x.iter().map(flip).collect_vec();
             let pattern = rotation_eval_point_pattern::<true>(self.num_vars, distance);
             let skip_mask = (1 << distance) - 1;
             let mut evals = vec![F::zero(); pattern.len()];
@@ -242,6 +243,40 @@ impl<F: Field> AddAssign<F> for MultilinearPolynomial<F> {
 impl<F: Field> SubAssign<F> for MultilinearPolynomial<F> {
     fn sub_assign(&mut self, rhs: F) {
         self.evals[0] -= rhs;
+    }
+}
+
+impl<'lhs, F: Field> Mul<F> for &'lhs MultilinearPolynomial<F> {
+    type Output = MultilinearPolynomial<F>;
+
+    fn mul(self, rhs: F) -> MultilinearPolynomial<F> {
+        let mut output = self.clone();
+        output *= rhs;
+        output
+    }
+}
+
+impl<F: Field> MulAssign<F> for MultilinearPolynomial<F> {
+    fn mul_assign(&mut self, rhs: F) {
+        parallelize(&mut self.evals, |(lhs, _)| {
+            for lhs in lhs.iter_mut() {
+                *lhs *= rhs;
+            }
+        });
+    }
+}
+
+impl<F: Field> Sum<MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
+    fn sum<I: Iterator<Item = MultilinearPolynomial<F>>>(mut iter: I) -> MultilinearPolynomial<F> {
+        let init = match (iter.next(), iter.next()) {
+            (Some(lhs), Some(rhs)) => &lhs + &rhs,
+            (Some(lhs), None) => return lhs,
+            _ => unreachable!(),
+        };
+        iter.fold(init, |mut acc, poly| {
+            acc += &poly;
+            acc
+        })
     }
 }
 

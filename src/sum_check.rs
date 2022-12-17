@@ -13,7 +13,7 @@ mod poly;
 mod prover;
 mod verifier;
 
-pub use poly::{VirtualPolynomial, VirtualPolynomialInfo};
+pub use poly::{eq_xy_eval, VirtualPolynomial, VirtualPolynomialInfo};
 
 pub fn prove<F, T>(virtual_poly: &VirtualPolynomial<F>, transcript: &mut T) -> Result<Vec<F>, Error>
 where

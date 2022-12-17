@@ -20,8 +20,6 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type Point: Debug;
     type Commitment: Debug;
     type BatchCommitment: Debug;
-    type Proof: Debug;
-    type BatchProof: Debug;
 
     fn setup(config: Self::Config, rng: impl RngCore) -> Result<Self::Param, Error>;
 
@@ -41,29 +39,57 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         point: &Self::Point,
-    ) -> Result<(F, Self::Proof), Error>;
+        eval: &F,
+        transcript: &mut impl TranscriptWrite<F, Commitment = Self::Commitment>,
+    ) -> Result<(), Error>;
 
-    fn batch_open(
+    fn batch_open<'a>(
         pp: &Self::ProverParam,
-        polys: &[Self::Polynomial],
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         points: &[Self::Point],
-        transcript: &mut impl TranscriptWrite<F>,
-    ) -> Result<(Vec<F>, Self::BatchProof), Error>;
+        evals: &[Evaluation<F>],
+        transcript: &mut impl TranscriptWrite<F, Commitment = Self::Commitment>,
+    ) -> Result<(), Error>
+    where
+        Self::Polynomial: 'a;
 
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
         point: &Self::Point,
         eval: &F,
-        proof: &Self::Proof,
+        transcript: &mut impl TranscriptRead<F, Commitment = Self::Commitment>,
     ) -> Result<(), Error>;
 
     fn batch_verify(
         vp: &Self::VerifierParam,
         batch_comm: &Self::BatchCommitment,
         points: &[Self::Point],
-        evals: &[F],
-        batch_proof: &Self::BatchProof,
-        transcript: &mut impl TranscriptRead<F>,
+        evals: &[Evaluation<F>],
+        transcript: &mut impl TranscriptRead<F, Commitment = Self::Commitment>,
     ) -> Result<(), Error>;
+}
+
+pub struct Evaluation<F: Field> {
+    poly: usize,
+    point: usize,
+    value: F,
+}
+
+impl<F: Field> Evaluation<F> {
+    pub fn new(poly: usize, point: usize, value: F) -> Self {
+        Self { poly, point, value }
+    }
+
+    pub fn poly(&self) -> usize {
+        self.poly
+    }
+
+    pub fn point(&self) -> usize {
+        self.point
+    }
+
+    pub fn value(&self) -> &F {
+        &self.value
+    }
 }

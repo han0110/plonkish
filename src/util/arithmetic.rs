@@ -31,16 +31,10 @@ impl<M> MultiMillerLoop for M where M: pairing::MultiMillerLoop + Debug {}
 pub fn field_size<F: PrimeField>() -> usize {
     let neg_one = (-F::one()).to_repr();
     let bytes = neg_one.as_ref();
-    debug_assert!(bytes[0] != 0xff);
     8 * bytes.len() - bytes.last().unwrap().leading_zeros() as usize
 }
 
-pub fn ilog2(n: usize) -> usize {
-    assert!(n > 0);
-    (usize::BITS - n.leading_zeros() - 1) as usize
-}
-
-pub fn horner<F: Field>(coeffs: &[F], x: F) -> F {
+pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
     coeffs
         .iter()
         .rev()
@@ -57,9 +51,12 @@ pub fn product<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F 
         .fold(F::one(), |acc, value| acc * value.borrow())
 }
 
-pub fn inner_product<F: Field>(lhs: &[F], rhs: &[F]) -> F {
-    lhs.iter()
-        .zip_eq(rhs.iter())
+pub fn inner_product<'a, 'b, F: Field>(
+    lhs: impl IntoIterator<Item = &'a F>,
+    rhs: impl IntoIterator<Item = &'b F>,
+) -> F {
+    lhs.into_iter()
+        .zip_eq(rhs.into_iter())
         .map(|(lhs, rhs)| *lhs * rhs)
         .reduce(|acc, product| acc + product)
         .unwrap_or_default()
@@ -77,8 +74,18 @@ pub fn fe_from_bytes_le<F: PrimeField>(bytes: impl AsRef<[u8]>) -> F {
     F::from_repr(repr).unwrap()
 }
 
-pub fn neg_plus_1<F: Field>(value: impl Borrow<F>) -> F {
-    F::one() - value.borrow()
+pub fn usize_from_bits_be(bits: impl Iterator<Item = bool>) -> usize {
+    bits.fold(0, |int, bit| (int << 1) + (bit as usize))
+}
+
+pub fn ilog2(n: usize) -> usize {
+    assert!(n > 0);
+
+    if n.is_power_of_two() {
+        (1usize.leading_zeros() - n.leading_zeros()) as usize
+    } else {
+        (0usize.leading_zeros() - n.leading_zeros()) as usize
+    }
 }
 
 #[cfg(test)]

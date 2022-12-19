@@ -1,9 +1,8 @@
 use crate::util::Itertools;
 use std::{
-    cmp::max,
     collections::BTreeSet,
     fmt::Debug,
-    iter::Sum,
+    iter::{Product, Sum},
     ops::{Add, Mul, Neg, Sub},
 };
 
@@ -32,22 +31,16 @@ impl From<i32> for Rotation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Query {
-    index: usize,
     poly: usize,
     rotation: Rotation,
 }
 
 impl Query {
-    pub fn new(index: usize, poly: usize, rotation: impl Into<Rotation>) -> Self {
+    pub fn new(poly: usize, rotation: impl Into<Rotation>) -> Self {
         Self {
-            index,
             poly,
             rotation: rotation.into(),
         }
-    }
-
-    pub fn index(&self) -> usize {
-        self.index
     }
 
     pub fn poly(&self) -> usize {
@@ -168,22 +161,16 @@ impl<F: Clone> Expression<F> {
     }
 
     pub fn degree(&self) -> usize {
-        match self {
-            Expression::Constant(_) => 0,
-            Expression::CommonPolynomial(_) => 1,
-            Expression::Polynomial(_) => 1,
-            Expression::Challenge(_) => 0,
-            Expression::Negated(a) => a.degree(),
-            Expression::Sum(a, b) => max(a.degree(), b.degree()),
-            Expression::Product(a, b) => a.degree() + b.degree(),
-            Expression::Scaled(a, _) => a.degree(),
-            Expression::DistributePowers(a, b) => a
-                .iter()
-                .chain(Some(b.as_ref()))
-                .map(Self::degree)
-                .max()
-                .unwrap_or_default(),
-        }
+        self.evaluate(
+            &|_| 0,
+            &|_| 1,
+            &|_| 1,
+            &|_| 0,
+            &|a| a,
+            &|a, b| a.max(b),
+            &|a, b| a + b,
+            &|a, _| a,
+        )
     }
 
     pub fn used_langrange(&self) -> BTreeSet<i32> {
@@ -234,6 +221,28 @@ impl<F: Clone> Expression<F> {
             &|a, _| a,
         )
         .unwrap_or_default()
+    }
+
+    pub fn used_rotation(&self) -> BTreeSet<Rotation> {
+        self.evaluate(
+            &|_| None,
+            &|_| None,
+            &|query| Some(BTreeSet::from_iter([query.rotation])),
+            &|_| None,
+            &|a| a,
+            &merge_left_right,
+            &merge_left_right,
+            &|a, _| a,
+        )
+        .unwrap_or_default()
+    }
+
+    pub fn max_used_rotation_distance(&self) -> usize {
+        self.used_rotation()
+            .into_iter()
+            .map(|rotation| rotation.0.unsigned_abs())
+            .max()
+            .unwrap_or_default() as usize
     }
 }
 
@@ -300,6 +309,13 @@ impl<F: Clone> Neg for &Expression<F> {
 impl<F: Clone + Default> Sum for Expression<F> {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.reduce(|acc, item| acc + item)
+            .unwrap_or_else(|| Expression::Constant(F::default()))
+    }
+}
+
+impl<F: Clone + Default> Product for Expression<F> {
+    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, item| acc * item)
             .unwrap_or_else(|| Expression::Constant(F::default()))
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    pcs::PolynomialCommitmentScheme,
+    pcs::{Evaluation, PolynomialCommitmentScheme},
     poly::univariate::UnivariatePolynomial,
     util::{
         arithmetic::{
@@ -15,7 +15,7 @@ use crate::{
 use rand::RngCore;
 use std::{iter, marker::PhantomData, ops::Neg};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
@@ -51,13 +51,7 @@ pub struct UnivariateKzgVerifierParam<M: MultiMillerLoop> {
     pub s_g2: M::G2Affine,
 }
 
-#[derive(Clone, Debug)]
-pub struct UnivariateKzgBatchProof<M: MultiMillerLoop> {
-    quotients: Vec<M::G1Affine>,
-}
-
 impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg<M> {
-    type Config = usize;
     type Param = UnivariateKzgParam<M>;
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
@@ -65,16 +59,14 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type Point = M::Scalar;
     type Commitment = M::G1Affine;
     type BatchCommitment = Vec<M::G1Affine>;
-    type Proof = M::G1Affine;
-    type BatchProof = UnivariateKzgBatchProof<M>;
 
-    fn setup(degree: Self::Config, rng: impl RngCore) -> Result<Self::Param, Error> {
+    fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         let s = M::Scalar::random(rng);
 
         let g1 = M::G1Affine::generator();
         let powers_of_s = {
-            let powers_of_s = powers(s).take(degree + 1).collect_vec();
-            let window_size = window_size(degree);
+            let powers_of_s = powers(s).take(size).collect_vec();
+            let window_size = window_size(size);
             let window_table = window_table(window_size, g1);
             let powers_of_s_projective = fixed_base_msm(window_size, &window_table, &powers_of_s);
 
@@ -101,16 +93,16 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 
     fn trim(
         param: &Self::Param,
-        degree: Self::Config,
+        size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        if param.degree() < degree {
+        if param.powers_of_s.len() < size {
             return Err(Error::InvalidPcsParam(format!(
-                "Too large degree to trim to (param supports degree up to {} but got {degree})",
-                param.degree()
+                "Too large size to trim to (param supports size up to {} but got {size})",
+                param.powers_of_s.len(),
             )));
         }
 
-        let powers_of_s = param.powers_of_s[..=degree].to_vec();
+        let powers_of_s = param.powers_of_s[..size].to_vec();
         let pp = Self::ProverParam {
             g1: param.g1,
             powers_of_s,
@@ -146,7 +138,9 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         point: &Self::Point,
-    ) -> Result<(M::Scalar, Self::Proof), Error> {
+        eval: &M::Scalar,
+        transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
+    ) -> Result<(), Error> {
         if pp.degree() < poly.degree() - 1 {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large degree of poly to open (param supports degree up to {} but got {})",
@@ -157,26 +151,37 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 
         let divisor = Self::Polynomial::new(vec![point.neg(), M::Scalar::one()]);
         let (quotient, remainder) = poly.div_rem(&divisor);
-        let eval = remainder[0];
-        let proof = variable_base_msm(&quotient[..], &pp.powers_of_s[..=quotient.degree()]).into();
-        Ok((eval, proof))
+
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(&remainder[0], eval);
+        }
+
+        transcript.write_commitment(
+            variable_base_msm(&quotient[..], &pp.powers_of_s[..=quotient.degree()]).into(),
+        )?;
+
+        Ok(())
     }
 
     // TODO: Implement 2020/081
-    fn batch_open(
+    fn batch_open<'a>(
         pp: &Self::ProverParam,
-        polys: &[Self::Polynomial],
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         points: &[Self::Point],
-        _: &mut impl TranscriptWrite<M::Scalar>,
-    ) -> Result<(Vec<M::Scalar>, Self::BatchProof), Error> {
-        let (evals, quotients) = polys
-            .iter()
-            .zip(points)
-            .map(|(poly, point)| Self::open(pp, poly, point))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .unzip();
-        Ok((evals, UnivariateKzgBatchProof { quotients }))
+        evals: &[Evaluation<M::Scalar>],
+        transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
+    ) -> Result<(), Error> {
+        let polys = polys.into_iter().collect_vec();
+        for eval in evals {
+            Self::open(
+                pp,
+                polys[eval.poly()],
+                &points[eval.point()],
+                eval.value(),
+                transcript,
+            )?;
+        }
+        Ok(())
     }
 
     fn verify(
@@ -184,11 +189,12 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         comm: &Self::Commitment,
         point: &Self::Point,
         eval: &M::Scalar,
-        proof: &Self::Proof,
+        transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        let lhs = &(*proof * point + comm - vp.g1 * eval).into();
-        let rhs = proof;
-        M::pairings_product_is_identity(&[(lhs, &vp.g2.neg().into()), (rhs, &vp.s_g2.into())])
+        let quotient = transcript.read_commitment()?;
+        let lhs = (quotient * point + comm - vp.g1 * eval).into();
+        let rhs = quotient;
+        M::pairings_product_is_identity(&[(&lhs, &vp.g2.neg().into()), (&rhs, &vp.s_g2.into())])
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsProof("Invalid univariate KZG proof".to_string()))
     }
@@ -197,28 +203,26 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         vp: &Self::VerifierParam,
         batch_comm: &Self::BatchCommitment,
         points: &[Self::Point],
-        evals: &[M::Scalar],
-        batch_proof: &Self::BatchProof,
-        transcript: &mut impl TranscriptRead<M::Scalar>,
+        evals: &[Evaluation<M::Scalar>],
+        transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        let seps = transcript.squeeze_n_challenges(points.len());
+        let quotients = transcript.read_n_commitments(evals.len())?;
+        let seps = transcript.squeeze_n_challenges(evals.len());
         let sep_points = seps
             .iter()
-            .zip(points.iter())
-            .map(|(sep, point)| *sep * point)
+            .zip(evals.iter())
+            .map(|(sep, eval)| *sep * &points[eval.point()])
             .collect_vec();
         let lhs = &variable_base_msm(
-            iter::once(&-inner_product(evals, &seps))
+            iter::once(&-inner_product(evals.iter().map(Evaluation::value), &seps))
                 .chain(&seps)
-                .chain(&sep_points)
-                .collect_vec(),
+                .chain(&sep_points),
             iter::once(&vp.g1)
-                .chain(batch_comm)
-                .chain(&batch_proof.quotients)
-                .collect_vec(),
+                .chain(evals.iter().map(|eval| &batch_comm[eval.poly()]))
+                .chain(&quotients),
         )
         .into();
-        let rhs = &variable_base_msm(&seps, &batch_proof.quotients).into();
+        let rhs = &variable_base_msm(&seps, &quotients).into();
         M::pairings_product_is_identity(&[(lhs, &vp.g2.neg().into()), (rhs, &vp.s_g2.into())])
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsProof("Invalid univariate KZG batch proof".to_string()))
@@ -228,10 +232,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::{
-            univariate_kzg::{UnivariateKzg, UnivariateKzgBatchProof},
-            PolynomialCommitmentScheme,
-        },
+        pcs::{univariate_kzg::UnivariateKzg, Evaluation, PolynomialCommitmentScheme},
         util::{
             transcript::{self, Transcript, TranscriptRead, TranscriptWrite},
             Itertools,
@@ -250,9 +251,9 @@ mod test {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
-            let degree = (1 << 10) - 1;
-            let param = Pcs::setup(degree, &mut rng).unwrap();
-            Pcs::trim(&param, degree).unwrap()
+            let size = 1 << 10;
+            let param = Pcs::setup(size, &mut rng).unwrap();
+            Pcs::trim(&param, size).unwrap()
         };
         // Commit and open
         let proof = {
@@ -262,9 +263,9 @@ mod test {
                 .write_commitment(Pcs::commit(&pp, &poly).unwrap())
                 .unwrap();
             let point = transcript.squeeze_challenge();
-            let (eval, proof) = Pcs::open(&pp, &poly, &point).unwrap();
+            let eval = poly.evaluate(&point);
             transcript.write_scalar(eval).unwrap();
-            transcript.write_commitment(proof).unwrap();
+            Pcs::open(&pp, &poly, &point, &eval, &mut transcript).unwrap();
             transcript.finalize()
         };
         // Verify
@@ -275,7 +276,7 @@ mod test {
                 &transcript.read_commitment().unwrap(),
                 &transcript.squeeze_challenge(),
                 &transcript.read_scalar().unwrap(),
-                &transcript.read_commitment().unwrap(),
+                &mut transcript,
             )
             .is_ok()
         };
@@ -287,9 +288,9 @@ mod test {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
-            let degree = (1 << 10) - 1;
-            let param = Pcs::setup(degree, &mut rng).unwrap();
-            Pcs::trim(&param, degree).unwrap()
+            let size = 1 << 10;
+            let param = Pcs::setup(size, &mut rng).unwrap();
+            Pcs::trim(&param, size).unwrap()
         };
         // Batch commit and open
         let batch_size = 4;
@@ -302,14 +303,16 @@ mod test {
                 transcript.write_commitment(comm).unwrap();
             }
             let points = transcript.squeeze_n_challenges(batch_size);
-            let (evals, batch_proof) =
-                Pcs::batch_open(&pp, &polys, &points, &mut transcript).unwrap();
-            for eval in evals {
-                transcript.write_scalar(eval).unwrap();
+            let evals = polys
+                .iter()
+                .zip(points.iter())
+                .enumerate()
+                .map(|(idx, (poly, point))| Evaluation::new(idx, idx, poly.evaluate(point)))
+                .collect_vec();
+            for eval in evals.iter() {
+                transcript.write_scalar(*eval.value()).unwrap();
             }
-            for quotient in batch_proof.quotients {
-                transcript.write_commitment(quotient).unwrap();
-            }
+            Pcs::batch_open(&pp, &polys, &points, &evals, &mut transcript).unwrap();
             transcript.finalize()
         };
         // Batch verify
@@ -319,10 +322,13 @@ mod test {
                 &vp,
                 &transcript.read_n_commitments(batch_size).unwrap(),
                 &transcript.squeeze_n_challenges(batch_size),
-                &transcript.read_n_scalars(batch_size).unwrap(),
-                &UnivariateKzgBatchProof {
-                    quotients: transcript.read_n_commitments(batch_size).unwrap(),
-                },
+                &transcript
+                    .read_n_scalars(batch_size)
+                    .unwrap()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, eval)| Evaluation::new(idx, idx, eval))
+                    .collect_vec(),
                 &mut transcript,
             )
             .is_ok()

@@ -48,7 +48,7 @@ impl<F: Field> UnivariatePolynomial<F> {
         )
     }
 
-    pub fn evaluate(&self, x: F) -> F {
+    pub fn evaluate(&self, x: &F) -> F {
         let num_threads = num_threads();
         if self.coeffs().len() * 2 < num_threads {
             return horner(&self.0, x);
@@ -188,6 +188,40 @@ impl<F: Field> AddAssign<F> for UnivariatePolynomial<F> {
 impl<F: Field> SubAssign<F> for UnivariatePolynomial<F> {
     fn sub_assign(&mut self, rhs: F) {
         self.0[0] -= rhs;
+    }
+}
+
+impl<'lhs, F: Field> Mul<F> for &'lhs UnivariatePolynomial<F> {
+    type Output = UnivariatePolynomial<F>;
+
+    fn mul(self, rhs: F) -> UnivariatePolynomial<F> {
+        let mut output = self.clone();
+        output *= rhs;
+        output
+    }
+}
+
+impl<F: Field> MulAssign<F> for UnivariatePolynomial<F> {
+    fn mul_assign(&mut self, rhs: F) {
+        parallelize(&mut self.0, |(lhs, _)| {
+            for lhs in lhs.iter_mut() {
+                *lhs *= rhs;
+            }
+        });
+    }
+}
+
+impl<F: Field> Sum<UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
+    fn sum<I: Iterator<Item = UnivariatePolynomial<F>>>(mut iter: I) -> UnivariatePolynomial<F> {
+        let init = match (iter.next(), iter.next()) {
+            (Some(lhs), Some(rhs)) => &lhs + &rhs,
+            (Some(lhs), None) => return lhs,
+            _ => unreachable!(),
+        };
+        iter.fold(init, |mut acc, poly| {
+            acc += &poly;
+            acc
+        })
     }
 }
 

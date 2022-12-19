@@ -1,9 +1,9 @@
 #![allow(clippy::op_ref)]
 
 pub mod pcs;
-pub mod plonk;
+pub mod piop;
 pub mod poly;
-pub mod sum_check;
+pub mod snark;
 pub mod util;
 
 #[derive(Clone, Debug)]

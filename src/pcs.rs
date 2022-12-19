@@ -11,8 +11,7 @@ use std::fmt::Debug;
 pub mod multilinear_kzg;
 pub mod univariate_kzg;
 
-pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
-    type Config: Debug + Copy;
+pub trait PolynomialCommitmentScheme<F: Field>: Debug {
     type Param: Debug;
     type ProverParam: Debug;
     type VerifierParam: Debug;
@@ -21,11 +20,11 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type Commitment: Debug;
     type BatchCommitment: Debug;
 
-    fn setup(config: Self::Config, rng: impl RngCore) -> Result<Self::Param, Error>;
+    fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error>;
 
     fn trim(
         param: &Self::Param,
-        config: Self::Config,
+        size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error>;
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error>;

@@ -15,7 +15,7 @@ use crate::{
 use rand::RngCore;
 use std::{iter, marker::PhantomData, ops::Neg};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
@@ -52,7 +52,6 @@ pub struct UnivariateKzgVerifierParam<M: MultiMillerLoop> {
 }
 
 impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg<M> {
-    type Config = usize;
     type Param = UnivariateKzgParam<M>;
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
@@ -61,13 +60,13 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type Commitment = M::G1Affine;
     type BatchCommitment = Vec<M::G1Affine>;
 
-    fn setup(degree: Self::Config, rng: impl RngCore) -> Result<Self::Param, Error> {
+    fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         let s = M::Scalar::random(rng);
 
         let g1 = M::G1Affine::generator();
         let powers_of_s = {
-            let powers_of_s = powers(s).take(degree + 1).collect_vec();
-            let window_size = window_size(degree);
+            let powers_of_s = powers(s).take(size).collect_vec();
+            let window_size = window_size(size);
             let window_table = window_table(window_size, g1);
             let powers_of_s_projective = fixed_base_msm(window_size, &window_table, &powers_of_s);
 
@@ -94,16 +93,16 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 
     fn trim(
         param: &Self::Param,
-        degree: Self::Config,
+        size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        if param.degree() < degree {
+        if param.powers_of_s.len() < size {
             return Err(Error::InvalidPcsParam(format!(
-                "Too large degree to trim to (param supports degree up to {} but got {degree})",
-                param.degree()
+                "Too large size to trim to (param supports size up to {} but got {size})",
+                param.powers_of_s.len(),
             )));
         }
 
-        let powers_of_s = param.powers_of_s[..=degree].to_vec();
+        let powers_of_s = param.powers_of_s[..size].to_vec();
         let pp = Self::ProverParam {
             g1: param.g1,
             powers_of_s,
@@ -252,9 +251,9 @@ mod test {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
-            let degree = (1 << 10) - 1;
-            let param = Pcs::setup(degree, &mut rng).unwrap();
-            Pcs::trim(&param, degree).unwrap()
+            let size = 1 << 10;
+            let param = Pcs::setup(size, &mut rng).unwrap();
+            Pcs::trim(&param, size).unwrap()
         };
         // Commit and open
         let proof = {
@@ -289,9 +288,9 @@ mod test {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
-            let degree = (1 << 10) - 1;
-            let param = Pcs::setup(degree, &mut rng).unwrap();
-            Pcs::trim(&param, degree).unwrap()
+            let size = 1 << 10;
+            let param = Pcs::setup(size, &mut rng).unwrap();
+            Pcs::trim(&param, size).unwrap()
         };
         // Batch commit and open
         let batch_size = 4;

@@ -68,8 +68,11 @@ impl<F: Field> MultilinearPolynomial<F> {
         }
     }
 
-    pub fn zero() -> Self {
-        Self::new(Vec::new())
+    pub const fn zero() -> Self {
+        Self {
+            evals: Vec::new(),
+            num_vars: 0,
+        }
     }
 
     pub fn is_zero(&self) -> bool {

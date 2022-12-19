@@ -80,7 +80,7 @@ pub struct BooleanHypercube {
 }
 
 impl BooleanHypercube {
-    pub fn new(num_vars: usize) -> Self {
+    pub const fn new(num_vars: usize) -> Self {
         assert!(num_vars <= 31);
         Self {
             num_vars,
@@ -89,11 +89,11 @@ impl BooleanHypercube {
         }
     }
 
-    pub fn primitive(&self) -> usize {
+    pub const fn primitive(&self) -> usize {
         self.primitive
     }
 
-    pub fn x_inv(&self) -> usize {
+    pub const fn x_inv(&self) -> usize {
         self.x_inv
     }
 

@@ -16,21 +16,20 @@ pub(crate) mod test {
     use rand::RngCore;
     use std::{array, hash::Hash, iter, mem};
 
-    /// Gates described in 2019/953 (first row is not copyable)
+    /// Constraints described in 2019/953 (first row is not copyable)
     pub fn plonk_expression<F: Field>() -> Expression<F> {
         let [q_l, q_r, q_m, q_o, q_c, s_1, s_2, s_3, pi, w_l, w_r, w_o] =
-            &array::from_fn(|poly| Query::new(poly, poly, Rotation::cur()))
-                .map(Expression::Polynomial);
+            &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
         let [z, z_next] = &[
-            Query::new(12, 12, Rotation::cur()),
-            Query::new(13, 12, Rotation::next()),
+            Query::new(12, Rotation::cur()),
+            Query::new(12, Rotation::next()),
         ]
         .map(Expression::Polynomial);
         let [beta, gamma, alpha] = &[0, 1, 2].map(Expression::<F>::Challenge);
         let [id_1, id_2, id_3] = array::from_fn(|idx| Expression::identity(idx));
-        let l_1 = Expression::lagrange(1);
+        let l_1 = Expression::<F>::lagrange(1);
         let one = Expression::Constant(F::one());
-        let gates = {
+        let constraints = {
             vec![
                 q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c - pi,
                 ((w_l + beta * id_1 + gamma)
@@ -41,42 +40,41 @@ pub(crate) mod test {
                         * (w_r + beta * s_2 + gamma)
                         * (w_o + beta * s_3 + gamma))
                         * z_next,
-                (z - one) * l_1,
+                l_1 * (z - one),
             ]
         };
         let eq = Expression::eq_xy(0);
-        Expression::random_linear_combine(&gates, alpha) * eq
+        Expression::random_linear_combine(&constraints, alpha) * eq
     }
 
-    /// Gates described similar to the one in 2022/086 (first row is not copyable)
+    /// Constraints described similar to the one in 2022/086 (first row is not copyable)
     pub fn plonkup_expression<F: Field>() -> Expression<F> {
         let [q_l, q_r, q_m, q_o, q_c, q_lookup, s_1, s_2, s_3, t_l, t_r, t_o, pi, w_l, w_r, w_o] =
-            &array::from_fn(|poly| Query::new(poly, poly, Rotation::cur()))
-                .map(Expression::Polynomial);
-        let [t_l_next, t_r_next, t_o_next] = &[(16, 9), (17, 10), (18, 11)]
-            .map(|(idx, poly)| Query::new(idx, poly, Rotation::next()))
+            &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
+        let [t_l_next, t_r_next, t_o_next] = &[9, 10, 11]
+            .map(|poly| Query::new(poly, Rotation::next()))
             .map(Expression::Polynomial);
         let [h_1, h_1_next, h_2] = &[
-            Query::new(19, 16, Rotation::cur()),
-            Query::new(20, 16, Rotation::next()),
-            Query::new(21, 17, Rotation::cur()),
+            Query::new(16, Rotation::cur()),
+            Query::new(16, Rotation::next()),
+            Query::new(17, Rotation::cur()),
         ]
         .map(Expression::Polynomial);
         let [z_perm, z_perm_next] = &[
-            Query::new(22, 18, Rotation::cur()),
-            Query::new(23, 18, Rotation::next()),
+            Query::new(18, Rotation::cur()),
+            Query::new(18, Rotation::next()),
         ]
         .map(Expression::Polynomial);
         let [z_lookup, z_lookup_next] = &[
-            Query::new(24, 19, Rotation::cur()),
-            Query::new(25, 19, Rotation::next()),
+            Query::new(19, Rotation::cur()),
+            Query::new(19, Rotation::next()),
         ]
         .map(Expression::Polynomial);
         let [theta, beta, gamma, alpha] = &[0, 1, 2, 3].map(Expression::<F>::Challenge);
         let [id_1, id_2, id_3] = array::from_fn(|idx| Expression::identity(idx));
-        let l_1 = &Expression::lagrange(1);
+        let l_1 = &Expression::<F>::lagrange(1);
         let one = &Expression::Constant(F::one());
-        let gates = {
+        let constraints = {
             vec![
                 q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c - pi,
                 ((w_l + beta * id_1 + gamma)
@@ -87,7 +85,7 @@ pub(crate) mod test {
                         * (w_r + beta * s_2 + gamma)
                         * (w_o + beta * s_3 + gamma))
                         * z_perm_next,
-                (z_perm - one) * l_1,
+                l_1 * (z_perm - one),
                 {
                     let f = q_lookup * Expression::random_linear_combine([w_l, w_r, w_o], theta);
                     let t = Expression::random_linear_combine([t_l, t_r, t_o], theta);
@@ -98,11 +96,11 @@ pub(crate) mod test {
                             * (h_2 + beta * h_1_next + gamma)
                             * z_lookup_next
                 },
-                (z_lookup - one) * l_1,
+                l_1 * (z_lookup - one),
             ]
         };
         let eq = Expression::eq_xy(0);
-        Expression::random_linear_combine(&gates, alpha) * eq
+        Expression::random_linear_combine(&constraints, alpha) * eq
     }
 
     pub fn rand_plonk_assignments<F: PrimeField>(

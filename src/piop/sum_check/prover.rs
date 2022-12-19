@@ -1,9 +1,9 @@
 use crate::{
-    piop::sum_check::VirtualPolynomial,
+    piop::sum_check::VirtualPolynomialInfo,
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{BooleanHypercube, PrimeField},
-        expression::{CommonPolynomial, Rotation},
+        expression::{CommonPolynomial, Query, Rotation},
         num_threads, parallelize_iter, Itertools,
     },
 };
@@ -11,42 +11,70 @@ use num_integer::Integer;
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, HashMap},
+    collections::{HashMap, HashSet},
+    mem,
     ops::Range,
 };
 
 #[derive(Debug)]
+pub struct VirtualPolynomial<'a, F> {
+    pub(crate) info: &'a VirtualPolynomialInfo<F>,
+    pub(crate) polys: Vec<&'a MultilinearPolynomial<F>>,
+    pub(crate) challenges: Vec<F>,
+    pub(crate) ys: Vec<Vec<F>>,
+}
+
+impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
+    pub fn new(
+        info: &'a VirtualPolynomialInfo<F>,
+        polys: impl IntoIterator<Item = &'a MultilinearPolynomial<F>>,
+        challenges: Vec<F>,
+        ys: Vec<Vec<F>>,
+    ) -> Self {
+        Self {
+            info,
+            polys: polys.into_iter().collect(),
+            challenges,
+            ys,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ProvingState<'a, F: PrimeField> {
-    virtual_poly: &'a VirtualPolynomial<'a, F>,
+    num_vars: usize,
+    virtual_poly: VirtualPolynomial<'a, F>,
     lagranges: HashMap<(i32, usize), (bool, F)>,
     eq_xys: Vec<MultilinearPolynomial<F>>,
     identities: Vec<F>,
-    polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
+    polys: Vec<Vec<Cow<'a, MultilinearPolynomial<F>>>>,
     round: usize,
     prev_map: Vec<usize>,
     next_map: Vec<usize>,
 }
 
 impl<'a, F: PrimeField> ProvingState<'a, F> {
-    pub fn new(virtual_poly: &'a VirtualPolynomial<F>) -> Self {
-        let bh = BooleanHypercube::new(virtual_poly.info.num_vars());
-        let idx_map = bh.idx_map();
+    pub fn new(num_vars: usize, virtual_poly: VirtualPolynomial<'a, F>) -> Self {
         let expression = virtual_poly.info.expression();
-        let lagranges = expression
-            .used_langrange()
-            .into_iter()
-            .map(|i| {
-                let b = idx_map[i.rem_euclid((1 << virtual_poly.info.num_vars()) as i32) as usize];
-                ((i, b >> 1), (b.is_even(), F::one()))
-            })
-            .collect();
+        assert!(num_vars > 0 && expression.max_used_rotation_distance() <= num_vars);
+        let lagranges = {
+            let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
+            expression
+                .used_langrange()
+                .into_iter()
+                .map(|i| {
+                    let b = bh[i.rem_euclid(1 << num_vars) as usize];
+                    ((i, b >> 1), (b.is_even(), F::one()))
+                })
+                .collect()
+        };
         let eq_xys = virtual_poly
             .ys
             .iter()
             .map(|y| MultilinearPolynomial::eq_xy(y))
             .collect_vec();
         let identities = (0..)
-            .map(|idx| F::from((idx as u64) << virtual_poly.info.num_vars()))
+            .map(|idx| F::from((idx as u64) << num_vars))
             .take(
                 expression
                     .used_identity()
@@ -56,36 +84,30 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                     + 1,
             )
             .collect_vec();
-        let polys = {
-            let query_idx_to_poly = expression
-                .used_query()
-                .into_iter()
-                .map(|query| (query.index(), query.poly()))
-                .collect::<BTreeMap<_, _>>();
-            (0..)
-                .map(|idx| {
-                    query_idx_to_poly
-                        .get(&idx)
-                        .map(|poly| Cow::Borrowed(virtual_poly.polys[*poly]))
-                        .unwrap_or_else(|| Cow::Owned(MultilinearPolynomial::zero()))
-                })
-                .take(query_idx_to_poly.keys().max().cloned().unwrap_or_default() + 1)
-                .collect_vec()
-        };
+        let polys = virtual_poly
+            .polys
+            .iter()
+            .map(|poly| {
+                let mut polys = vec![Cow::Owned(MultilinearPolynomial::zero()); 2 * num_vars];
+                polys[num_vars] = Cow::Borrowed(*poly);
+                polys
+            })
+            .collect_vec();
         Self {
+            num_vars,
             virtual_poly,
             lagranges,
             eq_xys,
             identities,
             polys,
             round: 0,
-            prev_map: bh.prev_map(),
-            next_map: bh.next_map(),
+            prev_map: BooleanHypercube::new(num_vars).prev_map(),
+            next_map: BooleanHypercube::new(num_vars).next_map(),
         }
     }
 
     pub fn sample_evals(&self) -> Vec<F> {
-        let size = 1 << (self.virtual_poly.info.num_vars() - self.round - 1);
+        let size = 1 << (self.num_vars - self.round - 1);
         let points = self
             .virtual_poly
             .info
@@ -149,43 +171,52 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             .iter_mut()
             .for_each(|constant| *constant += challenge * F::from(1 << self.round));
         if self.round == 0 {
-            let query_idx_to_rotation = self
+            let poly_rotations = self
                 .virtual_poly
                 .info
                 .expression()
                 .used_query()
                 .into_iter()
-                .map(|query| (query.index(), query.rotation()))
-                .collect::<BTreeMap<_, _>>();
-            self.polys = self
-                .polys
-                .iter()
-                .enumerate()
-                .map(|(idx, poly)| {
-                    match (poly.is_zero(), query_idx_to_rotation.get(&idx).copied()) {
-                        (true, _) => MultilinearPolynomial::zero(),
-                        (false, Some(Rotation(0))) => poly.fix_variables(&[challenge]),
-                        (false, Some(rotation)) => {
-                            let poly = MultilinearPolynomial::new(
-                                (0..1 << self.virtual_poly.info.num_vars())
+                .fold(
+                    vec![HashSet::<_>::new(); self.polys.len()],
+                    |mut poly_rotations, query| {
+                        if query.rotation().0 != 0 {
+                            poly_rotations[query.poly()].insert(query.rotation());
+                        }
+                        poly_rotations
+                    },
+                );
+            self.polys = mem::take(&mut self.polys)
+                .into_iter()
+                .zip(poly_rotations)
+                .map(|(mut polys, rotations)| {
+                    for rotation in rotations {
+                        let idx = (rotation.0 + self.num_vars as i32) as usize;
+                        polys[idx] = {
+                            let poly = &polys[self.num_vars];
+                            let rotated = MultilinearPolynomial::new(
+                                (0..1 << self.num_vars)
                                     .map(|b| poly[self.rotate(b, rotation)])
                                     .collect_vec(),
                             );
-                            poly.fix_variables(&[challenge])
-                        }
-                        _ => unreachable!(),
+                            Cow::Owned(rotated.fix_variables(&[challenge]))
+                        };
                     }
+                    polys[self.num_vars] =
+                        Cow::Owned(polys[self.num_vars].fix_variables(&[challenge]));
+                    polys
                 })
-                .map(Cow::Owned)
-                .collect_vec();
+                .collect();
         } else {
-            self.polys.iter_mut().for_each(|poly| {
-                if !poly.is_zero() {
-                    *poly = Cow::Owned(poly.fix_variables(&[challenge]));
-                }
+            self.polys.iter_mut().for_each(|polys| {
+                polys.iter_mut().for_each(|poly| {
+                    if !poly.is_zero() {
+                        *poly = Cow::Owned(poly.fix_variables(&[challenge]));
+                    }
+                });
             });
         }
-        let bh = BooleanHypercube::new(self.virtual_poly.info.num_vars() - self.round - 1);
+        let bh = BooleanHypercube::new(self.num_vars - self.round - 1);
         self.prev_map = bh.prev_map();
         self.next_map = bh.next_map();
         self.round += 1;
@@ -219,7 +250,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                     } else {
                         (b << 1, (b << 1) + 1)
                     };
-                    let poly = &self.polys[query.index()];
+                    let poly = self.poly::<IS_FIRST_ROUND>(query);
                     poly[b_0] + (poly[b_1] - poly[b_0]) * point
                 },
                 &|idx| self.virtual_poly.challenges[idx],
@@ -230,6 +261,14 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             );
         }
         sum
+    }
+
+    fn poly<const IS_FIRST_ROUND: bool>(&self, query: Query) -> &MultilinearPolynomial<F> {
+        if IS_FIRST_ROUND {
+            &self.polys[query.poly()][self.num_vars]
+        } else {
+            &self.polys[query.poly()][(query.rotation().0 + self.num_vars as i32) as usize]
+        }
     }
 
     fn lagrange(&self, i: i32, b: usize, point: &F) -> F {

@@ -4,10 +4,10 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            fixed_base_msm, inner_product, powers, variable_base_msm, window_size, window_table,
-            Curve, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
+            fixed_base_msm, ilog2, inner_product, powers, variable_base_msm, window_size,
+            window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
         },
-        expression::{Expression, Query},
+        expression::{Expression, Query, Rotation},
         num_threads, parallelize, parallelize_iter,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
@@ -18,7 +18,7 @@ use num_integer::Integer;
 use rand::RngCore;
 use std::{iter, marker::PhantomData, ops::Neg};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
@@ -69,7 +69,6 @@ impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
 }
 
 impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKzg<M> {
-    type Config = usize;
     type Param = MultilinearKzgParams<M>;
     type ProverParam = MultilinearKzgProverParams<M>;
     type VerifierParam = MultilinearKzgVerifierParams<M>;
@@ -78,7 +77,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type Commitment = M::G1Affine;
     type BatchCommitment = Vec<M::G1Affine>;
 
-    fn setup(num_vars: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
+    fn setup(size: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
+        let num_vars = ilog2(size);
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
             .take(num_vars)
             .collect_vec();
@@ -152,8 +152,9 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
 
     fn trim(
         param: &Self::Param,
-        num_vars: Self::Config,
+        size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
+        let num_vars = ilog2(size);
         if param.num_vars() < num_vars {
             return Err(Error::InvalidPcsParam(format!(
                 "Too many variates to trim to (param supports variates up to {} but got {})",
@@ -303,10 +304,10 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .zip(powers(t))
             .map(|(eval, power_of_t)| polys[eval.poly()] * power_of_t)
             .collect_vec();
-        let virtual_poly_info = virtual_poly_info(num_vars, evals);
+        let virtual_poly_info = virtual_poly_info(evals);
         let virtual_poly =
             VirtualPolynomial::new(&virtual_poly_info, &tilde_gs, Vec::new(), points.to_vec());
-        let challenges = sum_check::prove(&virtual_poly, transcript).unwrap();
+        let challenges = sum_check::prove(num_vars, virtual_poly, transcript).unwrap();
 
         let eq_xz_evals = points
             .iter()
@@ -395,7 +396,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let powers_of_t = powers(t).take(evals.len()).collect_vec();
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &powers_of_t);
         let (g_prime_eval, challenges) = sum_check::verify(
-            &virtual_poly_info(num_vars, evals),
+            num_vars,
+            &virtual_poly_info(evals),
             tilde_gs_sum,
             transcript,
         )?;
@@ -421,10 +423,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     }
 }
 
-fn virtual_poly_info<F: PrimeField>(
-    num_vars: usize,
-    evals: &[Evaluation<F>],
-) -> VirtualPolynomialInfo<F> {
+fn virtual_poly_info<F: PrimeField>(evals: &[Evaluation<F>]) -> VirtualPolynomialInfo<F> {
     let eq_xzs = evals
         .iter()
         .map(|eval| Expression::<F>::eq_xy(eval.point()))
@@ -432,9 +431,9 @@ fn virtual_poly_info<F: PrimeField>(
     let expression = eq_xzs
         .into_iter()
         .enumerate()
-        .map(|(idx, eq_xz)| Expression::<F>::Polynomial(Query::new(idx, idx, 0)) * eq_xz)
+        .map(|(idx, eq_xz)| Expression::<F>::Polynomial(Query::new(idx, Rotation::cur())) * eq_xz)
         .sum::<Expression<_>>();
-    VirtualPolynomialInfo::new(num_vars, expression)
+    VirtualPolynomialInfo::new(expression)
 }
 
 #[cfg(test)]
@@ -459,9 +458,9 @@ mod test {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
-            let (num_vars, num_vars_trim_to) = (10, 10);
-            let param = Pcs::setup(num_vars, &mut rng).unwrap();
-            Pcs::trim(&param, num_vars_trim_to).unwrap()
+            let size = 1 << 10;
+            let param = Pcs::setup(size, &mut rng).unwrap();
+            Pcs::trim(&param, size).unwrap()
         };
         // Commit and open
         let proof = {
@@ -496,9 +495,9 @@ mod test {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
-            let (num_vars, num_vars_trim_to) = (10, 5);
-            let param = Pcs::setup(num_vars, &mut rng).unwrap();
-            Pcs::trim(&param, num_vars_trim_to).unwrap()
+            let size = 1 << 10;
+            let param = Pcs::setup(size, &mut rng).unwrap();
+            Pcs::trim(&param, size).unwrap()
         };
         // Batch commit and open
         let batch_size = 4;

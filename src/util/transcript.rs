@@ -1,6 +1,6 @@
 use crate::{
     util::{
-        arithmetic::{fe_from_bytes_le, Coordinates, CurveAffine, MultiMillerLoop, PrimeField},
+        arithmetic::{fe_from_bytes_le, Coordinates, CurveAffine, PrimeField},
         Itertools,
     },
     Error,
@@ -65,10 +65,10 @@ impl<T> Keccak256Transcript<Vec<u8>, T> {
     }
 }
 
-impl<M: MultiMillerLoop, S> Transcript<M::Scalar> for Keccak256Transcript<S, M> {
-    type Commitment = M::G1Affine;
+impl<C: CurveAffine, S> Transcript<C::Scalar> for Keccak256Transcript<S, C> {
+    type Commitment = C;
 
-    fn squeeze_challenge(&mut self) -> M::Scalar {
+    fn squeeze_challenge(&mut self) -> C::Scalar {
         let empty_buf = self.buf.len() <= 0x20;
         let data = self
             .buf
@@ -96,24 +96,23 @@ impl<M: MultiMillerLoop, S> Transcript<M::Scalar> for Keccak256Transcript<S, M> 
         Ok(())
     }
 
-    fn common_scalar(&mut self, scalar: &M::Scalar) -> Result<(), Error> {
+    fn common_scalar(&mut self, scalar: &C::Scalar) -> Result<(), Error> {
         self.buf
             .extend(scalar.to_repr().as_ref().iter().rev().cloned());
         Ok(())
     }
 }
 
-impl<M: MultiMillerLoop, R: io::Read> TranscriptRead<M::Scalar> for Keccak256Transcript<R, M> {
+impl<C: CurveAffine, R: io::Read> TranscriptRead<C::Scalar> for Keccak256Transcript<R, C> {
     fn read_commitment(&mut self) -> Result<Self::Commitment, Error> {
-        let mut reprs = [<<M::G1Affine as CurveAffine>::Base as PrimeField>::Repr::default(); 2];
+        let mut reprs = [<<C as CurveAffine>::Base as PrimeField>::Repr::default(); 2];
         for repr in &mut reprs {
             self.stream
                 .read_exact(repr.as_mut())
                 .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
             repr.as_mut().reverse();
         }
-        let [x, y] =
-            reprs.map(<<M::G1Affine as CurveAffine>::Base as PrimeField>::from_repr_vartime);
+        let [x, y] = reprs.map(<<C as CurveAffine>::Base as PrimeField>::from_repr_vartime);
         let ec_point = x
             .zip(y)
             .and_then(|(x, y)| CurveAffine::from_xy(x, y).into())
@@ -127,13 +126,13 @@ impl<M: MultiMillerLoop, R: io::Read> TranscriptRead<M::Scalar> for Keccak256Tra
         Ok(ec_point)
     }
 
-    fn read_scalar(&mut self) -> Result<M::Scalar, Error> {
-        let mut repr = <M::Scalar as PrimeField>::Repr::default();
+    fn read_scalar(&mut self) -> Result<C::Scalar, Error> {
+        let mut repr = <C::Scalar as PrimeField>::Repr::default();
         self.stream
             .read_exact(repr.as_mut())
             .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
         repr.as_mut().reverse();
-        let scalar = M::Scalar::from_repr_vartime(repr).ok_or_else(|| {
+        let scalar = C::Scalar::from_repr_vartime(repr).ok_or_else(|| {
             Error::Transcript(
                 io::ErrorKind::Other,
                 "Invalid scalar encoding in proof".to_string(),
@@ -144,7 +143,7 @@ impl<M: MultiMillerLoop, R: io::Read> TranscriptRead<M::Scalar> for Keccak256Tra
     }
 }
 
-impl<M: MultiMillerLoop, W: io::Write> TranscriptWrite<M::Scalar> for Keccak256Transcript<W, M> {
+impl<C: CurveAffine, W: io::Write> TranscriptWrite<C::Scalar> for Keccak256Transcript<W, C> {
     fn write_commitment(&mut self, ec_point: Self::Commitment) -> Result<(), Error> {
         self.common_commitment(&ec_point)?;
         let coordinates = ec_point.coordinates().unwrap();
@@ -158,7 +157,7 @@ impl<M: MultiMillerLoop, W: io::Write> TranscriptWrite<M::Scalar> for Keccak256T
         Ok(())
     }
 
-    fn write_scalar(&mut self, scalar: M::Scalar) -> Result<(), Error> {
+    fn write_scalar(&mut self, scalar: C::Scalar) -> Result<(), Error> {
         self.common_scalar(&scalar)?;
         let mut repr = scalar.to_repr();
         repr.as_mut().reverse();

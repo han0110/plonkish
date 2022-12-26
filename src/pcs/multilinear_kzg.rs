@@ -18,7 +18,7 @@ use num_integer::Integer;
 use rand::RngCore;
 use std::{iter, marker::PhantomData, ops::Neg};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
@@ -245,7 +245,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                 });
                 remainder = next_remainder;
                 if quotient.len() == 1 {
-                    (pp.g1 * quotient[0]).into()
+                    variable_base_msm(&quotient, &[pp.g1]).into()
                 } else {
                     variable_base_msm(&quotient, pp.eq(poly.num_vars() - idx - 1)).into()
                 }
@@ -364,7 +364,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .collect_vec();
         M::pairings_product_is_identity(&lhs.iter().zip_eq(rhs.iter()).collect_vec())
             .then_some(())
-            .ok_or_else(|| Error::InvalidPcsProof("Invalid multilinear KZG proof".to_string()))
+            .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear KZG open".to_string()))
     }
 
     fn batch_verify(
@@ -395,7 +395,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let t = transcript.squeeze_challenge();
         let powers_of_t = powers(t).take(evals.len()).collect_vec();
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &powers_of_t);
-        let (g_prime_eval, challenges) = sum_check::verify(
+        let (g_prime_eval, challenges) = sum_check::verify_consistency(
             num_vars,
             &virtual_poly_info(evals),
             tilde_gs_sum,
@@ -441,7 +441,7 @@ mod test {
     use crate::{
         pcs::{multilinear_kzg::MultilinearKzg, Evaluation, PolynomialCommitmentScheme},
         util::{
-            transcript::{self, Transcript, TranscriptRead, TranscriptWrite},
+            transcript::{Keccak256Transcript, Transcript, TranscriptRead, TranscriptWrite},
             Itertools,
         },
     };
@@ -451,7 +451,6 @@ mod test {
 
     type Pcs = MultilinearKzg<Bn256>;
     type Polynomial = <Pcs as PolynomialCommitmentScheme<Fr>>::Polynomial;
-    type Keccak256Transcript<S> = transcript::Keccak256Transcript<S, Bn256>;
 
     #[test]
     fn test_commit_open_verify() {

@@ -90,7 +90,7 @@ pub fn variable_base_msm<'a, 'b, C: CurveAffine>(
     assert_eq!(scalars.len(), bases.len());
 
     let num_threads = num_threads();
-    if scalars.len() < num_threads {
+    if scalars.len() <= num_threads {
         let mut result = C::Curve::identity();
         variable_base_msm_serial(&scalars, &bases, &mut result);
         return result;

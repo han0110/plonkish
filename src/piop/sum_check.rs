@@ -1,5 +1,5 @@
 use crate::{
-    piop::sum_check::{prover::ProvingState, verifier::consistency_check},
+    piop::sum_check::prover::ProvingState,
     util::{
         arithmetic::PrimeField,
         transcript::{TranscriptRead, TranscriptWrite},
@@ -13,7 +13,7 @@ mod prover;
 mod verifier;
 
 pub use prover::VirtualPolynomial;
-pub use verifier::{eq_xy_eval, VirtualPolynomialInfo};
+pub use verifier::{eq_xy_eval, lagrange_eval, VirtualPolynomialInfo};
 
 pub fn prove<F: PrimeField>(
     num_vars: usize,
@@ -35,7 +35,7 @@ pub fn prove<F: PrimeField>(
     .try_collect()
 }
 
-pub fn verify<F: PrimeField>(
+pub fn verify_consistency<F: PrimeField>(
     num_vars: usize,
     virtual_poly_info: &VirtualPolynomialInfo<F>,
     sum: F,
@@ -49,21 +49,18 @@ pub fn verify<F: PrimeField>(
     })
     .take(num_vars)
     .try_collect::<_, Vec<_>, _>()?;
-    let eval = consistency_check(virtual_poly_info, &rounds, sum)?;
-    let challenges = rounds
-        .into_iter()
-        .map(|(_, challenge)| challenge)
-        .collect_vec();
-    Ok((eval, challenges))
+
+    verifier::verify_consistency(virtual_poly_info, sum, &rounds)
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
-        piop::sum_check::{prove, verify, VirtualPolynomial, VirtualPolynomialInfo},
-        poly::multilinear::{compute_rotation_eval, MultilinearPolynomial},
-        snark::hyperplonk::test::{
-            plonk_expression, plonkup_expression, rand_plonk_assignments, rand_plonkup_assignments,
+        piop::sum_check::{prove, verify_consistency, VirtualPolynomial, VirtualPolynomialInfo},
+        poly::multilinear::{rotation_eval, MultilinearPolynomial},
+        snark::hyperplonk::{
+            preprocess::test::{plonk_virtual_poly_info, plonk_with_lookup_virtual_poly_info},
+            test::{rand_plonk_assignment, rand_plonk_with_lookup_assignment},
         },
         util::{
             arithmetic::{BooleanHypercube, Field},
@@ -73,17 +70,17 @@ mod test {
             Itertools,
         },
     };
-    use halo2_curves::bn256::{Bn256, Fr};
+    use halo2_curves::bn256::{Fr, G1Affine};
     use rand::rngs::OsRng;
     use std::{iter, ops::Range};
 
     fn run_sum_check(
-        num_var_range: Range<usize>,
-        expression_fn: impl Fn(usize) -> Expression<Fr>,
+        num_vars_range: Range<usize>,
+        virtual_poly_info_fn: impl Fn(usize) -> VirtualPolynomialInfo<Fr>,
         assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
     ) {
-        for num_vars in num_var_range {
-            let virtual_poly_info = VirtualPolynomialInfo::new(expression_fn(num_vars));
+        for num_vars in num_vars_range {
+            let virtual_poly_info = virtual_poly_info_fn(num_vars);
             let (polys, challenges, y) = assignment_fn(num_vars);
             let proof = {
                 let virtual_poly = VirtualPolynomial::new(
@@ -92,32 +89,27 @@ mod test {
                     challenges.clone(),
                     vec![y.clone()],
                 );
-                let mut transcript = Keccak256Transcript::<_, Bn256>::new(Vec::new());
+                let mut transcript = Keccak256Transcript::<_, G1Affine>::new(Vec::new());
                 prove(num_vars, virtual_poly, &mut transcript).unwrap();
                 transcript.finalize()
             };
             let accept = {
-                let mut transcript = Keccak256Transcript::<_, Bn256>::new(proof.as_slice());
-                let (expected_eval, x) =
-                    verify(num_vars, &virtual_poly_info, Fr::zero(), &mut transcript).unwrap();
+                let mut transcript = Keccak256Transcript::<_, G1Affine>::new(proof.as_slice());
+                let (x_eval, x) =
+                    verify_consistency(num_vars, &virtual_poly_info, Fr::zero(), &mut transcript)
+                        .unwrap();
                 let evals = virtual_poly_info
                     .expression()
                     .used_query()
                     .into_iter()
                     .map(|query| {
-                        let eval = if query.rotation() == Rotation::cur() {
-                            polys[query.poly()].evaluate(&x)
-                        } else {
-                            compute_rotation_eval(
-                                &x,
-                                query.rotation().0,
-                                &polys[query.poly()].evaluate_for_rotation(&x, query.rotation().0),
-                            )
-                        };
+                        let evaluate_for_rotation =
+                            polys[query.poly()].evaluate_for_rotation(&x, query.rotation());
+                        let eval = rotation_eval(&x, query.rotation(), &evaluate_for_rotation);
                         (query, eval)
                     })
                     .collect();
-                expected_eval == virtual_poly_info.evaluate(num_vars, &evals, &challenges, &[y], &x)
+                x_eval == virtual_poly_info.evaluate(num_vars, &evals, &challenges, &[&y], &x)
             };
             assert!(accept);
         }
@@ -139,7 +131,7 @@ mod test {
                     })
                     .collect_vec();
                 let alpha = Expression::Challenge(0);
-                Expression::random_linear_combine(&gates, &alpha)
+                VirtualPolynomialInfo::new(Expression::distribute_powers(&gates, &alpha))
             },
             |num_vars| {
                 let polys = BooleanHypercube::new(num_vars)
@@ -164,19 +156,22 @@ mod test {
                 let polys = (-(num_vars as i32) + 1..num_vars as i32)
                     .rev()
                     .enumerate()
-                    .map(|(idx, rotation)| Expression::Polynomial(Query::new(idx, rotation)))
+                    .map(|(idx, rotation)| Expression::Polynomial(Query::new(idx, rotation.into())))
                     .collect_vec();
                 let gates = polys
                     .windows(2)
                     .map(|polys| &polys[1] - &polys[0])
                     .collect_vec();
                 let alpha = Expression::Challenge(0);
-                Expression::random_linear_combine(&gates, &alpha)
+                VirtualPolynomialInfo::new(Expression::distribute_powers(&gates, &alpha))
             },
             |num_vars| {
-                let next_map = BooleanHypercube::new(num_vars).next_map();
-                let rotate =
-                    |f: &Vec<Fr>| (0..1 << num_vars).map(|idx| f[next_map[idx]]).collect_vec();
+                let bh = BooleanHypercube::new(num_vars);
+                let rotate = |f: &Vec<Fr>| {
+                    (0..1 << num_vars)
+                        .map(|idx| f[bh.rotate(idx, Rotation::next())])
+                        .collect_vec()
+                };
                 let poly = rand_vec(1 << num_vars, OsRng);
                 let polys = iter::successors(Some(poly), |poly| Some(rotate(poly)))
                     .map(MultilinearPolynomial::new)
@@ -192,30 +187,22 @@ mod test {
     fn test_sum_check_plonk() {
         run_sum_check(
             2..16,
-            |_| plonk_expression(),
+            |_| plonk_virtual_poly_info(),
             |num_vars| {
-                let (polys, chalenges) = rand_plonk_assignments(num_vars, OsRng);
-                (
-                    polys.to_vec(),
-                    chalenges.to_vec(),
-                    rand_vec(num_vars, OsRng),
-                )
+                let (polys, challenges) = rand_plonk_assignment(num_vars, OsRng);
+                (polys, challenges, rand_vec(num_vars, OsRng))
             },
         );
     }
 
     #[test]
-    fn test_sum_check_plonkup() {
+    fn test_sum_check_plonk_with_lookup() {
         run_sum_check(
             2..16,
-            |_| plonkup_expression(),
+            |_| plonk_with_lookup_virtual_poly_info(),
             |num_vars| {
-                let (polys, chalenges) = rand_plonkup_assignments(num_vars, OsRng);
-                (
-                    polys.to_vec(),
-                    chalenges.to_vec(),
-                    rand_vec(num_vars, OsRng),
-                )
+                let (polys, challenges) = rand_plonk_with_lookup_assignment(num_vars, OsRng);
+                (polys, challenges, rand_vec(num_vars, OsRng))
             },
         );
     }

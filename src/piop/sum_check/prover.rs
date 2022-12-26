@@ -3,14 +3,13 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{BooleanHypercube, PrimeField},
-        expression::{CommonPolynomial, Query, Rotation},
+        expression::{CommonPolynomial, Query},
         num_threads, parallelize_iter, Itertools,
     },
 };
 use num_integer::Integer;
 use std::{
     borrow::Cow,
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     mem,
     ops::Range,
@@ -49,8 +48,7 @@ pub struct ProvingState<'a, F: PrimeField> {
     identities: Vec<F>,
     polys: Vec<Vec<Cow<'a, MultilinearPolynomial<F>>>>,
     round: usize,
-    prev_map: Vec<usize>,
-    next_map: Vec<usize>,
+    bh: BooleanHypercube,
 }
 
 impl<'a, F: PrimeField> ProvingState<'a, F> {
@@ -101,8 +99,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
             identities,
             polys,
             round: 0,
-            prev_map: BooleanHypercube::new(num_vars).prev_map(),
-            next_map: BooleanHypercube::new(num_vars).next_map(),
+            bh: BooleanHypercube::new(num_vars),
         }
     }
 
@@ -196,7 +193,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                             let poly = &polys[self.num_vars];
                             let rotated = MultilinearPolynomial::new(
                                 (0..1 << self.num_vars)
-                                    .map(|b| poly[self.rotate(b, rotation)])
+                                    .map(|b| poly[self.bh.rotate(b, rotation)])
                                     .collect_vec(),
                             );
                             Cow::Owned(rotated.fix_variables(&[challenge]))
@@ -216,10 +213,8 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 });
             });
         }
-        let bh = BooleanHypercube::new(self.num_vars - self.round - 1);
-        self.prev_map = bh.prev_map();
-        self.next_map = bh.next_map();
         self.round += 1;
+        self.bh = BooleanHypercube::new(self.num_vars - self.round);
     }
 
     fn evaluate<const IS_FIRST_ROUND: bool>(&self, range: Range<usize>, point: &F) -> F {
@@ -244,8 +239,8 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 &|query| {
                     let (b_0, b_1) = if IS_FIRST_ROUND {
                         (
-                            self.rotate(b << 1, query.rotation()),
-                            self.rotate((b << 1) + 1, query.rotation()),
+                            self.bh.rotate(b << 1, query.rotation()),
+                            self.bh.rotate((b << 1) + 1, query.rotation()),
                         )
                     } else {
                         (b << 1, (b << 1) + 1)
@@ -283,23 +278,5 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 }
             })
             .unwrap_or_else(F::zero)
-    }
-
-    fn rotate(&self, mut b: usize, rotation: Rotation) -> usize {
-        match rotation.0.cmp(&0) {
-            Ordering::Equal => b,
-            Ordering::Less => {
-                for _ in rotation.0..0 {
-                    b = self.prev_map[b];
-                }
-                b
-            }
-            Ordering::Greater => {
-                for _ in 0..rotation.0 {
-                    b = self.next_map[b];
-                }
-                b
-            }
-        }
     }
 }

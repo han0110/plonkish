@@ -1,4 +1,5 @@
-use std::iter;
+use crate::util::expression::Rotation;
+use std::{cmp::Ordering, iter};
 
 /// Integer representation of primitive polynomial in GF(2).
 const PRIMITIVES: [usize; 32] = [
@@ -97,37 +98,39 @@ impl BooleanHypercube {
         self.x_inv
     }
 
+    pub fn rotate(&self, mut b: usize, Rotation(rotation): Rotation) -> usize {
+        match rotation.cmp(&0) {
+            Ordering::Equal => {}
+            Ordering::Less => {
+                for _ in rotation..0 {
+                    b = prev(b, self.x_inv);
+                }
+            }
+            Ordering::Greater => {
+                for _ in 0..rotation {
+                    b = next(b, self.num_vars, self.primitive);
+                }
+            }
+        };
+        b
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        let mut b = 1;
         iter::once(0)
-            .chain(iter::repeat_with(move || {
-                let item = b;
-                b = next(b, self.num_vars, self.primitive);
-                item
+            .chain(iter::successors(Some(1), |b| {
+                next(*b, self.num_vars, self.primitive).into()
             }))
             .take(1 << self.num_vars)
     }
 
-    pub fn next_map(&self) -> Vec<usize> {
-        (0..1 << self.num_vars)
-            .map(|b| next(b, self.num_vars, self.primitive))
-            .collect()
-    }
-
-    pub fn prev_map(&self) -> Vec<usize> {
-        (0..1 << self.num_vars)
-            .map(|b| prev(b, self.x_inv))
-            .collect()
-    }
-
-    pub fn idx_map(&self) -> Vec<usize> {
-        let mut idx_map = vec![0; 1 << self.num_vars];
+    pub fn nth_map(&self) -> Vec<usize> {
+        let mut nth_map = vec![0; 1 << self.num_vars];
         let mut b = 1;
         for idx in 1..1 << self.num_vars {
-            idx_map[b] = idx;
+            nth_map[b] = idx;
             b = next(b, self.num_vars, self.primitive);
         }
-        idx_map
+        nth_map
     }
 }
 

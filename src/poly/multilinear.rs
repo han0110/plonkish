@@ -2,6 +2,7 @@ use crate::{
     poly::impl_index,
     util::{
         arithmetic::{ilog2, usize_from_bits_be, BooleanHypercube, Field},
+        expression::Rotation,
         num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
     },
 };
@@ -19,7 +20,13 @@ pub struct MultilinearPolynomial<F> {
     num_vars: usize,
 }
 
-impl<F: Field> MultilinearPolynomial<F> {
+impl<F> Default for MultilinearPolynomial<F> {
+    fn default() -> Self {
+        MultilinearPolynomial::zero()
+    }
+}
+
+impl<F> MultilinearPolynomial<F> {
     pub fn new(evals: Vec<F>) -> Self {
         let num_vars = if evals.is_empty() {
             0
@@ -32,6 +39,31 @@ impl<F: Field> MultilinearPolynomial<F> {
         Self { evals, num_vars }
     }
 
+    pub const fn zero() -> Self {
+        Self {
+            evals: Vec::new(),
+            num_vars: 0,
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.num_vars == 0
+    }
+
+    pub fn evals(&self) -> &[F] {
+        self.evals.as_slice()
+    }
+
+    pub fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &F> {
+        self.evals.iter()
+    }
+}
+
+impl<F: Field> MultilinearPolynomial<F> {
     pub fn eq_xy(y: &[F]) -> Self {
         assert!(!y.is_empty());
 
@@ -66,25 +98,6 @@ impl<F: Field> MultilinearPolynomial<F> {
             evals,
             num_vars: y.len(),
         }
-    }
-
-    pub const fn zero() -> Self {
-        Self {
-            evals: Vec::new(),
-            num_vars: 0,
-        }
-    }
-
-    pub fn is_zero(&self) -> bool {
-        self.num_vars == 0
-    }
-
-    pub fn evals(&self) -> &[F] {
-        self.evals.as_slice()
-    }
-
-    pub fn num_vars(&self) -> usize {
-        self.num_vars
     }
 
     pub fn rand(num_vars: usize, mut rng: impl RngCore) -> Self {
@@ -136,16 +149,16 @@ impl<F: Field> MultilinearPolynomial<F> {
         Self::new(evals.into_owned())
     }
 
-    pub fn evaluate_for_rotation(&self, x: &[F], rotation: i32) -> Vec<F> {
-        if rotation == 0 {
+    pub fn evaluate_for_rotation(&self, x: &[F], rotation: Rotation) -> Vec<F> {
+        assert_eq!(x.len(), self.num_vars);
+        if rotation == Rotation::cur() {
             return vec![self.evaluate(x)];
         }
 
-        let distance = rotation.unsigned_abs() as usize;
+        let distance = rotation.distance();
         let num_x = self.num_vars - distance;
-        let flip = |x: &F| F::one() - x;
-        if rotation < 0 {
-            let x = &x[distance..distance + num_x];
+        if rotation < Rotation::cur() {
+            let x = &x[distance..];
             let flipped_x = x.iter().map(flip).collect_vec();
             let pattern = rotation_eval_point_pattern::<false>(self.num_vars, distance);
             let offset_mask = (1 << self.num_vars) - (1 << num_x);
@@ -239,13 +252,13 @@ impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPo
 
 impl<F: Field> AddAssign<F> for MultilinearPolynomial<F> {
     fn add_assign(&mut self, rhs: F) {
-        self.evals[0] += rhs;
+        self.evals[0] += &rhs;
     }
 }
 
 impl<F: Field> SubAssign<F> for MultilinearPolynomial<F> {
     fn sub_assign(&mut self, rhs: F) {
-        self.evals[0] -= rhs;
+        self.evals[0] -= &rhs;
     }
 }
 
@@ -261,11 +274,15 @@ impl<'lhs, F: Field> Mul<F> for &'lhs MultilinearPolynomial<F> {
 
 impl<F: Field> MulAssign<F> for MultilinearPolynomial<F> {
     fn mul_assign(&mut self, rhs: F) {
-        parallelize(&mut self.evals, |(lhs, _)| {
-            for lhs in lhs.iter_mut() {
-                *lhs *= rhs;
-            }
-        });
+        if rhs == F::zero() {
+            self.evals = vec![F::zero(); 1 << self.num_vars]
+        } else if rhs != F::one() {
+            parallelize(&mut self.evals, |(lhs, _)| {
+                for lhs in lhs.iter_mut() {
+                    *lhs *= &rhs;
+                }
+            });
+        }
     }
 }
 
@@ -312,18 +329,18 @@ impl_index!(
     ]
 );
 
-pub fn compute_rotation_eval<F: Field>(x: &[F], rotation: i32, evals_for_roation: &[F]) -> F {
-    if rotation == 0 {
-        assert!(evals_for_roation.len() == 1);
-        return evals_for_roation[0];
+pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: &[F]) -> F {
+    if rotation == Rotation::cur() {
+        assert!(evals_for_rotation.len() == 1);
+        return evals_for_rotation[0];
     }
 
     let num_vars = x.len();
-    let distance = rotation.unsigned_abs() as usize;
-    assert!(evals_for_roation.len() == 1 << distance);
+    let distance = rotation.distance();
+    assert!(evals_for_rotation.len() == 1 << distance);
     assert!(distance <= num_vars);
 
-    let (pattern, nths, x) = if rotation < 0 {
+    let (pattern, nths, x) = if rotation < Rotation::cur() {
         (
             rotation_eval_coeff_pattern::<false>(num_vars, distance),
             (1..=distance).rev().collect_vec(),
@@ -337,7 +354,7 @@ pub fn compute_rotation_eval<F: Field>(x: &[F], rotation: i32, evals_for_roation
         )
     };
     x.into_iter().zip(nths).enumerate().fold(
-        Cow::Borrowed(evals_for_roation),
+        Cow::Borrowed(evals_for_rotation),
         |evals, (idx, (x_i, nth))| {
             pattern
                 .iter()
@@ -349,6 +366,54 @@ pub fn compute_rotation_eval<F: Field>(x: &[F], rotation: i32, evals_for_roation
                 .into()
         },
     )[0]
+}
+
+pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>> {
+    if rotation == Rotation::cur() {
+        return vec![x.to_vec()];
+    }
+
+    let distance = rotation.distance();
+    let num_x = x.len() - distance;
+    if rotation < Rotation::cur() {
+        let pattern = rotation_eval_point_pattern::<false>(x.len(), distance);
+        let x = &x[distance..];
+        let flipped_x = x.iter().map(flip).collect_vec();
+        pattern
+            .iter()
+            .map(|pat| {
+                iter::empty()
+                    .chain((0..num_x).map(|idx| {
+                        if pat.nth_bit(idx) {
+                            flipped_x[idx]
+                        } else {
+                            x[idx]
+                        }
+                    }))
+                    .chain((0..distance).map(|idx| bit_to_field(pat.nth_bit(idx + num_x))))
+                    .collect_vec()
+            })
+            .collect()
+    } else {
+        let pattern = rotation_eval_point_pattern::<true>(x.len(), distance);
+        let x = &x[..num_x];
+        let flipped_x = x.iter().map(flip).collect_vec();
+        pattern
+            .iter()
+            .map(|pat| {
+                iter::empty()
+                    .chain((0..distance).map(|idx| bit_to_field(pat.nth_bit(idx))))
+                    .chain((0..num_x).map(|idx| {
+                        if pat.nth_bit(idx + distance) {
+                            flipped_x[idx]
+                        } else {
+                            x[idx]
+                        }
+                    }))
+                    .collect_vec()
+            })
+            .collect()
+    }
 }
 
 fn rotation_eval_point_pattern<const NEXT: bool>(num_vars: usize, distance: usize) -> Vec<usize> {
@@ -389,6 +454,18 @@ fn rotation_eval_coeff_pattern<const NEXT: bool>(num_vars: usize, distance: usiz
         }
     }
     pattern
+}
+
+fn flip<F: Field>(x: &F) -> F {
+    F::one() - x
+}
+
+fn bit_to_field<F: Field>(bit: bool) -> F {
+    if bit {
+        F::one()
+    } else {
+        F::zero()
+    }
 }
 
 fn merge_fn<F: Field>(x_i: &F) -> impl Fn((&F, &F)) -> F + '_ {
@@ -464,9 +541,10 @@ pub(crate) use {merge, zip_self};
 #[cfg(test)]
 mod test {
     use crate::{
-        poly::multilinear::{compute_rotation_eval, merge, MultilinearPolynomial},
+        poly::multilinear::{merge, rotation_eval, MultilinearPolynomial},
         util::{
             arithmetic::{BooleanHypercube, Field},
+            expression::Rotation,
             test::rand_vec,
             Itertools,
         },
@@ -506,8 +584,12 @@ mod test {
     fn test_evaluate_for_rotation() {
         let mut rng = OsRng;
         for num_vars in 0..16 {
-            let next_map = BooleanHypercube::new(num_vars).next_map();
-            let rotate = |f: &Vec<Fr>| (0..1 << num_vars).map(|idx| f[next_map[idx]]).collect_vec();
+            let bh = BooleanHypercube::new(num_vars);
+            let rotate = |f: &Vec<Fr>| {
+                (0..1 << num_vars)
+                    .map(|idx| f[bh.rotate(idx, Rotation::next())])
+                    .collect_vec()
+            };
             let f = rand_vec(1 << num_vars, &mut rng);
             let fs = iter::successors(Some(f), |f| Some(rotate(f)))
                 .map(MultilinearPolynomial::new)
@@ -516,13 +598,14 @@ mod test {
             let x = rand_vec::<Fr>(num_vars, &mut rng);
 
             for rotation in -(num_vars as i32) + 1..num_vars as i32 {
-                let (f, f_rotated) = if rotation < 0 {
-                    (fs.last().unwrap(), &fs[fs.len() - (-rotation as usize) - 1])
+                let rotation = Rotation(rotation);
+                let (f, f_rotated) = if rotation < Rotation::cur() {
+                    (fs.last().unwrap(), &fs[fs.len() - rotation.distance() - 1])
                 } else {
-                    (fs.first().unwrap(), &fs[rotation as usize])
+                    (fs.first().unwrap(), &fs[rotation.distance()])
                 };
                 assert_eq!(
-                    compute_rotation_eval(&x, rotation, &f.evaluate_for_rotation(&x, rotation)),
+                    rotation_eval(&x, rotation, &f.evaluate_for_rotation(&x, rotation)),
                     f_rotated.evaluate(&x),
                 );
             }

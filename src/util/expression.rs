@@ -10,16 +10,20 @@ use std::{
 pub struct Rotation(pub i32);
 
 impl Rotation {
-    pub fn cur() -> Self {
+    pub const fn cur() -> Self {
         Rotation(0)
     }
 
-    pub fn prev() -> Self {
+    pub const fn prev() -> Self {
         Rotation(-1)
     }
 
-    pub fn next() -> Self {
+    pub const fn next() -> Self {
         Rotation(1)
+    }
+
+    pub const fn distance(&self) -> usize {
+        self.0.unsigned_abs() as usize
     }
 }
 
@@ -36,11 +40,8 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn new(poly: usize, rotation: impl Into<Rotation>) -> Self {
-        Self {
-            poly,
-            rotation: rotation.into(),
-        }
+    pub fn new(poly: usize, rotation: Rotation) -> Self {
+        Self { poly, rotation }
     }
 
     pub fn poly(&self) -> usize {
@@ -52,14 +53,14 @@ impl Query {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommonPolynomial {
     Lagrange(i32),
     EqXY(usize),
     Identity(usize),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expression<F> {
     Constant(F),
     CommonPolynomial(CommonPolynomial),
@@ -85,7 +86,7 @@ impl<F: Clone> Expression<F> {
         Expression::CommonPolynomial(CommonPolynomial::Identity(idx))
     }
 
-    pub fn random_linear_combine<'a>(
+    pub fn distribute_powers<'a>(
         exprs: impl IntoIterator<Item = &'a Self> + 'a,
         base: &Self,
     ) -> Self
@@ -174,67 +175,35 @@ impl<F: Clone> Expression<F> {
     }
 
     pub fn used_langrange(&self) -> BTreeSet<i32> {
-        self.evaluate(
-            &|_| None,
+        self.used_primitive(
             &|poly| match poly {
-                CommonPolynomial::Lagrange(i) => Some(BTreeSet::from_iter([i])),
-                CommonPolynomial::EqXY(_) => None,
-                CommonPolynomial::Identity(_) => None,
+                CommonPolynomial::Lagrange(i) => i.into(),
+                _ => None,
             },
             &|_| None,
-            &|_| None,
-            &|a| a,
-            &merge_left_right,
-            &merge_left_right,
-            &|a, _| a,
         )
-        .unwrap_or_default()
     }
 
     pub fn used_identity(&self) -> BTreeSet<usize> {
-        self.evaluate(
-            &|_| None,
+        self.used_primitive(
             &|poly| match poly {
-                CommonPolynomial::Lagrange(_) => None,
-                CommonPolynomial::EqXY(_) => None,
-                CommonPolynomial::Identity(idx) => Some(BTreeSet::from_iter([idx])),
+                CommonPolynomial::Identity(idx) => idx.into(),
+                _ => None,
             },
             &|_| None,
-            &|_| None,
-            &|a| a,
-            &merge_left_right,
-            &merge_left_right,
-            &|a, _| a,
         )
-        .unwrap_or_default()
     }
 
     pub fn used_query(&self) -> BTreeSet<Query> {
-        self.evaluate(
-            &|_| None,
-            &|_| None,
-            &|query| Some(BTreeSet::from_iter([query])),
-            &|_| None,
-            &|a| a,
-            &merge_left_right,
-            &merge_left_right,
-            &|a, _| a,
-        )
-        .unwrap_or_default()
+        self.used_primitive(&|_| None, &|query| query.into())
+    }
+
+    pub fn used_poly(&self) -> BTreeSet<usize> {
+        self.used_primitive(&|_| None, &|query| query.poly().into())
     }
 
     pub fn used_rotation(&self) -> BTreeSet<Rotation> {
-        self.evaluate(
-            &|_| None,
-            &|_| None,
-            &|query| Some(BTreeSet::from_iter([query.rotation])),
-            &|_| None,
-            &|a| a,
-            &merge_left_right,
-            &merge_left_right,
-            &|a, _| a,
-        )
-        .unwrap_or_default()
+        self.used_primitive(&|_| None, &|query| query.rotation().into())
     }
 
     pub fn max_used_rotation_distance(&self) -> usize {
@@ -243,6 +212,38 @@ impl<F: Clone> Expression<F> {
             .map(|rotation| rotation.0.unsigned_abs())
             .max()
             .unwrap_or_default() as usize
+    }
+
+    pub fn used_challenge(&self) -> BTreeSet<usize> {
+        self.evaluate(
+            &|_| None,
+            &|_| None,
+            &|_| None,
+            &|challenge| Some(BTreeSet::from([challenge])),
+            &|a| a,
+            &merge_left_right,
+            &merge_left_right,
+            &|a, _| a,
+        )
+        .unwrap_or_default()
+    }
+
+    fn used_primitive<T: Clone + Ord>(
+        &self,
+        common_poly: &impl Fn(CommonPolynomial) -> Option<T>,
+        poly: &impl Fn(Query) -> Option<T>,
+    ) -> BTreeSet<T> {
+        self.evaluate(
+            &|_| None,
+            &|poly| common_poly(poly).map(|t| BTreeSet::from([t])),
+            &|query| poly(query).map(|t| BTreeSet::from([t])),
+            &|_| None,
+            &|a| a,
+            &merge_left_right,
+            &merge_left_right,
+            &|a, _| a,
+        )
+        .unwrap_or_default()
     }
 }
 
@@ -295,7 +296,7 @@ impl_expression_ops!(Sub, sub, Sum, Expression<F>, Neg::neg);
 impl<F: Clone> Neg for Expression<F> {
     type Output = Expression<F>;
     fn neg(self) -> Self::Output {
-        Expression::Negated(Box::new(self))
+        -&self
     }
 }
 

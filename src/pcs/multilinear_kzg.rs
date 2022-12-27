@@ -4,7 +4,7 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            fixed_base_msm, ilog2, inner_product, powers, variable_base_msm, window_size,
+            div_ceil, fixed_base_msm, ilog2, inner_product, powers, variable_base_msm, window_size,
             window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
         },
         expression::{Expression, Query, Rotation},
@@ -101,7 +101,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                 if evals.len() < 32 {
                     expand_serial(&mut evals, last_evals, s_i);
                 } else {
-                    let mut chunk_size = Integer::div_ceil(&evals.len(), &num_threads());
+                    let mut chunk_size = div_ceil(evals.len(), num_threads());
                     if chunk_size.is_odd() {
                         chunk_size += 1;
                     }

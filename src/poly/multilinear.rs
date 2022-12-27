@@ -1,7 +1,7 @@
 use crate::{
     poly::impl_index,
     util::{
-        arithmetic::{ilog2, usize_from_bits_be, BooleanHypercube, Field},
+        arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
         expression::Rotation,
         num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
     },
@@ -80,7 +80,7 @@ impl<F: Field> MultilinearPolynomial<F> {
             if evals.len() < 32 {
                 expand_serial(&mut next_evals, &evals, y_i);
             } else {
-                let mut chunk_size = Integer::div_ceil(&evals.len(), &num_threads());
+                let mut chunk_size = div_ceil(evals.len(), num_threads());
                 if chunk_size.is_odd() {
                     chunk_size += 1;
                 }
@@ -499,10 +499,9 @@ macro_rules! zip_self {
 
 macro_rules! merge {
     (@ $evals:expr, $x_i:expr, $distance:expr, $skip:expr) => {{
-        use num_integer::Integer;
         use $crate::{
             poly::multilinear::merge_fn,
-            util::{num_threads, parallelize_iter},
+            util::{arithmetic::div_ceil, num_threads, parallelize_iter},
         };
 
         let step = 1 << $distance;
@@ -520,7 +519,7 @@ macro_rules! merge {
         if output.len() < 32 {
             merge_serial(&mut output, 0);
         } else {
-            let chunk_size = Integer::div_ceil(&output.len(), &num_threads());
+            let chunk_size = div_ceil(output.len(), num_threads());
             parallelize_iter(
                 output.chunks_mut(chunk_size).zip((0..).step_by(chunk_size)),
                 |(output, start)| merge_serial(output, start),

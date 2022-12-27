@@ -1,6 +1,7 @@
 use crate::util::Itertools;
 use halo2_curves::pairing::{self, MillerLoopResult};
 use num_bigint::BigUint;
+use num_integer::Integer;
 use std::{borrow::Borrow, fmt::Debug, iter};
 
 mod bh;
@@ -86,6 +87,10 @@ pub fn ilog2(n: usize) -> usize {
     } else {
         (0usize.leading_zeros() - n.leading_zeros()) as usize
     }
+}
+
+pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
+    Integer::div_ceil(&dividend, &divisor)
 }
 
 #[cfg(test)]

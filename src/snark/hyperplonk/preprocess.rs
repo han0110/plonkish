@@ -2,12 +2,11 @@ use crate::{
     piop::sum_check::VirtualPolynomialInfo,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::PrimeField,
+        arithmetic::{div_ceil, PrimeField},
         expression::{CommonPolynomial, Expression, Query, Rotation},
         Itertools,
     },
 };
-use num_integer::Integer;
 use std::{array, collections::BTreeSet, iter, mem};
 
 #[derive(Clone, Debug)]
@@ -139,11 +138,12 @@ pub(super) fn compose<F: PrimeField>(
         .chain(lookup_constraints.iter())
         .map(Expression::degree)
         .chain(circuit_info.max_degree)
+        .chain(Some(2))
         .max()
-        .unwrap_or(2);
+        .unwrap();
     let permutation_constraints = {
         let chunk_size = max_degree - 1;
-        let num_chunk = Integer::div_ceil(&permutation_polys.len(), &chunk_size);
+        let num_chunk = div_ceil(permutation_polys.len(), chunk_size);
         let permutation_offset = circuit_info.num_poly();
         let z_offset =
             permutation_offset + permutation_polys.len() + 3 * circuit_info.lookups.len();
@@ -273,7 +273,7 @@ pub(crate) mod test {
             let one = Expression::Constant(Fr::one());
             let constraints = {
                 vec![
-                    q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c - pi,
+                    q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi,
                     l_1 * (z - one),
                     (z * ((w_l + beta * id_1 + gamma)
                         * (w_r + beta * id_2 + gamma)
@@ -319,7 +319,7 @@ pub(crate) mod test {
             let lookup_compressed_table = Expression::distribute_powers([t_l, t_r, t_o], theta);
             let constraints = {
                 vec![
-                    q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c - pi,
+                    q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi,
                     l_1 * (lookup_z - one),
                     lookup_z * (lookup_compressed_input + beta) * (lookup_compressed_table + gamma)
                         - lookup_z_next
@@ -357,7 +357,7 @@ pub(crate) mod test {
             preprocess_polys: preprocess_polys.to_vec(),
             num_witness_poly: vec![3],
             num_challenge: vec![0],
-            constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c - pi],
+            constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi],
             lookups: Vec::new(),
             permutations,
             max_degree: Some(4),
@@ -390,7 +390,7 @@ pub(crate) mod test {
             preprocess_polys: preprocess_polys.to_vec(),
             num_witness_poly: vec![3],
             num_challenge: vec![0],
-            constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c - pi],
+            constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi],
             lookups: vec![vec![
                 (q_lookup * w_l, t_l.clone()),
                 (q_lookup * w_r, t_r.clone()),

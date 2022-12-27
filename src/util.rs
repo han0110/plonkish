@@ -1,4 +1,4 @@
-use num_integer::Integer;
+use arithmetic::div_ceil;
 
 pub mod arithmetic;
 pub mod expression;
@@ -30,7 +30,7 @@ where
 {
     {
         let num_threads = num_threads();
-        let chunk_size = Integer::div_ceil(&v.len(), &num_threads);
+        let chunk_size = div_ceil(v.len(), num_threads);
         if chunk_size < num_threads {
             f((v, 0));
         } else {

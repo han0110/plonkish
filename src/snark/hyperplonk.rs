@@ -5,20 +5,22 @@ use crate::{
     snark::{
         hyperplonk::{
             preprocess::{compose, permutation_polys},
-            prover::{lookup_permuted_polys, lookup_z_polys, permutation_z_polys, prove_sum_check},
+            prover::{
+                instances_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys,
+                prove_sum_check,
+            },
             verifier::verify_sum_check,
         },
         UniversalSnark,
     },
     util::{
-        arithmetic::{BooleanHypercube, PrimeField},
+        arithmetic::{div_ceil, PrimeField},
         expression::Expression,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
     },
     Error,
 };
-use num_integer::Integer;
 use rand::RngCore;
 use std::{fmt::Debug, iter, marker::PhantomData};
 
@@ -157,20 +159,7 @@ where
                 transcript.common_scalar(instance)?;
             }
         }
-        let instances_polys = {
-            let bh = BooleanHypercube::new(pp.num_vars);
-            instances
-                .iter()
-                .map(|instances| {
-                    let mut poly = vec![F::zero(); 1 << pp.num_vars];
-                    for (b, instance) in bh.iter().zip(instances.iter()) {
-                        poly[b] = *instance;
-                    }
-                    poly
-                })
-                .map(MultilinearPolynomial::new)
-                .collect_vec()
-        };
+        let instances_polys = instances_polys(pp.num_vars, instances);
 
         let mut witness_polys = Vec::with_capacity(pp.num_witness_poly.iter().sum());
         let mut challenges = Vec::with_capacity(pp.num_challenge.iter().sum::<usize>() + 4);
@@ -278,11 +267,8 @@ where
         let beta = transcript.squeeze_challenge();
         let gamma = transcript.squeeze_challenge();
         let lookup_z_comms = transcript.read_n_commitments(vp.num_lookup)?;
-        let permutation_z_comms = transcript.read_n_commitments(
-            (!vp.permutation_comms.is_empty())
-                .then(|| Integer::div_ceil(&vp.permutation_comms.len(), &(vp.max_degree - 1)))
-                .unwrap_or_default(),
-        )?;
+        let permutation_z_comms = transcript
+            .read_n_commitments(div_ceil(vp.permutation_comms.len(), vp.max_degree - 1))?;
 
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_n_challenges(vp.num_vars);
@@ -326,12 +312,14 @@ pub(crate) mod test {
                     permutation_polys, test::plonk_circuit_info,
                     test::plonk_with_lookup_circuit_info, PlonkishCircuitInfo,
                 },
-                prover::{lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
+                prover::{
+                    instances_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys,
+                },
             },
             UniversalSnark,
         },
         util::{
-            arithmetic::{BooleanHypercube, PrimeField},
+            arithmetic::PrimeField,
             test::{rand_array, rand_idx, rand_vec},
             transcript::Keccak256Transcript,
             Itertools,
@@ -389,9 +377,7 @@ pub(crate) mod test {
         let mut polys = [(); 9].map(|_| vec![F::zero(); size]);
 
         let instances = rand_vec(num_vars, &mut rng);
-        for (b, instance) in BooleanHypercube::new(num_vars).iter().zip(instances.iter()) {
-            polys[0][b] = *instance;
-        }
+        polys[0] = instances_polys(num_vars, &[&instances])[0].evals().to_vec();
 
         let mut cycles = Vec::new();
         for idx in 0..size {
@@ -416,7 +402,7 @@ pub(crate) mod test {
                     (5, q_c),
                     (6, w_l),
                     (7, w_r),
-                    (8, w_l + w_r + q_c - polys[0][idx]),
+                    (8, w_l + w_r + q_c + polys[0][idx]),
                 ]
             } else {
                 vec![
@@ -425,7 +411,7 @@ pub(crate) mod test {
                     (5, q_c),
                     (6, w_l),
                     (7, w_r),
-                    (8, w_l * w_r + q_c - polys[0][idx]),
+                    (8, w_l * w_r + q_c + polys[0][idx]),
                 ]
             };
             for (poly, value) in values {
@@ -436,7 +422,7 @@ pub(crate) mod test {
         let [_, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] = polys;
         let circuit_info = plonk_circuit_info(
             num_vars,
-            num_vars,
+            instances.len(),
             [q_l, q_r, q_m, q_o, q_c].map(MultilinearPolynomial::new),
             cycles,
         );
@@ -452,13 +438,7 @@ pub(crate) mod test {
         let [_, beta, gamma, _] = challenges;
 
         let polys = iter::empty()
-            .chain({
-                let mut poly = vec![F::zero(); 1 << num_vars];
-                for (b, instance) in BooleanHypercube::new(num_vars).iter().zip(instances.iter()) {
-                    poly[b] = *instance;
-                }
-                Some(MultilinearPolynomial::new(poly))
-            })
+            .chain(instances_polys(num_vars, &[&instances]))
             .chain(circuit_info.preprocess_polys)
             .chain(witnesses.into_iter().map(MultilinearPolynomial::new))
             .collect_vec();
@@ -506,9 +486,7 @@ pub(crate) mod test {
         polys[9] = t_o;
 
         let instances = rand_vec(num_vars, &mut rng);
-        for (b, instance) in BooleanHypercube::new(num_vars).iter().zip(instances.iter()) {
-            polys[0][b] = *instance;
-        }
+        polys[0] = instances_polys(num_vars, &[&instances])[0].evals().to_vec();
 
         let mut cycles = Vec::new();
         for idx in 0..size {
@@ -538,7 +516,7 @@ pub(crate) mod test {
                         (5, q_c),
                         (10, w_l),
                         (11, w_r),
-                        (12, w_l + w_r + q_c - polys[0][idx]),
+                        (12, w_l + w_r + q_c + polys[0][idx]),
                     ]
                 }
                 (true, false) => {
@@ -548,7 +526,7 @@ pub(crate) mod test {
                         (5, q_c),
                         (10, w_l),
                         (11, w_r),
-                        (12, w_l * w_r + q_c - polys[0][idx]),
+                        (12, w_l * w_r + q_c + polys[0][idx]),
                     ]
                 }
                 (false, _) => {
@@ -569,7 +547,7 @@ pub(crate) mod test {
         let [_, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o] = polys;
         let circuit_info = plonk_with_lookup_circuit_info(
             num_vars,
-            num_vars,
+            instances.len(),
             [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o].map(MultilinearPolynomial::new),
             cycles,
         );
@@ -586,13 +564,7 @@ pub(crate) mod test {
         let [theta, beta, gamma, _] = challenges;
 
         let polys = iter::empty()
-            .chain({
-                let mut poly = vec![F::zero(); 1 << num_vars];
-                for (b, instance) in BooleanHypercube::new(num_vars).iter().zip(instances.iter()) {
-                    poly[b] = *instance;
-                }
-                Some(MultilinearPolynomial::new(poly))
-            })
+            .chain(instances_polys(num_vars, &[&instances]))
             .chain(circuit_info.preprocess_polys)
             .chain(witnesses.into_iter().map(MultilinearPolynomial::new))
             .collect_vec();

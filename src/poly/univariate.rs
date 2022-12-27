@@ -1,12 +1,11 @@
 use crate::{
     poly::impl_index,
     util::{
-        arithmetic::{horner, powers, Field},
+        arithmetic::{div_ceil, horner, powers, Field},
         num_threads, parallelize, parallelize_iter,
     },
 };
 use itertools::Itertools;
-use num_integer::Integer;
 use rand::RngCore;
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
@@ -66,7 +65,7 @@ impl<F: Field> UnivariatePolynomial<F> {
             return horner(&self.0, x);
         }
 
-        let chunk_size = Integer::div_ceil(&self.coeffs().len(), &num_threads);
+        let chunk_size = div_ceil(self.coeffs().len(), num_threads);
         let mut results = vec![F::zero(); num_threads];
         parallelize_iter(
             results

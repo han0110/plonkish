@@ -4,7 +4,7 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     snark::hyperplonk::verifier::{pcs_query, point_offset, points},
     util::{
-        arithmetic::{BatchInvert, BooleanHypercube, PrimeField},
+        arithmetic::{div_ceil, BatchInvert, BooleanHypercube, PrimeField},
         expression::{CommonPolynomial, Expression},
         parallelize,
         transcript::TranscriptWrite,
@@ -12,8 +12,25 @@ use crate::{
     },
     Error,
 };
-use num_integer::Integer;
 use std::collections::{BTreeMap, HashSet};
+
+pub(super) fn instances_polys<F: PrimeField>(
+    num_vars: usize,
+    instances: &[&[F]],
+) -> Vec<MultilinearPolynomial<F>> {
+    let bh = BooleanHypercube::new(num_vars);
+    instances
+        .iter()
+        .map(|instances| {
+            let mut poly = vec![F::zero(); 1 << num_vars];
+            for (b, instance) in bh.iter().skip(1).zip(instances.iter()) {
+                poly[b] = *instance;
+            }
+            poly
+        })
+        .map(MultilinearPolynomial::new)
+        .collect_vec()
+}
 
 #[allow(clippy::type_complexity)]
 pub(super) fn lookup_permuted_polys<F: PrimeField + Ord>(
@@ -283,7 +300,7 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
     }
 
     let chunk_size = max_degree - 1;
-    let num_chunk = Integer::div_ceil(&permutation_polys.len(), &chunk_size);
+    let num_chunk = div_ceil(permutation_polys.len(), chunk_size);
     let num_vars = polys[0].num_vars();
 
     let products = permutation_polys

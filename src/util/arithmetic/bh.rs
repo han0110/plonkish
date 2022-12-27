@@ -125,10 +125,8 @@ impl BooleanHypercube {
 
     pub fn nth_map(&self) -> Vec<usize> {
         let mut nth_map = vec![0; 1 << self.num_vars];
-        let mut b = 1;
-        for idx in 1..1 << self.num_vars {
-            nth_map[b] = idx;
-            b = next(b, self.num_vars, self.primitive);
+        for (nth, b) in self.iter().enumerate() {
+            nth_map[b] = nth;
         }
         nth_map
     }
@@ -148,21 +146,28 @@ fn prev(b: usize, x_inv: usize) -> usize {
 
 #[cfg(test)]
 mod test {
-    use crate::util::arithmetic::BooleanHypercube;
+    use crate::util::{arithmetic::BooleanHypercube, expression::Rotation};
 
     #[test]
     #[ignore = "Cause it takes some minutes to run with release profile"]
-    fn test_boolean_hypercube() {
+    fn test_boolean_hypercube_iter() {
         for num_vars in 0..32 {
             let bh = BooleanHypercube::new(num_vars);
             let mut set = vec![false; 1 << num_vars];
             for i in bh.iter() {
-                if set[i] {
-                    panic!(
-                        "Found repeated item while iterating the boolean hypercube with {num_vars}"
-                    );
-                }
+                assert!(!set[i]);
                 set[i] = true;
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "Cause it takes some minutes to run with release profile"]
+    fn test_boolean_hypercube_prev() {
+        for num_vars in 0..32 {
+            let bh = BooleanHypercube::new(num_vars);
+            for (b, b_next) in bh.iter().skip(1).zip(bh.iter().skip(2).chain(Some(1))) {
+                assert_eq!(b, bh.rotate(b_next, Rotation::prev()))
             }
         }
     }

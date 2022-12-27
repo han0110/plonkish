@@ -2,7 +2,7 @@ use crate::{
     piop::sum_check::VirtualPolynomialInfo,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{BooleanHypercube, PrimeField},
+        arithmetic::{div_ceil, BooleanHypercube, PrimeField},
         expression::{CommonPolynomial, Query},
         num_threads, parallelize_iter, Itertools,
     },
@@ -128,7 +128,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                 .collect()
         } else {
             let num_threads = num_threads();
-            let chunk_size = Integer::div_ceil(&size, &num_threads);
+            let chunk_size = div_ceil(size, num_threads);
             points
                 .iter()
                 .map(|point| {

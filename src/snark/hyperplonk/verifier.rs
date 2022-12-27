@@ -68,26 +68,47 @@ fn instance_evals<F: PrimeField>(
     let mut instance_query = virtual_poly_info.expression().used_query();
     instance_query.retain(|query| query.poly() < instances.len());
 
-    let lagranges = instance_query.iter().fold(0..0, |range, query| {
-        let i = -query.rotation().0;
-        range.start.min(i)..range.end.max(i + instances[query.poly()].len() as i32)
-    });
+    let lagranges = {
+        let mut lagranges = instance_query.iter().fold(0..0, |range, query| {
+            let i = -query.rotation().0;
+            range.start.min(i)..range.end.max(i + instances[query.poly()].len() as i32)
+        });
+        if lagranges.start < 0 {
+            lagranges.start -= 1;
+        }
+        if lagranges.end > 0 {
+            lagranges.end += 1;
+        }
+        lagranges
+    };
 
     let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
     let lagrange_evals = lagranges
-        .map(|i| {
-            let b = bh[i.rem_euclid(1 << num_vars as i32) as usize];
-            (i, lagrange_eval(x, b))
+        .filter_map(|i| {
+            (i != 0).then(|| {
+                let b = bh[i.rem_euclid(1 << num_vars as i32) as usize];
+                (i, lagrange_eval(x, b))
+            })
         })
         .collect::<HashMap<_, _>>();
 
     instance_query
         .into_iter()
         .map(|query| {
-            let l_i_minus_r = (-query.rotation().0..)
-                .map(|i_minus_r| lagrange_evals.get(&i_minus_r).unwrap())
-                .take(instances[query.poly()].len());
-            let eval = inner_product(instances[query.poly()], l_i_minus_r);
+            let is = if query.rotation() > Rotation::cur() {
+                (-query.rotation().0..0)
+                    .chain(1..)
+                    .take(instances[query.poly()].len())
+                    .collect_vec()
+            } else {
+                (1 - query.rotation().0..)
+                    .take(instances[query.poly()].len())
+                    .collect_vec()
+            };
+            let eval = inner_product(
+                instances[query.poly()],
+                is.iter().map(|i| lagrange_evals.get(i).unwrap()),
+            );
             (query, eval)
         })
         .collect()

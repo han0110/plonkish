@@ -40,9 +40,9 @@ where
     Pcs: PolynomialCommitmentScheme<F>,
 {
     pcs: Pcs::ProverParam,
-    num_instance: Vec<usize>,
-    num_witness_poly: Vec<usize>,
-    num_challenge: Vec<usize>,
+    num_instances: Vec<usize>,
+    num_witness_polys: Vec<usize>,
+    num_challenges: Vec<usize>,
     lookups: Vec<Vec<(Expression<F>, Expression<F>)>>,
     max_degree: usize,
     num_vars: usize,
@@ -58,9 +58,9 @@ where
     Pcs: PolynomialCommitmentScheme<F>,
 {
     pcs: Pcs::VerifierParam,
-    num_instance: Vec<usize>,
-    num_witness_poly: Vec<usize>,
-    num_challenge: Vec<usize>,
+    num_instances: Vec<usize>,
+    num_witness_polys: Vec<usize>,
+    num_challenges: Vec<usize>,
     num_lookup: usize,
     max_degree: usize,
     num_vars: usize,
@@ -121,9 +121,9 @@ where
         let (max_degree, virtual_poly_info) = compose(&circuit_info);
         let pp = HyperPlonkProverParam {
             pcs: pcs_pp,
-            num_instance: circuit_info.num_instance.clone(),
-            num_witness_poly: circuit_info.num_witness_poly.clone(),
-            num_challenge: circuit_info.num_challenge.clone(),
+            num_instances: circuit_info.num_instances.clone(),
+            num_witness_polys: circuit_info.num_witness_polys.clone(),
+            num_challenges: circuit_info.num_challenges.clone(),
             lookups: circuit_info.lookups.clone(),
             max_degree,
             num_vars,
@@ -133,9 +133,9 @@ where
         };
         let vp = HyperPlonkVerifierParam {
             pcs: pcs_vp,
-            num_instance: circuit_info.num_instance.clone(),
-            num_witness_poly: circuit_info.num_witness_poly.clone(),
-            num_challenge: circuit_info.num_challenge.clone(),
+            num_instances: circuit_info.num_instances.clone(),
+            num_witness_polys: circuit_info.num_witness_polys.clone(),
+            num_challenges: circuit_info.num_challenges.clone(),
             num_lookup: circuit_info.lookups.len(),
             max_degree,
             num_vars,
@@ -149,35 +149,35 @@ where
     fn prove(
         pp: &Self::ProverParam,
         instances: &[&[F]],
-        mut witness_collector: impl FnMut(&[F]) -> Vec<Vec<F>>,
+        mut witness_collector: impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
         transcript: &mut impl TranscriptWrite<F, Commitment = Pcs::Commitment>,
         _: impl RngCore,
     ) -> Result<(), Error> {
-        for (num_instance, instances) in pp.num_instance.iter().zip_eq(instances) {
-            assert_eq!(instances.len(), *num_instance);
+        for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
+            assert_eq!(instances.len(), *num_instances);
             for instance in instances.iter() {
                 transcript.common_scalar(instance)?;
             }
         }
-        let instances_polys = instances_polys(pp.num_vars, instances);
+        let instances_polys = instances_polys(pp.num_vars, instances.iter().cloned());
 
-        let mut witness_polys = Vec::with_capacity(pp.num_witness_poly.iter().sum());
-        let mut challenges = Vec::with_capacity(pp.num_challenge.iter().sum::<usize>() + 4);
-        for (num_witness_poly, num_challenge) in
-            pp.num_witness_poly.iter().zip_eq(pp.num_challenge.iter())
+        let mut witness_polys = Vec::with_capacity(pp.num_witness_polys.iter().sum());
+        let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>() + 4);
+        for (num_witness_polys, num_challenges) in
+            pp.num_witness_polys.iter().zip_eq(pp.num_challenges.iter())
         {
             witness_polys.extend({
-                let witness_polys = witness_collector(&challenges)
+                let witness_polys = witness_collector(&challenges)?
                     .into_iter()
                     .map(MultilinearPolynomial::new)
                     .collect_vec();
-                assert_eq!(witness_polys.len(), *num_witness_poly);
+                assert_eq!(witness_polys.len(), *num_witness_polys);
                 for witness_poly in witness_polys.iter() {
                     transcript.write_commitment(Pcs::commit(&pp.pcs, witness_poly)?)?;
                 }
                 witness_polys
             });
-            challenges.extend(transcript.squeeze_n_challenges(*num_challenge));
+            challenges.extend(transcript.squeeze_n_challenges(*num_challenges));
         }
         let polys = iter::empty()
             .chain(instances_polys.iter())
@@ -223,7 +223,7 @@ where
             .collect_vec();
         challenges.extend([theta, beta, gamma, alpha]);
         let (points, evals) = prove_sum_check(
-            pp.num_instance.len(),
+            pp.num_instances.len(),
             &pp.virtual_poly_info,
             &polys,
             challenges,
@@ -241,20 +241,20 @@ where
         transcript: &mut impl TranscriptRead<F, Commitment = Pcs::Commitment>,
         _: impl RngCore,
     ) -> Result<(), Error> {
-        for (num_instance, instances) in vp.num_instance.iter().zip_eq(instances) {
-            assert_eq!(instances.len(), *num_instance);
+        for (num_instances, instances) in vp.num_instances.iter().zip_eq(instances) {
+            assert_eq!(instances.len(), *num_instances);
             for instance in instances.iter() {
                 transcript.common_scalar(instance)?;
             }
         }
 
-        let mut witness_comms = Vec::with_capacity(vp.num_witness_poly.iter().sum());
-        let mut challenges = Vec::with_capacity(vp.num_challenge.iter().sum::<usize>() + 4);
-        for (num_witness_poly, num_challenge) in
-            vp.num_witness_poly.iter().zip_eq(vp.num_challenge.iter())
+        let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
+        let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 4);
+        for (num_witness_polys, num_challenges) in
+            vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
         {
-            witness_comms.extend(transcript.read_n_commitments(*num_witness_poly)?);
-            challenges.extend(transcript.squeeze_n_challenges(*num_challenge));
+            witness_comms.extend(transcript.read_n_commitments(*num_witness_polys)?);
+            challenges.extend(transcript.squeeze_n_challenges(*num_challenges));
         }
 
         let theta = transcript.squeeze_challenge();
@@ -273,7 +273,7 @@ where
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_n_challenges(vp.num_vars);
         let comms = iter::empty()
-            .chain(iter::repeat(witness_comms[0].clone()).take(vp.num_instance.len()))
+            .chain(iter::repeat(witness_comms[0].clone()).take(vp.num_instances.len()))
             .chain(vp.preprocess_comms.iter().cloned())
             .chain(witness_comms)
             .chain(vp.permutation_comms.iter().map(|(_, comm)| comm.clone()))
@@ -324,34 +324,37 @@ pub(crate) mod test {
             transcript::Keccak256Transcript,
             Itertools,
         },
+        Error,
     };
     use halo2_curves::bn256::{Bn256, Fr};
     use num_integer::Integer;
     use rand::{rngs::OsRng, RngCore};
     use std::{iter, ops::Range};
 
-    fn run_hyperplonk(
+    pub(crate) fn run_hyperplonk<W>(
         num_vars_range: Range<usize>,
-        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<Fr>, Vec<Fr>, Vec<Vec<Fr>>),
-    ) {
+        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<Fr>, Vec<Vec<Fr>>, W),
+    ) where
+        W: FnMut(&[Fr]) -> Result<Vec<Vec<Fr>>, Error>,
+    {
         type Pcs = multilinear_kzg::MultilinearKzg<Bn256>;
         type HyperPlonk = hyperplonk::HyperPlonk<Pcs>;
 
         for num_vars in num_vars_range {
             let param = HyperPlonk::setup(1 << num_vars, OsRng).unwrap();
-            let (circuit_info, instances, witnesses) = circuit_fn(num_vars);
+            let (circuit_info, instances, witness) = circuit_fn(num_vars);
             let (pp, vp) = HyperPlonk::preprocess(&param, circuit_info).unwrap();
 
+            let instances = instances.iter().map(Vec::as_slice).collect_vec();
             let proof = {
-                let witnesses = |_: &[Fr]| witnesses.clone();
                 let mut transcript = Keccak256Transcript::new(Vec::new());
-                HyperPlonk::prove(&pp, &[&instances], witnesses, &mut transcript, OsRng).unwrap();
+                HyperPlonk::prove(&pp, &instances, witness, &mut transcript, OsRng).unwrap();
                 transcript.finalize()
             };
 
             let accept = {
                 let mut transcript = Keccak256Transcript::new(proof.as_slice());
-                HyperPlonk::verify(&vp, &[&instances], &mut transcript, OsRng).is_ok()
+                HyperPlonk::verify(&vp, &instances, &mut transcript, OsRng).is_ok()
             };
             assert!(accept);
         }
@@ -372,12 +375,16 @@ pub(crate) mod test {
     pub(crate) fn rand_plonk_circuit<F: PrimeField>(
         num_vars: usize,
         mut rng: impl RngCore,
-    ) -> (PlonkishCircuitInfo<F>, Vec<F>, Vec<Vec<F>>) {
+    ) -> (
+        PlonkishCircuitInfo<F>,
+        Vec<Vec<F>>,
+        impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
+    ) {
         let size = 1 << num_vars;
         let mut polys = [(); 9].map(|_| vec![F::zero(); size]);
 
         let instances = rand_vec(num_vars, &mut rng);
-        polys[0] = instances_polys(num_vars, &[&instances])[0].evals().to_vec();
+        polys[0] = instances_polys(num_vars, [&instances])[0].evals().to_vec();
 
         let mut cycles = Vec::new();
         for idx in 0..size {
@@ -426,24 +433,29 @@ pub(crate) mod test {
             [q_l, q_r, q_m, q_o, q_c].map(MultilinearPolynomial::new),
             cycles,
         );
-        (circuit_info, instances, vec![w_l, w_r, w_o])
+        (circuit_info, vec![instances], move |_| {
+            Ok(vec![w_l.clone(), w_r.clone(), w_o.clone()])
+        })
     }
 
     pub(crate) fn rand_plonk_assignment<F: PrimeField>(
         num_vars: usize,
         mut rng: impl RngCore,
     ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
-        let (circuit_info, instances, witnesses) = rand_plonk_circuit(num_vars, &mut rng);
+        let (polys, permutations) = {
+            let (circuit_info, instances, mut witness) = rand_plonk_circuit(num_vars, &mut rng);
+            let witness = witness(&[]).unwrap();
+            let polys = iter::empty()
+                .chain(instances_polys(num_vars, &instances))
+                .chain(circuit_info.preprocess_polys)
+                .chain(witness.into_iter().map(MultilinearPolynomial::new))
+                .collect_vec();
+            (polys, circuit_info.permutations)
+        };
         let challenges: [_; 4] = rand_array(&mut rng);
         let [_, beta, gamma, _] = challenges;
 
-        let polys = iter::empty()
-            .chain(instances_polys(num_vars, &[&instances]))
-            .chain(circuit_info.preprocess_polys)
-            .chain(witnesses.into_iter().map(MultilinearPolynomial::new))
-            .collect_vec();
-
-        let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &circuit_info.permutations);
+        let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &permutations);
         let permutation_z_polys = permutation_z_polys(
             4,
             &permutation_polys,
@@ -465,7 +477,11 @@ pub(crate) mod test {
     pub(crate) fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
         num_vars: usize,
         mut rng: impl RngCore,
-    ) -> (PlonkishCircuitInfo<F>, Vec<F>, Vec<Vec<F>>) {
+    ) -> (
+        PlonkishCircuitInfo<F>,
+        Vec<Vec<F>>,
+        impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
+    ) {
         let size = 1 << num_vars;
         let mut polys = [(); 13].map(|_| vec![F::zero(); size]);
 
@@ -486,7 +502,7 @@ pub(crate) mod test {
         polys[9] = t_o;
 
         let instances = rand_vec(num_vars, &mut rng);
-        polys[0] = instances_polys(num_vars, &[&instances])[0].evals().to_vec();
+        polys[0] = instances_polys(num_vars, [&instances])[0].evals().to_vec();
 
         let mut cycles = Vec::new();
         for idx in 0..size {
@@ -551,23 +567,28 @@ pub(crate) mod test {
             [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o].map(MultilinearPolynomial::new),
             cycles,
         );
-        (circuit_info, instances, vec![w_l, w_r, w_o])
+        (circuit_info, vec![instances], move |_| {
+            Ok(vec![w_l.clone(), w_r.clone(), w_o.clone()])
+        })
     }
 
     pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord>(
         num_vars: usize,
         mut rng: impl RngCore,
     ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
-        let (circuit_info, instances, witnesses) =
-            rand_plonk_with_lookup_circuit(num_vars, &mut rng);
+        let (polys, permutations) = {
+            let (circuit_info, instances, mut witness) =
+                rand_plonk_with_lookup_circuit(num_vars, &mut rng);
+            let witness = witness(&[]).unwrap();
+            let polys = iter::empty()
+                .chain(instances_polys(num_vars, &instances))
+                .chain(circuit_info.preprocess_polys)
+                .chain(witness.into_iter().map(MultilinearPolynomial::new))
+                .collect_vec();
+            (polys, circuit_info.permutations)
+        };
         let challenges: [_; 4] = rand_array(&mut rng);
         let [theta, beta, gamma, _] = challenges;
-
-        let polys = iter::empty()
-            .chain(instances_polys(num_vars, &[&instances]))
-            .chain(circuit_info.preprocess_polys)
-            .chain(witnesses.into_iter().map(MultilinearPolynomial::new))
-            .collect_vec();
 
         let (lookup_compressed_polys, lookup_permuted_polys) = {
             let PlonkishCircuitInfo { lookups, .. } =
@@ -581,8 +602,7 @@ pub(crate) mod test {
             &gamma,
         );
 
-        let permutation_polys =
-            permutation_polys(num_vars, &[10, 11, 12], &circuit_info.permutations);
+        let permutation_polys = permutation_polys(num_vars, &[10, 11, 12], &permutations);
         let permutation_z_polys = permutation_z_polys(
             4,
             &permutation_polys,

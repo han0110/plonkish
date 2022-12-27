@@ -14,16 +14,16 @@ pub struct PlonkishCircuitInfo<F> {
     /// 2^k is the size of the circuit
     pub k: usize,
     /// Number of instnace value in each instance polynomial.
-    pub num_instance: Vec<usize>,
+    pub num_instances: Vec<usize>,
     /// Preprocessed polynomials, which has index starts with offset
-    /// `num_instance.len()`.
+    /// `num_instances.len()`.
     pub preprocess_polys: Vec<MultilinearPolynomial<F>>,
     /// Number of witness polynoimal in each phase.
-    /// Witness polynomial index starts with offset `num_instance.len()` +
+    /// Witness polynomial index starts with offset `num_instances.len()` +
     /// `preprocess_polys.len()`.
-    pub num_witness_poly: Vec<usize>,
+    pub num_witness_polys: Vec<usize>,
     /// Number of challenge in each phase.
-    pub num_challenge: Vec<usize>,
+    pub num_challenges: Vec<usize>,
     /// Constraints.
     pub constraints: Vec<Expression<F>>,
     /// Each item inside outer vector repesents an independent vector lookup,
@@ -41,7 +41,7 @@ pub struct PlonkishCircuitInfo<F> {
 impl<F: Clone> PlonkishCircuitInfo<F> {
     pub fn is_well_formed(&self) -> bool {
         let num_poly = self.num_poly();
-        let num_challenge = self.num_challenge.iter().sum::<usize>();
+        let num_challenges = self.num_challenges.iter().sum::<usize>();
         let polys = iter::empty()
             .chain(self.expressions().flat_map(Expression::used_poly))
             .chain(self.permutation_polys())
@@ -50,11 +50,11 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
             .chain(self.expressions().flat_map(Expression::used_challenge))
             .collect::<BTreeSet<_>>();
         // Same amount of phases
-        self.num_witness_poly.len() == self.num_challenge.len()
+        self.num_witness_polys.len() == self.num_challenges.len()
             // Polynomial indices are in range
             && (polys.is_empty() || *polys.last().unwrap() < num_poly)
             // Challenge indices are in range
-            && (challenges.is_empty() || *challenges.last().unwrap() < num_challenge)
+            && (challenges.is_empty() || *challenges.last().unwrap() < num_challenges)
             // Every constraint has degree less equal than `max_degree`
             && self
                 .max_degree
@@ -68,9 +68,9 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
     }
 
     pub fn num_poly(&self) -> usize {
-        self.num_instance.len()
+        self.num_instances.len()
             + self.preprocess_polys.len()
-            + self.num_witness_poly.iter().sum::<usize>()
+            + self.num_witness_polys.iter().sum::<usize>()
     }
 
     pub fn permutation_polys(&self) -> Vec<usize> {
@@ -95,7 +95,7 @@ pub(super) fn compose<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
 ) -> (usize, VirtualPolynomialInfo<F>) {
     let permutation_polys = circuit_info.permutation_polys();
-    let challenge_offset = circuit_info.num_challenge.iter().sum::<usize>();
+    let challenge_offset = circuit_info.num_challenges.iter().sum::<usize>();
     let [theta, beta, gamma, alpha] =
         &array::from_fn(|idx| Expression::<F>::Challenge(challenge_offset + idx));
     let l_1 = &Expression::<F>::lagrange(1);
@@ -345,7 +345,7 @@ pub(crate) mod test {
 
     pub(crate) fn plonk_circuit_info<F: PrimeField>(
         num_vars: usize,
-        num_instance: usize,
+        num_instances: usize,
         preprocess_polys: [MultilinearPolynomial<F>; 5],
         permutations: Vec<Vec<(usize, usize)>>,
     ) -> PlonkishCircuitInfo<F> {
@@ -353,10 +353,10 @@ pub(crate) mod test {
             &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
         PlonkishCircuitInfo {
             k: num_vars,
-            num_instance: vec![num_instance],
+            num_instances: vec![num_instances],
             preprocess_polys: preprocess_polys.to_vec(),
-            num_witness_poly: vec![3],
-            num_challenge: vec![0],
+            num_witness_polys: vec![3],
+            num_challenges: vec![0],
             constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi],
             lookups: Vec::new(),
             permutations,
@@ -378,7 +378,7 @@ pub(crate) mod test {
 
     pub(crate) fn plonk_with_lookup_circuit_info<F: PrimeField>(
         num_vars: usize,
-        num_instance: usize,
+        num_instances: usize,
         preprocess_polys: [MultilinearPolynomial<F>; 9],
         permutations: Vec<Vec<(usize, usize)>>,
     ) -> PlonkishCircuitInfo<F> {
@@ -386,10 +386,10 @@ pub(crate) mod test {
             &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
         PlonkishCircuitInfo {
             k: num_vars,
-            num_instance: vec![num_instance],
+            num_instances: vec![num_instances],
             preprocess_polys: preprocess_polys.to_vec(),
-            num_witness_poly: vec![3],
-            num_challenge: vec![0],
+            num_witness_polys: vec![3],
+            num_challenges: vec![0],
             constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi],
             lookups: vec![vec![
                 (q_lookup * w_l, t_l.clone()),

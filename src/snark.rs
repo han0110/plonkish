@@ -30,7 +30,7 @@ where
     fn prove(
         pp: &Self::ProverParam,
         instances: &[&[F]],
-        witness_collector: impl FnMut(&[F]) -> Vec<Vec<F>>,
+        witness_collector: impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
         transcript: &mut impl TranscriptWrite<F, Commitment = Pcs::Commitment>,
         rng: impl RngCore,
     ) -> Result<(), Error>;

@@ -14,16 +14,16 @@ use crate::{
 };
 use std::collections::{BTreeMap, HashSet};
 
-pub(super) fn instances_polys<F: PrimeField>(
+pub(super) fn instances_polys<'a, F: PrimeField>(
     num_vars: usize,
-    instances: &[&[F]],
+    instances: impl IntoIterator<Item = impl IntoIterator<Item = &'a F>>,
 ) -> Vec<MultilinearPolynomial<F>> {
     let bh = BooleanHypercube::new(num_vars);
     instances
-        .iter()
+        .into_iter()
         .map(|instances| {
             let mut poly = vec![F::zero(); 1 << num_vars];
-            for (b, instance) in bh.iter().skip(1).zip(instances.iter()) {
+            for (b, instance) in bh.iter().skip(1).zip(instances.into_iter()) {
                 poly[b] = *instance;
             }
             poly

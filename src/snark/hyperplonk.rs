@@ -32,10 +32,10 @@ mod verifier;
 pub use preprocess::PlonkishCircuitInfo;
 
 #[derive(Clone, Debug)]
-struct HyperPlonk<Pcs>(PhantomData<Pcs>);
+pub struct HyperPlonk<Pcs>(PhantomData<Pcs>);
 
 #[derive(Clone, Debug)]
-struct HyperPlonkProverParam<F, Pcs>
+pub struct HyperPlonkProverParam<F, Pcs>
 where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F>,
@@ -53,7 +53,7 @@ where
 }
 
 #[derive(Clone, Debug)]
-struct HyperPlonkVerifierParam<F, Pcs>
+pub struct HyperPlonkVerifierParam<F, Pcs>
 where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F>,

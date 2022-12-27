@@ -14,14 +14,26 @@ sha3 = "0.10.6"
 colored = { version = "2.0.0", optional = true }
 
 # frontend-halo2
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2022_10_22", optional = true }
+
+# benchmark
+snark-verifier = { git = "https://github.com/privacy-scaling-explorations/snark-verifier", tag = "v2022_12_23", default-features = false, features = ["loader_halo2", "system_halo2"], optional = true }
+
+[dev-dependencies]
+criterion = "0.4.0"
+
+[patch."https://github.com/privacy-scaling-explorations/halo2.git"]
 halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/export-more-fns", optional = true }
 
 [features]
-default = ["frontend-halo2"]
+default = []
 timer = ["dep:colored"]
 sanity-check = []
 
 frontend-halo2 = ["dep:halo2_proofs"]
+benchmark = ["timer", "frontend-halo2", "dep:snark-verifier"]
 
-[dev-dependencies]
-criterion = "0.4.0"
+[[bench]]
+name = "snark"
+harness = false
+required-features = ["benchmark"]

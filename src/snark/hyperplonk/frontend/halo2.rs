@@ -19,6 +19,11 @@ use std::{
     iter, mem,
 };
 
+#[cfg(any(test, feature = "benchmark"))]
+pub mod circuit;
+#[cfg(test)]
+mod test;
+
 pub fn circuit_info<F, C>(
     k: usize,
     circuit: &C,
@@ -90,16 +95,14 @@ where
     )
     .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
 
-    let preprocess_polys = preprocess_collector
-        .selectors
-        .into_iter()
-        .map(|selectors| {
+    let preprocess_polys = iter::empty()
+        .chain(batch_invert_assigned(preprocess_collector.fixeds))
+        .chain(preprocess_collector.selectors.into_iter().map(|selectors| {
             selectors
                 .into_iter()
                 .map(|selector| selector.then(F::one).unwrap_or_else(F::zero))
                 .collect()
-        })
-        .chain(batch_invert_assigned(preprocess_collector.fixeds))
+        }))
         .map(MultilinearPolynomial::new)
         .collect();
     let permutations = preprocess_collector.permutation.into_cycles();
@@ -623,140 +626,4 @@ fn batch_invert_assigned<F: Field>(assigneds: Vec<Vec<Assigned<F>>>) -> Vec<Vec<
                 .collect()
         })
         .collect()
-}
-
-#[cfg(test)]
-mod test {
-    use crate::{
-        snark::hyperplonk::{
-            frontend::halo2::{circuit_info, witness_collector},
-            preprocess::test::plonk_circuit_info,
-            test::run_hyperplonk,
-        },
-        util::{arithmetic::PrimeField, Itertools},
-    };
-    use halo2_curves::bn256::Fr;
-    use halo2_proofs::{
-        circuit::{floor_planner::V1, Layouter, Value},
-        plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed},
-        poly::Rotation,
-    };
-    use rand::{rngs::OsRng, RngCore};
-
-    #[derive(Clone)]
-    pub struct StandardPlonkConfig {
-        selectors: [Column<Fixed>; 5],
-        wires: [Column<Advice>; 3],
-    }
-
-    impl StandardPlonkConfig {
-        pub fn configure<F: PrimeField>(meta: &mut ConstraintSystem<F>) -> Self {
-            let pi = meta.instance_column();
-            let [q_l, q_r, q_m, q_o, q_c] = [(); 5].map(|_| meta.fixed_column());
-            let [w_l, w_r, w_o] = [(); 3].map(|_| meta.advice_column());
-            [w_l, w_r, w_o].map(|column| meta.enable_equality(column));
-            meta.create_gate(
-                "q_l·w_l + q_r·w_r + q_m·w_l·w_r + q_o·w_o + q_c + pi = 0",
-                |meta| {
-                    let [w_l, w_r, w_o] =
-                        [w_l, w_r, w_o].map(|column| meta.query_advice(column, Rotation::cur()));
-                    let [q_l, q_r, q_o, q_m, q_c] = [q_l, q_r, q_o, q_m, q_c]
-                        .map(|column| meta.query_fixed(column, Rotation::cur()));
-                    let pi = meta.query_instance(pi, Rotation::cur());
-                    Some(
-                        q_l * w_l.clone()
-                            + q_r * w_r.clone()
-                            + q_m * w_l * w_r
-                            + q_o * w_o
-                            + q_c
-                            + pi,
-                    )
-                },
-            );
-            StandardPlonkConfig {
-                selectors: [q_l, q_r, q_o, q_m, q_c],
-                wires: [w_l, w_r, w_o],
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Default)]
-    pub struct StandardPlonk<F>(F);
-
-    impl<F: PrimeField> StandardPlonk<F> {
-        pub fn rand<R: RngCore>(mut rng: R) -> Self {
-            Self(F::from(rng.next_u32() as u64))
-        }
-
-        pub fn instances(&self) -> Vec<Vec<F>> {
-            vec![vec![self.0]]
-        }
-    }
-
-    impl<F: PrimeField> Circuit<F> for StandardPlonk<F> {
-        type Config = StandardPlonkConfig;
-        type FloorPlanner = V1;
-
-        fn without_witnesses(&self) -> Self {
-            *self
-        }
-
-        fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            meta.set_minimum_degree(4);
-            StandardPlonkConfig::configure(meta)
-        }
-
-        fn synthesize(
-            &self,
-            config: Self::Config,
-            mut layouter: impl Layouter<F>,
-        ) -> Result<(), Error> {
-            let [q_l, q_r, q_o, q_m, q_c] = config.selectors;
-            let [w_l, w_r, w_o] = config.wires;
-            layouter.assign_region(
-                || "",
-                |mut region| {
-                    let a = region.assign_advice(|| "", w_l, 0, || Value::known(self.0))?;
-                    region.assign_fixed(|| "", q_l, 0, || Value::known(-F::one()))?;
-                    a.copy_advice(|| "", &mut region, w_r, 1)?;
-                    a.copy_advice(|| "", &mut region, w_o, 2)?;
-                    region.assign_advice(|| "", w_l, 3, || Value::known(-F::from(5)))?;
-                    for (column, idx) in [q_l, q_r, q_o, q_m, q_c].iter().zip(1..) {
-                        region.assign_fixed(|| "", *column, 3, || Value::known(F::from(idx)))?;
-                    }
-                    Ok(())
-                },
-            )
-        }
-    }
-
-    #[test]
-    fn test_circuit_info() {
-        let circuit = StandardPlonk::<Fr>::rand(OsRng);
-        let circuit_info = circuit_info(3, &circuit, vec![1]).unwrap();
-        assert_eq!(
-            circuit_info.constraints,
-            plonk_circuit_info(
-                0,
-                0,
-                Default::default(),
-                vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
-            )
-            .constraints
-        )
-    }
-
-    #[test]
-    fn test_e2e() {
-        let circuit = StandardPlonk::rand(OsRng);
-        let instances = circuit.instances();
-        let instances = instances.iter().map(Vec::as_slice).collect_vec();
-        run_hyperplonk(3..16, |num_vars| {
-            (
-                circuit_info(num_vars, &circuit, vec![1]).unwrap(),
-                circuit.instances(),
-                witness_collector(num_vars, &circuit, &instances),
-            )
-        });
-    }
 }

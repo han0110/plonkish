@@ -11,7 +11,7 @@ use std::fmt::Debug;
 
 pub mod hyperplonk;
 
-trait UniversalSnark<F, Pcs>: Clone + Debug
+pub trait UniversalSnark<F, Pcs>: Clone + Debug
 where
     F: Field,
     Pcs: PolynomialCommitmentScheme<F>,

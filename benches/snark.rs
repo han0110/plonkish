@@ -43,14 +43,14 @@ fn bench_plonk() {
         let instances = instances.iter().map(Vec::as_slice).collect_vec();
 
         let start = start_timer(format!("plonk_preprocess_{k}"));
-        let vk = keygen_vk(&param, &circuit).unwrap();
-        let pk = keygen_pk(&param, vk, &circuit).unwrap();
+        let vk = keygen_vk::<_, _, _, false>(&param, &circuit).unwrap();
+        let pk = keygen_pk::<_, _, _, false>(&param, vk, &circuit).unwrap();
         end_timer(start);
 
         let start = start_timer(format!("plonk_prove_{k}"));
         let proof = {
             let mut transcript = Blake2bWrite::init(Vec::new());
-            create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
+            create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _, false>(
                 &param,
                 &pk,
                 &[circuit],
@@ -66,7 +66,7 @@ fn bench_plonk() {
         let start = start_timer(format!("plonk_verify_{k}"));
         let accept = {
             let mut transcript = Blake2bRead::init(proof.as_slice());
-            verify_proof::<_, VerifierGWC<_>, _, _, _>(
+            verify_proof::<_, VerifierGWC<_>, _, _, _, false>(
                 &param,
                 pk.get_vk(),
                 SingleStrategy::new(&param),

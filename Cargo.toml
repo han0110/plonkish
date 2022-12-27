@@ -23,7 +23,10 @@ snark-verifier = { git = "https://github.com/privacy-scaling-explorations/snark-
 criterion = "0.4.0"
 
 [patch."https://github.com/privacy-scaling-explorations/halo2.git"]
-halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/export-more-fns", optional = true }
+halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
+
+[patch."https://github.com/privacy-scaling-explorations/snark-verifier.git"]
+snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "feature/for-benchmark" }
 
 [features]
 default = []

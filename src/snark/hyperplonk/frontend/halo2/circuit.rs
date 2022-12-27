@@ -1,7 +1,7 @@
 use crate::util::{arithmetic::PrimeField, Itertools};
+use halo2_curves::{pairing::Engine, CurveAffine};
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
-    halo2curves::{pairing::Engine, CurveAffine},
     plonk::{
         create_proof, keygen_pk, keygen_vk, Advice, Circuit, Column, ConstraintSystem, Error, Fixed,
     },
@@ -280,7 +280,8 @@ impl<M: MultiMillerLoop> AggregationCircuit<M> {
                 param.downsize(4);
                 param
             };
-            let pk = keygen_pk(&param, keygen_vk(&param, &circuit).unwrap(), &circuit).unwrap();
+            let vk = keygen_vk::<_, _, _, true>(&param, &circuit).unwrap();
+            let pk = keygen_pk::<_, _, _, true>(&param, vk, &circuit).unwrap();
             let protocol = compile(
                 &param,
                 pk.get_vk(),
@@ -289,7 +290,7 @@ impl<M: MultiMillerLoop> AggregationCircuit<M> {
             let instances = circuit.instances();
             let proof = {
                 let mut transcript = PoseidonTranscript::new(Vec::new());
-                create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
+                create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _, true>(
                     &param,
                     &pk,
                     &[circuit],
@@ -302,10 +303,8 @@ impl<M: MultiMillerLoop> AggregationCircuit<M> {
             };
             Snark::new(protocol, instances, proof)
         };
-        let snarks = vec![snark; (1 << k) / 540000];
-
+        let snarks = vec![snark; (1 << k) / 1000000];
         let accumulator_limbs = aggregate(param, &snarks)?;
-
         Some(Self {
             svk: KzgSvk::<M>::new(param.get_g()[0]),
             snarks: snarks.into_iter().map_into().collect(),

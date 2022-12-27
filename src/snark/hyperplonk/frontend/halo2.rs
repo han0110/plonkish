@@ -116,7 +116,7 @@ where
         constraints,
         lookups,
         permutations,
-        max_degree: Some(cs.degree()),
+        max_degree: Some(cs.degree::<false>()),
     })
 }
 

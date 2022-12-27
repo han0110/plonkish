@@ -11,7 +11,7 @@ use std::fmt::Debug;
 pub mod multilinear_kzg;
 pub mod univariate_kzg;
 
-pub trait PolynomialCommitmentScheme<F: Field>: Debug {
+pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type Param: Debug;
     type ProverParam: Debug;
     type VerifierParam: Debug;
@@ -69,6 +69,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Debug {
     ) -> Result<(), Error>;
 }
 
+#[derive(Clone, Debug)]
 pub struct Evaluation<F: Field> {
     poly: usize,
     point: usize,

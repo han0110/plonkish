@@ -1,4 +1,4 @@
-use num_integer::Integer;
+use arithmetic::div_ceil;
 
 pub mod arithmetic;
 pub mod expression;
@@ -30,7 +30,7 @@ where
 {
     {
         let num_threads = num_threads();
-        let chunk_size = Integer::div_ceil(&v.len(), &num_threads);
+        let chunk_size = div_ceil(v.len(), num_threads);
         if chunk_size < num_threads {
             f((v, 0));
         } else {
@@ -53,7 +53,11 @@ impl BitIndex for usize {
 pub(crate) mod test {
     use crate::util::arithmetic::Field;
     use rand::RngCore;
-    use std::{array, iter};
+    use std::{array, iter, ops::Range};
+
+    pub fn rand_idx(range: Range<usize>, mut rng: impl RngCore) -> usize {
+        range.start + (rng.next_u64() as usize % (range.end - range.start))
+    }
 
     pub fn rand_array<F: Field, const N: usize>(mut rng: impl RngCore) -> [F; N] {
         array::from_fn(|_| F::random(&mut rng))

@@ -1,12 +1,11 @@
 use crate::{
     poly::impl_index,
     util::{
-        arithmetic::{horner, powers, Field},
+        arithmetic::{div_ceil, horner, powers, Field},
         num_threads, parallelize, parallelize_iter,
     },
 };
 use itertools::Itertools;
-use num_integer::Integer;
 use rand::RngCore;
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
@@ -17,14 +16,14 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnivariatePolynomial<F>(Vec<F>);
 
-impl<F: Field> UnivariatePolynomial<F> {
-    pub fn new(coeffs: Vec<F>) -> Self {
-        let mut poly = Self(coeffs);
-        poly.truncate_leading_zeros();
-        poly
+impl<F> Default for UnivariatePolynomial<F> {
+    fn default() -> Self {
+        UnivariatePolynomial::zero()
     }
+}
 
-    pub fn zero() -> Self {
+impl<F> UnivariatePolynomial<F> {
+    pub const fn zero() -> Self {
         Self(Vec::new())
     }
 
@@ -38,6 +37,18 @@ impl<F: Field> UnivariatePolynomial<F> {
 
     pub fn degree(&self) -> usize {
         self.coeffs().len().checked_sub(1).unwrap_or_default()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &F> {
+        self.0.iter()
+    }
+}
+
+impl<F: Field> UnivariatePolynomial<F> {
+    pub fn new(coeffs: Vec<F>) -> Self {
+        let mut poly = Self(coeffs);
+        poly.truncate_leading_zeros();
+        poly
     }
 
     pub fn rand(degree: usize, mut rng: impl RngCore) -> Self {
@@ -54,7 +65,7 @@ impl<F: Field> UnivariatePolynomial<F> {
             return horner(&self.0, x);
         }
 
-        let chunk_size = Integer::div_ceil(&self.coeffs().len(), &num_threads);
+        let chunk_size = div_ceil(self.coeffs().len(), num_threads);
         let mut results = vec![F::zero(); num_threads];
         parallelize_iter(
             results
@@ -181,13 +192,13 @@ impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
 
 impl<F: Field> AddAssign<F> for UnivariatePolynomial<F> {
     fn add_assign(&mut self, rhs: F) {
-        self.0[0] += rhs;
+        self.0[0] += &rhs;
     }
 }
 
 impl<F: Field> SubAssign<F> for UnivariatePolynomial<F> {
     fn sub_assign(&mut self, rhs: F) {
-        self.0[0] -= rhs;
+        self.0[0] -= &rhs;
     }
 }
 
@@ -205,7 +216,7 @@ impl<F: Field> MulAssign<F> for UnivariatePolynomial<F> {
     fn mul_assign(&mut self, rhs: F) {
         parallelize(&mut self.0, |(lhs, _)| {
             for lhs in lhs.iter_mut() {
-                *lhs *= rhs;
+                *lhs *= &rhs;
             }
         });
     }

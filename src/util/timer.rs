@@ -19,10 +19,10 @@ mod enabled {
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     const MDOT: &str = "·";
 
-    pub fn start_timer<T: ToString>(msg: impl Fn() -> T) -> TimerInfo {
+    pub fn start_timer(msg: impl ToString) -> TimerInfo {
         let indent = MDOT.repeat(2 * COUNT.load(Ordering::Relaxed)).white();
         let prefix = "Start:".yellow().bold();
-        let msg = msg().to_string();
+        let msg = msg.to_string();
         println!("{}{:8} {}", indent, prefix, msg);
         COUNT.fetch_add(1, Ordering::Relaxed);
         TimerInfo {
@@ -68,7 +68,7 @@ mod enabled {
 mod disabled {
     use crate::util::timer::{Instant, TimerInfo};
 
-    pub fn start_timer<T: ToString>(_: impl Fn() -> T) -> TimerInfo {
+    pub fn start_timer(_: impl ToString) -> TimerInfo {
         TimerInfo {
             msg: String::new(),
             time: Instant::now(),

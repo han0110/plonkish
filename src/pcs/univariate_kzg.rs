@@ -15,7 +15,7 @@ use crate::{
 use rand::RngCore;
 use std::{iter, marker::PhantomData, ops::Neg};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
@@ -196,7 +196,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         let rhs = quotient;
         M::pairings_product_is_identity(&[(&lhs, &vp.g2.neg().into()), (&rhs, &vp.s_g2.into())])
             .then_some(())
-            .ok_or_else(|| Error::InvalidPcsProof("Invalid univariate KZG proof".to_string()))
+            .ok_or_else(|| Error::InvalidPcsOpen("Invalid univariate KZG open".to_string()))
     }
 
     fn batch_verify(
@@ -225,7 +225,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         let rhs = &variable_base_msm(&seps, &quotients).into();
         M::pairings_product_is_identity(&[(lhs, &vp.g2.neg().into()), (rhs, &vp.s_g2.into())])
             .then_some(())
-            .ok_or_else(|| Error::InvalidPcsProof("Invalid univariate KZG batch proof".to_string()))
+            .ok_or_else(|| Error::InvalidPcsOpen("Invalid univariate KZG batch open".to_string()))
     }
 }
 
@@ -234,7 +234,7 @@ mod test {
     use crate::{
         pcs::{univariate_kzg::UnivariateKzg, Evaluation, PolynomialCommitmentScheme},
         util::{
-            transcript::{self, Transcript, TranscriptRead, TranscriptWrite},
+            transcript::{Keccak256Transcript, Transcript, TranscriptRead, TranscriptWrite},
             Itertools,
         },
     };
@@ -244,7 +244,6 @@ mod test {
 
     type Pcs = UnivariateKzg<Bn256>;
     type Polynomial = <Pcs as PolynomialCommitmentScheme<Fr>>::Polynomial;
-    type Keccak256Transcript<S> = transcript::Keccak256Transcript<S, Bn256>;
 
     #[test]
     fn test_commit_open_verify() {

@@ -1,8 +1,7 @@
 use crate::util::{
-    arithmetic::{field_size, CurveAffine, Field, Group, PrimeField},
+    arithmetic::{div_ceil, field_size, CurveAffine, Field, Group, PrimeField},
     num_threads, parallelize, parallelize_iter, Itertools,
 };
-use num_integer::Integer;
 use std::mem::size_of;
 
 pub fn window_size(num_scalars: usize) -> usize {
@@ -15,7 +14,7 @@ pub fn window_size(num_scalars: usize) -> usize {
 
 pub fn window_table<C: CurveAffine>(window_size: usize, generator: C) -> Vec<Vec<C>> {
     let scalar_size = field_size::<C::Scalar>();
-    let num_windows = Integer::div_ceil(&scalar_size, &window_size);
+    let num_windows = div_ceil(scalar_size, window_size);
     let mut table = vec![vec![C::identity(); (1 << window_size) - 1]; num_windows];
     parallelize(&mut table, |(table, start)| {
         for (table, idx) in table.iter_mut().zip(start..) {
@@ -90,13 +89,13 @@ pub fn variable_base_msm<'a, 'b, C: CurveAffine>(
     assert_eq!(scalars.len(), bases.len());
 
     let num_threads = num_threads();
-    if scalars.len() < num_threads {
+    if scalars.len() <= num_threads {
         let mut result = C::Curve::identity();
         variable_base_msm_serial(&scalars, &bases, &mut result);
         return result;
     }
 
-    let chunk_size = Integer::div_ceil(&scalars.len(), &num_threads);
+    let chunk_size = div_ceil(scalars.len(), num_threads);
     let mut results = vec![C::Curve::identity(); num_threads];
     parallelize_iter(
         scalars
@@ -155,7 +154,7 @@ fn variable_base_msm_serial<C: CurveAffine>(
     let window_size = window_size(scalars.len());
     let num_buckets = (1 << window_size) - 1;
 
-    let num_windows = Integer::div_ceil(&num_bits, &window_size);
+    let num_windows = div_ceil(num_bits, window_size);
     for idx in (0..num_windows).rev() {
         for _ in 0..window_size {
             *result = result.double();

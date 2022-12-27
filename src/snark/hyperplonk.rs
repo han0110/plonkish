@@ -24,6 +24,7 @@ use crate::{
 use rand::RngCore;
 use std::{fmt::Debug, iter, marker::PhantomData};
 
+pub mod frontend;
 pub(crate) mod preprocess;
 mod prover;
 mod verifier;

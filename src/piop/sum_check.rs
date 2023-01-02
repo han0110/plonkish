@@ -2,6 +2,7 @@ use crate::{
     piop::sum_check::prover::ProvingState,
     util::{
         arithmetic::PrimeField,
+        start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
     },
@@ -20,6 +21,11 @@ pub fn prove<F: PrimeField>(
     virtual_poly: VirtualPolynomial<F>,
     transcript: &mut impl TranscriptWrite<F>,
 ) -> Result<Vec<F>, Error> {
+    let _timer = start_timer(|| {
+        let degree = virtual_poly.info.expression().degree();
+        format!("sum_check_prove-{num_vars}-{degree}")
+    });
+
     let mut state = ProvingState::new(num_vars, virtual_poly);
     iter::repeat_with(|| {
         for sample_eval in state.sample_evals() {

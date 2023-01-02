@@ -7,8 +7,10 @@ use crate::{
             div_ceil, fixed_base_msm, ilog2, inner_product, powers, variable_base_msm, window_size,
             window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
         },
+        end_timer,
         expression::{Expression, Query, Rotation},
-        num_threads, parallelize, parallelize_iter,
+        parallel::{num_threads, parallelize, parallelize_iter},
+        start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
     },
@@ -219,6 +221,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .iter()
             .enumerate()
             .map(|(idx, x_i)| {
+                let timer = start_timer(|| "quotient");
                 let mut quotient = vec![M::Scalar::zero(); remainder.len() >> 1];
                 parallelize(&mut quotient, |(quotient, start)| {
                     for (quotient, (remainder_0, remainder_1)) in quotient.iter_mut().zip(
@@ -230,6 +233,9 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                         *quotient = *remainder_1 - remainder_0;
                     }
                 });
+                end_timer(timer);
+
+                let timer = start_timer(|| "remainder");
                 let mut next_remainder = vec![M::Scalar::zero(); remainder.len() >> 1];
                 parallelize(&mut next_remainder, |(next_remainder, start)| {
                     for (next_remainder, (remainder_0, remainder_1)) in
@@ -244,6 +250,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                     }
                 });
                 remainder = next_remainder;
+                end_timer(timer);
+
                 if quotient.len() == 1 {
                     variable_base_msm(&quotient, &[pp.g1]).into()
                 } else {
@@ -298,26 +306,43 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             }
         }
 
+        let timer = start_timer(|| "tilde_gs");
         let t = transcript.squeeze_challenge();
+        let powers_of_t = powers(t).take(evals.len()).collect_vec();
         let tilde_gs = evals
             .iter()
-            .zip(powers(t))
+            .zip(powers_of_t.iter())
             .map(|(eval, power_of_t)| polys[eval.poly()] * power_of_t)
             .collect_vec();
+        end_timer(timer);
+
         let virtual_poly_info = virtual_poly_info(evals);
         let virtual_poly =
             VirtualPolynomial::new(&virtual_poly_info, &tilde_gs, Vec::new(), points.to_vec());
         let challenges = sum_check::prove(num_vars, virtual_poly, transcript).unwrap();
+        drop(tilde_gs);
 
+        let timer = start_timer(|| "g_prime");
         let eq_xz_evals = points
             .iter()
             .map(|point| eq_xy_eval(&challenges, point))
             .collect_vec();
-        let g_prime = tilde_gs
+        let g_prime = evals
             .iter()
-            .zip(evals)
-            .map(|(tilde_g, eval)| tilde_g * eq_xz_evals[eval.point()])
+            .zip(powers_of_t.iter())
+            .fold(
+                vec![M::Scalar::zero(); polys.len()],
+                |mut coeffs, (eval, power_of_t)| {
+                    coeffs[eval.poly()] += eq_xz_evals[eval.point()] * power_of_t;
+                    coeffs
+                },
+            )
+            .iter()
+            .zip(polys)
+            .map(|(coeff, poly)| poly * coeff)
             .sum::<MultilinearPolynomial<_>>();
+        end_timer(timer);
+
         let g_prime_eval = if cfg!(feature = "sanity-check") {
             g_prime.evaluate(&challenges)
         } else {

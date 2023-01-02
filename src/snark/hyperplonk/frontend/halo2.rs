@@ -135,33 +135,23 @@ where
         (cs, config)
     };
 
-    let advice_idx_in_phase = cs
-        .advice_column_phase()
-        .into_iter()
-        .scan(vec![0; 3], |state, phase| {
-            let index = state[phase as usize];
-            state[phase as usize] += 1;
-            Some(index)
-        })
-        .collect_vec();
-    let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
     let num_witness_polys = num_by_phase(&cs.advice_column_phase());
-
-    let mut witness_collector = WitnessCollector {
-        k: k as u32,
-        phase: 0,
-        advice_idx_in_phase,
-        challenge_idx,
-        instances,
-        advices: Vec::new(),
-        challenges: Vec::new(),
-        row_map: row_map(k),
-    };
+    let advice_idx_in_phase = idx_in_phase(&cs.advice_column_phase());
+    let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
+    let row_map = row_map(k);
+    let mut phase = 0;
 
     move |challenges| {
-        let num_witness_poly = num_witness_polys[witness_collector.phase as usize];
-        witness_collector.advices = vec![vec![F::zero().into(); 1 << k]; num_witness_poly];
-        witness_collector.challenges = challenges.to_vec();
+        let mut witness_collector = WitnessCollector {
+            k: k as u32,
+            phase,
+            advice_idx_in_phase: &advice_idx_in_phase,
+            challenge_idx: &challenge_idx,
+            instances,
+            advices: vec![vec![F::zero().into(); 1 << k]; num_witness_polys[phase as usize]],
+            challenges,
+            row_map: &row_map,
+        };
 
         C::FloorPlanner::synthesize(
             &mut witness_collector,
@@ -171,10 +161,8 @@ where
         )
         .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
 
-        witness_collector.phase += 1;
-        Ok(batch_invert_assigned(mem::take(
-            &mut witness_collector.advices,
-        )))
+        phase += 1;
+        Ok(batch_invert_assigned(witness_collector.advices))
     }
 }
 
@@ -185,7 +173,7 @@ struct PreprocessCollector<F: Field> {
     fixeds: Vec<Vec<Assigned<F>>>,
     permutation: Permutation,
     selectors: Vec<Vec<bool>>,
-    row_map: Vec<Option<usize>>,
+    row_map: Vec<usize>,
 }
 
 impl<F: Field> Assignment<F> for PreprocessCollector<F> {
@@ -203,7 +191,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
-        let Some(Some(row)) = self.row_map.get(row).copied() else {
+        let Some(row) = self.row_map.get(row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -248,7 +236,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
-        let Some(Some(row)) = self.row_map.get(row).copied() else {
+        let Some(row) = self.row_map.get(row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -268,10 +256,10 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         rhs_column: Column<Any>,
         rhs_row: usize,
     ) -> Result<(), Error> {
-        let Some(Some(lhs_row)) = self.row_map.get(lhs_row).copied() else {
+        let Some(lhs_row) = self.row_map.get(lhs_row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
-        let Some(Some(rhs_row)) = self.row_map.get(rhs_row).copied() else {
+        let Some(rhs_row) = self.row_map.get(rhs_row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
         self.permutation
@@ -284,7 +272,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         from_row: usize,
         to: Value<Assigned<F>>,
     ) -> Result<(), Error> {
-        let Some(Some(_)) = self.row_map.get(from_row) else {
+        let Some(_) = self.row_map.get(from_row) else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -294,7 +282,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
             .ok_or(Error::BoundsFailure)?;
 
         let filler = to.assign()?;
-        for row in self.row_map.iter().skip(from_row).flatten().copied() {
+        for row in self.row_map.iter().skip(from_row).copied() {
             col[row] = filler;
         }
 
@@ -391,12 +379,12 @@ impl Permutation {
 struct WitnessCollector<'a, F: Field> {
     k: u32,
     phase: u8,
-    advice_idx_in_phase: Vec<usize>,
-    challenge_idx: Vec<usize>,
+    advice_idx_in_phase: &'a [usize],
+    challenge_idx: &'a [usize],
     instances: &'a [&'a [F]],
     advices: Vec<Vec<Assigned<F>>>,
-    challenges: Vec<F>,
-    row_map: Vec<Option<usize>>,
+    challenges: &'a [F],
+    row_map: &'a [usize],
 }
 
 impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
@@ -442,7 +430,7 @@ impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
             return Ok(());
         }
 
-        let Some(Some(row)) = self.row_map.get(row).copied() else {
+        let Some(row) = self.row_map.get(row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -532,6 +520,18 @@ fn num_by_phase(phases: &[u8]) -> Vec<usize> {
     )
 }
 
+fn idx_in_phase(phases: &[u8]) -> Vec<usize> {
+    phases
+        .iter()
+        .copied()
+        .scan(vec![0; num_phases(phases)], |state, phase| {
+            let index = state[phase as usize];
+            state[phase as usize] += 1;
+            Some(index)
+        })
+        .collect_vec()
+}
+
 fn idx_order_by_phase(phases: &[u8], offset: usize) -> Vec<usize> {
     let phase_offsets = num_by_phase(phases)
         .into_iter()
@@ -592,8 +592,8 @@ fn convert_expression<F: Field>(
     )
 }
 
-fn row_map(k: usize) -> Vec<Option<usize>> {
-    BooleanHypercube::new(k).iter().skip(1).map(Some).collect()
+fn row_map(k: usize) -> Vec<usize> {
+    BooleanHypercube::new(k).iter().skip(1).collect()
 }
 
 fn batch_invert_assigned<F: Field>(assigneds: Vec<Vec<Assigned<F>>>) -> Vec<Vec<F>> {

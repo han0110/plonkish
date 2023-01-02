@@ -32,22 +32,22 @@ fn rng() -> impl RngCore {
     StdRng::from_seed(Default::default())
 }
 
-fn bench_plonk() {
+fn bench_halo2() {
     for k in K_RANGE {
-        let start = start_timer(format!("plonk_setup_{k}"));
-        let param = ParamsKZG::setup(k as u32, rng());
-        end_timer(start);
-
-        let circuit = AggregationCircuit::rand(&param, k, rng()).unwrap();
+        let circuit = AggregationCircuit::rand(&ParamsKZG::setup(4, rng()), k, rng()).unwrap();
         let instances = circuit.instances();
         let instances = instances.iter().map(Vec::as_slice).collect_vec();
 
-        let start = start_timer(format!("plonk_preprocess_{k}"));
+        let timer = start_timer(|| format!("halo2_setup-{k}"));
+        let param = ParamsKZG::<Bn256>::setup(k as u32, rng());
+        end_timer(timer);
+
+        let timer = start_timer(|| format!("halo2_preprocess-{k}"));
         let vk = keygen_vk::<_, _, _, false>(&param, &circuit).unwrap();
         let pk = keygen_pk::<_, _, _, false>(&param, vk, &circuit).unwrap();
-        end_timer(start);
+        end_timer(timer);
 
-        let start = start_timer(format!("plonk_prove_{k}"));
+        let timer = start_timer(|| format!("halo2_prove-{k}"));
         let proof = {
             let mut transcript = Blake2bWrite::init(Vec::new());
             create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _, false>(
@@ -61,9 +61,9 @@ fn bench_plonk() {
             .unwrap();
             transcript.finalize()
         };
-        end_timer(start);
+        end_timer(timer);
 
-        let start = start_timer(format!("plonk_verify_{k}"));
+        let timer = start_timer(|| format!("halo2_verify-{k}"));
         let accept = {
             let mut transcript = Blake2bRead::init(proof.as_slice());
             verify_proof::<_, VerifierGWC<_>, _, _, _, false>(
@@ -76,7 +76,7 @@ fn bench_plonk() {
             .is_ok()
         };
         assert!(accept);
-        end_timer(start);
+        end_timer(timer);
     }
 }
 
@@ -86,16 +86,16 @@ fn bench_hyperplonk() {
         let instances = circuit.instances();
         let instances = instances.iter().map(Vec::as_slice).collect_vec();
 
-        let start = start_timer(format!("hyperplonk_setup_{k}"));
+        let timer = start_timer(|| format!("hyperplonk_setup-{k}"));
         let param = HyperPlonk::<MultilinearKzg>::setup(1 << k, rng()).unwrap();
-        end_timer(start);
+        end_timer(timer);
 
-        let start = start_timer(format!("hyperplonk_preprocess_{k}"));
+        let timer = start_timer(|| format!("hyperplonk_preprocess-{k}"));
         let circuit_info = circuit_info(k, &circuit, AggregationCircuit::num_instance()).unwrap();
         let (pp, vp) = HyperPlonk::<MultilinearKzg>::preprocess(&param, circuit_info).unwrap();
-        end_timer(start);
+        end_timer(timer);
 
-        let start = start_timer(format!("hyperplonk_prove_{k}"));
+        let timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let proof = {
             let mut transcript = Keccak256Transcript::new(Vec::new());
             HyperPlonk::prove(
@@ -108,19 +108,19 @@ fn bench_hyperplonk() {
             .unwrap();
             transcript.finalize()
         };
-        end_timer(start);
+        end_timer(timer);
 
-        let start = start_timer(format!("hyperplonk_verify_{k}"));
+        let timer = start_timer(|| format!("hyperplonk_verify-{k}"));
         let accept = {
             let mut transcript = Keccak256Transcript::new(proof.as_slice());
             HyperPlonk::verify(&vp, &instances, &mut transcript, rng()).is_ok()
         };
         assert!(accept);
-        end_timer(start);
+        end_timer(timer);
     }
 }
 
 fn main() {
-    bench_plonk();
     bench_hyperplonk();
+    bench_halo2();
 }

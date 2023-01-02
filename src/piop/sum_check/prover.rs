@@ -4,7 +4,8 @@ use crate::{
     util::{
         arithmetic::{div_ceil, BooleanHypercube, PrimeField},
         expression::{CommonPolynomial, Query},
-        num_threads, parallelize_iter, Itertools,
+        parallel::{num_threads, parallelize_iter},
+        Itertools,
     },
 };
 use num_integer::Integer;
@@ -237,15 +238,12 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
                     }
                 },
                 &|query| {
-                    let (b_0, b_1) = if IS_FIRST_ROUND {
-                        (
-                            self.bh.rotate(b << 1, query.rotation()),
-                            self.bh.rotate((b << 1) + 1, query.rotation()),
-                        )
+                    let [b_0, b_1] = if IS_FIRST_ROUND {
+                        [b << 1, (b << 1) + 1].map(|b| self.bh.rotate(b, query.rotation()))
                     } else {
-                        (b << 1, (b << 1) + 1)
+                        [b << 1, (b << 1) + 1]
                     };
-                    let poly = self.poly::<IS_FIRST_ROUND>(query);
+                    let poly = self.poly::<IS_FIRST_ROUND>(&query);
                     poly[b_0] + (poly[b_1] - poly[b_0]) * point
                 },
                 &|idx| self.virtual_poly.challenges[idx],
@@ -258,7 +256,7 @@ impl<'a, F: PrimeField> ProvingState<'a, F> {
         sum
     }
 
-    fn poly<const IS_FIRST_ROUND: bool>(&self, query: Query) -> &MultilinearPolynomial<F> {
+    fn poly<const IS_FIRST_ROUND: bool>(&self, query: &Query) -> &MultilinearPolynomial<F> {
         if IS_FIRST_ROUND {
             &self.polys[query.poly()][self.num_vars]
         } else {

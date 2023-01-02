@@ -143,7 +143,7 @@ pub(super) fn compose<F: PrimeField>(
         .unwrap();
     let permutation_constraints = {
         let chunk_size = max_degree - 1;
-        let num_chunk = div_ceil(permutation_polys.len(), chunk_size);
+        let num_chunks = div_ceil(permutation_polys.len(), chunk_size);
         let permutation_offset = circuit_info.num_poly();
         let z_offset =
             permutation_offset + permutation_polys.len() + 3 * circuit_info.lookups.len();
@@ -163,7 +163,7 @@ pub(super) fn compose<F: PrimeField>(
         let zs = (z_offset..)
             .map(|idx| Query::new(idx, Rotation::cur()))
             .map(Expression::<F>::Polynomial)
-            .take(num_chunk)
+            .take(num_chunks)
             .collect_vec();
         let z_0_next = Expression::<F>::Polynomial(Query::new(z_offset, Rotation::next()));
         iter::empty()

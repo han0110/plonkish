@@ -3,7 +3,8 @@ use crate::{
     util::{
         arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
         expression::Rotation,
-        num_threads, parallelize, parallelize_iter, BitIndex, Itertools,
+        parallel::{num_threads, parallelize, parallelize_iter},
+        BitIndex, Itertools,
     },
 };
 use num_integer::Integer;
@@ -262,24 +263,24 @@ impl<F: Field> SubAssign<F> for MultilinearPolynomial<F> {
     }
 }
 
-impl<'lhs, F: Field> Mul<F> for &'lhs MultilinearPolynomial<F> {
+impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs MultilinearPolynomial<F> {
     type Output = MultilinearPolynomial<F>;
 
-    fn mul(self, rhs: F) -> MultilinearPolynomial<F> {
+    fn mul(self, rhs: &'rhs F) -> MultilinearPolynomial<F> {
         let mut output = self.clone();
         output *= rhs;
         output
     }
 }
 
-impl<F: Field> MulAssign<F> for MultilinearPolynomial<F> {
-    fn mul_assign(&mut self, rhs: F) {
-        if rhs == F::zero() {
-            self.evals = vec![F::zero(); 1 << self.num_vars]
-        } else if rhs != F::one() {
+impl<'rhs, F: Field> MulAssign<&'rhs F> for MultilinearPolynomial<F> {
+    fn mul_assign(&mut self, rhs: &'rhs F) {
+        if rhs == &F::zero() {
+            self.evals = vec![F::zero(); self.evals.len()]
+        } else if rhs != &F::one() {
             parallelize(&mut self.evals, |(lhs, _)| {
                 for lhs in lhs.iter_mut() {
-                    *lhs *= &rhs;
+                    *lhs *= rhs;
                 }
             });
         }
@@ -501,7 +502,7 @@ macro_rules! merge {
     (@ $evals:expr, $x_i:expr, $distance:expr, $skip:expr) => {{
         use $crate::{
             poly::multilinear::merge_fn,
-            util::{arithmetic::div_ceil, num_threads, parallelize_iter},
+            util::{arithmetic::div_ceil, parallel::{num_threads, parallelize_iter}},
         };
 
         let step = 1 << $distance;

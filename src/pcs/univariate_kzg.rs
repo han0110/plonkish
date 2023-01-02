@@ -6,7 +6,7 @@ use crate::{
             fixed_base_msm, inner_product, powers, variable_base_msm, window_size, window_table,
             Curve, Field, MultiMillerLoop, PrimeCurveAffine,
         },
-        parallelize,
+        parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
     },

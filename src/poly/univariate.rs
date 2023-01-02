@@ -2,7 +2,7 @@ use crate::{
     poly::impl_index,
     util::{
         arithmetic::{div_ceil, horner, powers, Field},
-        num_threads, parallelize, parallelize_iter,
+        parallel::{num_threads, parallelize, parallelize_iter},
     },
 };
 use itertools::Itertools;
@@ -202,23 +202,27 @@ impl<F: Field> SubAssign<F> for UnivariatePolynomial<F> {
     }
 }
 
-impl<'lhs, F: Field> Mul<F> for &'lhs UnivariatePolynomial<F> {
+impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
-    fn mul(self, rhs: F) -> UnivariatePolynomial<F> {
+    fn mul(self, rhs: &'rhs F) -> UnivariatePolynomial<F> {
         let mut output = self.clone();
         output *= rhs;
         output
     }
 }
 
-impl<F: Field> MulAssign<F> for UnivariatePolynomial<F> {
-    fn mul_assign(&mut self, rhs: F) {
-        parallelize(&mut self.0, |(lhs, _)| {
-            for lhs in lhs.iter_mut() {
-                *lhs *= &rhs;
-            }
-        });
+impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
+    fn mul_assign(&mut self, rhs: &'rhs F) {
+        if rhs == &F::zero() {
+            self.0 = Vec::new()
+        } else if rhs != &F::one() {
+            parallelize(&mut self.0, |(lhs, _)| {
+                for lhs in lhs.iter_mut() {
+                    *lhs *= rhs;
+                }
+            });
+        }
     }
 }
 

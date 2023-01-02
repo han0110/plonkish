@@ -1,6 +1,7 @@
 use crate::util::{
     arithmetic::{div_ceil, field_size, CurveAffine, Field, Group, PrimeField},
-    num_threads, parallelize, parallelize_iter, Itertools,
+    parallel::{num_threads, parallelize, parallelize_iter},
+    start_timer, Itertools,
 };
 use std::mem::size_of;
 
@@ -87,6 +88,8 @@ pub fn variable_base_msm<'a, 'b, C: CurveAffine>(
     let scalars = scalars.into_iter().collect_vec();
     let bases = bases.into_iter().collect_vec();
     assert_eq!(scalars.len(), bases.len());
+
+    let _timer = start_timer(|| format!("variable_base_msm-{}", scalars.len()));
 
     let num_threads = num_threads();
     if scalars.len() <= num_threads {

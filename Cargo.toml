@@ -10,7 +10,7 @@ num-bigint = "0.4.3"
 num-integer = "0.1.45"
 rand = "0.8"
 sha3 = "0.10.6"
-colored = { version = "2.0.0", optional = true }
+ark-std = { version = "^0.3.0", default-features = false }
 rayon = { version = "1.5.3", optional = true }
 
 # frontend-halo2
@@ -30,7 +30,7 @@ snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "
 
 [features]
 default = ["parallel"]
-timer = ["dep:colored"]
+timer = ["ark-std/print-trace", "halo2_proofs?/print-trace"]
 parallel = ["dep:rayon"]
 sanity-check = []
 

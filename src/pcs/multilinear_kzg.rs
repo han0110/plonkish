@@ -1,11 +1,15 @@
 use crate::{
     pcs::{Evaluation, PolynomialCommitmentScheme},
-    piop::sum_check::{self, eq_xy_eval, VirtualPolynomial, VirtualPolynomialInfo},
+    piop::sum_check::{
+        eq_xy_eval,
+        vanilla::{CoefficientsProver, VanillaSumCheck},
+        SumCheck, VirtualPolynomial,
+    },
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            div_ceil, fixed_base_msm, ilog2, inner_product, powers, variable_base_msm, window_size,
-            window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
+            descending_powers, div_ceil, fixed_base_msm, ilog2, inner_product, variable_base_msm,
+            window_size, window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine,
         },
         end_timer,
         expression::{Expression, Query, Rotation},
@@ -306,34 +310,46 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             }
         }
 
-        let timer = start_timer(|| "tilde_gs");
         let t = transcript.squeeze_challenge();
-        let powers_of_t = powers(t).take(evals.len()).collect_vec();
-        let tilde_gs = evals
-            .iter()
-            .zip(powers_of_t.iter())
-            .map(|(eval, power_of_t)| polys[eval.poly()] * power_of_t)
-            .collect_vec();
-        end_timer(timer);
 
-        let virtual_poly_info = virtual_poly_info(evals);
-        let virtual_poly =
-            VirtualPolynomial::new(&virtual_poly_info, &tilde_gs, Vec::new(), points.to_vec());
-        let challenges = sum_check::prove(num_vars, virtual_poly, transcript).unwrap();
-        drop(tilde_gs);
+        let expression = {
+            let eq_xys = evals
+                .iter()
+                .map(|eval| Expression::<M::Scalar>::eq_xy(eval.point()))
+                .collect_vec();
+            let polys = evals
+                .iter()
+                .map(|eval| Expression::Polynomial(Query::new(eval.poly(), Rotation::cur())))
+                .collect_vec();
+            Expression::distribute_powers(
+                &eq_xys
+                    .iter()
+                    .zip(polys.iter())
+                    .map(|(eq_xy, poly)| eq_xy * poly)
+                    .collect_vec(),
+                &Expression::Challenge(0),
+            )
+        };
+        let challenges = VanillaSumCheck::<CoefficientsProver<_>>::prove(
+            &(),
+            num_vars,
+            VirtualPolynomial::new(&expression, polys.clone(), &[t], points),
+            transcript,
+        )
+        .unwrap();
 
         let timer = start_timer(|| "g_prime");
-        let eq_xz_evals = points
+        let eq_xy_evals = points
             .iter()
             .map(|point| eq_xy_eval(&challenges, point))
             .collect_vec();
         let g_prime = evals
             .iter()
-            .zip(powers_of_t.iter())
+            .zip(descending_powers(t, evals.len()))
             .fold(
                 vec![M::Scalar::zero(); polys.len()],
                 |mut coeffs, (eval, power_of_t)| {
-                    coeffs[eval.poly()] += eq_xz_evals[eval.point()] * power_of_t;
+                    coeffs[eval.poly()] += power_of_t * &eq_xy_evals[eval.point()];
                     coeffs
                 },
             )
@@ -418,23 +434,25 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         }
 
         let t = transcript.squeeze_challenge();
-        let powers_of_t = powers(t).take(evals.len()).collect_vec();
-        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &powers_of_t);
-        let (g_prime_eval, challenges) = sum_check::verify_consistency(
+
+        let desc_powers_of_t = descending_powers(t, evals.len());
+        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
+        let (g_prime_eval, challenges) = VanillaSumCheck::<CoefficientsProver<_>>::verify(
+            &(),
             num_vars,
-            &virtual_poly_info(evals),
+            2,
             tilde_gs_sum,
             transcript,
         )?;
-        let eq_xz_evals = points
+        let eq_xy_evals = points
             .iter()
             .map(|point| eq_xy_eval(&challenges, point))
             .collect_vec();
         let g_prime = variable_base_msm(
             &evals
                 .iter()
-                .zip(powers_of_t)
-                .map(|(eval, power_of_t)| power_of_t * &eq_xz_evals[eval.point()])
+                .zip(desc_powers_of_t)
+                .map(|(eval, power_of_t)| power_of_t * &eq_xy_evals[eval.point()])
                 .collect_vec(),
             &evals
                 .iter()
@@ -446,19 +464,6 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
 
         Ok(())
     }
-}
-
-fn virtual_poly_info<F: PrimeField>(evals: &[Evaluation<F>]) -> VirtualPolynomialInfo<F> {
-    let eq_xzs = evals
-        .iter()
-        .map(|eval| Expression::<F>::eq_xy(eval.point()))
-        .collect_vec();
-    let expression = eq_xzs
-        .into_iter()
-        .enumerate()
-        .map(|(idx, eq_xz)| Expression::<F>::Polynomial(Query::new(idx, Rotation::cur())) * eq_xz)
-        .sum::<Expression<_>>();
-    VirtualPolynomialInfo::new(expression)
 }
 
 #[cfg(test)]
@@ -478,7 +483,7 @@ mod test {
     type Polynomial = <Pcs as PolynomialCommitmentScheme<Fr>>::Polynomial;
 
     #[test]
-    fn test_commit_open_verify() {
+    fn commit_open_verify() {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
@@ -515,7 +520,7 @@ mod test {
     }
 
     #[test]
-    fn test_batch_commit_open_verify() {
+    fn batch_commit_open_verify() {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
@@ -534,13 +539,18 @@ mod test {
                 transcript.write_commitment(comm).unwrap();
             }
             let points = iter::repeat_with(|| transcript.squeeze_n_challenges(pp.num_vars()))
-                .take(batch_size)
+                .take(batch_size * batch_size)
                 .collect_vec();
-            let evals = polys
+            let evals = points
                 .iter()
-                .zip(points.iter())
                 .enumerate()
-                .map(|(idx, (poly, point))| Evaluation::new(idx, idx, poly.evaluate(point)))
+                .map(|(idx, point)| {
+                    Evaluation::new(
+                        idx % batch_size,
+                        idx,
+                        polys[idx % batch_size].evaluate(point),
+                    )
+                })
                 .collect_vec();
             for eval in evals.iter() {
                 transcript.write_scalar(*eval.value()).unwrap();
@@ -555,14 +565,14 @@ mod test {
                 &vp,
                 &transcript.read_n_commitments(batch_size).unwrap(),
                 &iter::repeat_with(|| transcript.squeeze_n_challenges(vp.num_vars()))
-                    .take(batch_size)
+                    .take(batch_size * batch_size)
                     .collect_vec(),
                 &transcript
-                    .read_n_scalars(batch_size)
+                    .read_n_scalars(batch_size * batch_size)
                     .unwrap()
                     .into_iter()
                     .enumerate()
-                    .map(|(idx, eval)| Evaluation::new(idx, idx, eval))
+                    .map(|(idx, eval)| Evaluation::new(idx % batch_size, idx, eval))
                     .collect_vec(),
                 &mut transcript,
             )

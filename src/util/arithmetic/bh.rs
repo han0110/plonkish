@@ -1,4 +1,4 @@
-use crate::util::expression::Rotation;
+use crate::util::{expression::Rotation, parallel::par_map_collect};
 use std::{cmp::Ordering, iter};
 
 /// Integer representation of primitive polynomial in GF(2).
@@ -130,6 +130,10 @@ impl BooleanHypercube {
         }
         nth_map
     }
+
+    pub fn rotation_map(&self, rotation: Rotation) -> Vec<usize> {
+        par_map_collect(0..1 << self.num_vars, |b| self.rotate(b, rotation))
+    }
 }
 
 #[inline(always)]
@@ -150,7 +154,7 @@ mod test {
 
     #[test]
     #[ignore = "Cause it takes some minutes to run with release profile"]
-    fn test_boolean_hypercube_iter() {
+    fn boolean_hypercube_iter() {
         for num_vars in 0..32 {
             let bh = BooleanHypercube::new(num_vars);
             let mut set = vec![false; 1 << num_vars];
@@ -163,7 +167,7 @@ mod test {
 
     #[test]
     #[ignore = "Cause it takes some minutes to run with release profile"]
-    fn test_boolean_hypercube_prev() {
+    fn boolean_hypercube_prev() {
         for num_vars in 0..32 {
             let bh = BooleanHypercube::new(num_vars);
             for (b, b_next) in bh.iter().skip(1).zip(bh.iter().skip(2).chain(Some(1))) {

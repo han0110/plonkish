@@ -1,6 +1,5 @@
 use crate::{
     pcs::PolynomialCommitmentScheme,
-    piop::sum_check::VirtualPolynomialInfo,
     poly::multilinear::MultilinearPolynomial,
     snark::{
         hyperplonk::{
@@ -49,7 +48,7 @@ where
     lookups: Vec<Vec<(Expression<F>, Expression<F>)>>,
     max_degree: usize,
     num_vars: usize,
-    virtual_poly_info: VirtualPolynomialInfo<F>,
+    expression: Expression<F>,
     preprocess_polys: Vec<MultilinearPolynomial<F>>,
     permutation_polys: Vec<(usize, MultilinearPolynomial<F>)>,
 }
@@ -67,7 +66,7 @@ where
     num_lookup: usize,
     max_degree: usize,
     num_vars: usize,
-    virtual_poly_info: VirtualPolynomialInfo<F>,
+    expression: Expression<F>,
     preprocess_comms: Vec<Pcs::Commitment>,
     permutation_comms: Vec<(usize, Pcs::Commitment)>,
 }
@@ -121,7 +120,7 @@ where
             .try_collect::<_, Vec<_>, _>()?;
 
         // Compose `VirtualPolynomialInfo`
-        let (max_degree, virtual_poly_info) = compose(&circuit_info);
+        let (max_degree, expression) = compose(&circuit_info);
         let pp = HyperPlonkProverParam {
             pcs: pcs_pp,
             num_instances: circuit_info.num_instances.clone(),
@@ -130,7 +129,7 @@ where
             lookups: circuit_info.lookups.clone(),
             max_degree,
             num_vars,
-            virtual_poly_info: virtual_poly_info.clone(),
+            expression: expression.clone(),
             preprocess_polys: circuit_info.preprocess_polys,
             permutation_polys,
         };
@@ -142,7 +141,7 @@ where
             num_lookup: circuit_info.lookups.len(),
             max_degree,
             num_vars,
-            virtual_poly_info,
+            expression,
             preprocess_comms,
             permutation_comms,
         };
@@ -253,7 +252,7 @@ where
         challenges.extend([theta, beta, gamma, alpha]);
         let (points, evals) = prove_sum_check(
             pp.num_instances.len(),
-            &pp.virtual_poly_info,
+            &pp.expression,
             &polys,
             challenges,
             y,
@@ -333,7 +332,7 @@ where
         challenges.extend([theta, beta, gamma, alpha]);
         let (points, evals) = verify_sum_check(
             vp.num_vars,
-            &vp.virtual_poly_info,
+            &vp.expression,
             instances,
             &challenges,
             &y,
@@ -425,12 +424,12 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_hyperplonk_plonk() {
+    fn hyperplonk_plonk() {
         run_hyperplonk(2..16, |num_vars| rand_plonk_circuit(num_vars, OsRng));
     }
 
     #[test]
-    fn test_hyperplonk_plonk_with_lookup() {
+    fn hyperplonk_plonk_with_lookup() {
         run_hyperplonk(2..16, |num_vars| {
             rand_plonk_with_lookup_circuit(num_vars, OsRng)
         });

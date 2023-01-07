@@ -1,6 +1,9 @@
 use crate::{
     pcs::Evaluation,
-    piop::sum_check::{self, VirtualPolynomial, VirtualPolynomialInfo},
+    piop::sum_check::{
+        vanilla::{EvaluationsProver, VanillaSumCheck},
+        SumCheck, VirtualPolynomial,
+    },
     poly::multilinear::MultilinearPolynomial,
     snark::hyperplonk::verifier::{pcs_query, point_offset, points},
     util::{
@@ -427,18 +430,19 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
 #[allow(clippy::type_complexity)]
 pub(super) fn prove_sum_check<F: PrimeField>(
     num_instance_poly: usize,
-    virtual_poly_info: &VirtualPolynomialInfo<F>,
+    expression: &Expression<F>,
     polys: &[&MultilinearPolynomial<F>],
     challenges: Vec<F>,
     y: Vec<F>,
     transcript: &mut impl TranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let num_vars = polys[0].num_vars();
-    let virtual_poly =
-        VirtualPolynomial::new(virtual_poly_info, polys.to_vec(), challenges, vec![y]);
-    let x = sum_check::prove(num_vars, virtual_poly, transcript)?;
+    let ys = [y];
+    let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
+    let x =
+        VanillaSumCheck::<EvaluationsProver<_>>::prove(&(), num_vars, virtual_poly, transcript)?;
 
-    let pcs_query = pcs_query(virtual_poly_info, num_instance_poly);
+    let pcs_query = pcs_query(expression, num_instance_poly);
     let point_offset = point_offset(&pcs_query);
 
     let timer = start_timer(|| format!("evals-{}", pcs_query.len()));

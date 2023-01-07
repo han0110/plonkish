@@ -1,5 +1,4 @@
 use crate::{
-    piop::sum_check::VirtualPolynomialInfo,
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, PrimeField},
@@ -93,7 +92,7 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
 
 pub(super) fn compose<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
-) -> (usize, VirtualPolynomialInfo<F>) {
+) -> (usize, Expression<F>) {
     let permutation_polys = circuit_info.permutation_polys();
     let challenge_offset = circuit_info.num_challenges.iter().sum::<usize>();
     let [theta, beta, gamma, alpha] =
@@ -193,7 +192,7 @@ pub(super) fn compose<F: PrimeField>(
             .collect_vec()
     };
 
-    let virtual_poly_info = {
+    let expression = {
         let constraints = circuit_info
             .constraints
             .iter()
@@ -201,10 +200,10 @@ pub(super) fn compose<F: PrimeField>(
             .chain(permutation_constraints.iter())
             .collect_vec();
         let eq = Expression::eq_xy(0);
-        VirtualPolynomialInfo::new(Expression::distribute_powers(constraints, alpha) * eq)
+        Expression::distribute_powers(constraints, alpha) * eq
     };
 
-    (max_degree, virtual_poly_info)
+    (max_degree, expression)
 }
 
 pub(super) fn permutation_polys<F: PrimeField>(
@@ -244,7 +243,6 @@ pub(super) fn permutation_polys<F: PrimeField>(
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        piop::sum_check::VirtualPolynomialInfo,
         poly::multilinear::MultilinearPolynomial,
         snark::hyperplonk::preprocess::{compose, PlonkishCircuitInfo},
         util::{
@@ -256,9 +254,9 @@ pub(crate) mod test {
     use std::array;
 
     #[test]
-    fn test_preprocess_plonk() {
-        let virtual_poly_info = plonk_virtual_poly_info();
-        assert_eq!(virtual_poly_info.expression(), &{
+    fn compose_plonk() {
+        let expression = plonk_expression();
+        assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))
                     .map(Expression::Polynomial);
@@ -290,9 +288,9 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_preprocess_plonk_with_lookup() {
-        let virtual_poly_info = plonk_with_lookup_virtual_poly_info();
-        assert_eq!(virtual_poly_info.expression(), &{
+    fn compose_plonk_with_lookup() {
+        let expression = plonk_with_lookup_expression();
+        assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))
                     .map(Expression::Polynomial);
@@ -364,16 +362,16 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) fn plonk_virtual_poly_info<F: PrimeField>() -> VirtualPolynomialInfo<F> {
+    pub(crate) fn plonk_expression<F: PrimeField>() -> Expression<F> {
         let circuit_info = plonk_circuit_info(
             0,
             0,
             Default::default(),
             vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
         );
-        let (max_degree, virtual_poly_info) = compose(&circuit_info);
+        let (max_degree, expression) = compose(&circuit_info);
         assert_eq!(max_degree, 4);
-        virtual_poly_info
+        expression
     }
 
     pub(crate) fn plonk_with_lookup_circuit_info<F: PrimeField>(
@@ -401,15 +399,15 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) fn plonk_with_lookup_virtual_poly_info<F: PrimeField>() -> VirtualPolynomialInfo<F> {
+    pub(crate) fn plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
         let circuit_info = plonk_with_lookup_circuit_info(
             0,
             0,
             Default::default(),
             vec![vec![(10, 1)], vec![(11, 1)], vec![(12, 1)]],
         );
-        let (max_degree, virtual_poly_info) = compose(&circuit_info);
+        let (max_degree, expression) = compose(&circuit_info);
         assert_eq!(max_degree, 4);
-        virtual_poly_info
+        expression
     }
 }

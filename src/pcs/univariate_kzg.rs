@@ -246,7 +246,7 @@ mod test {
     type Polynomial = <Pcs as PolynomialCommitmentScheme<Fr>>::Polynomial;
 
     #[test]
-    fn test_commit_open_verify() {
+    fn commit_open_verify() {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;
@@ -283,7 +283,7 @@ mod test {
     }
 
     #[test]
-    fn test_batch_commit_open_verify() {
+    fn batch_commit_open_verify() {
         // Setup
         let (pp, vp) = {
             let mut rng = OsRng;

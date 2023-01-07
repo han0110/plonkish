@@ -562,7 +562,7 @@ mod test {
     }
 
     #[test]
-    fn test_fix_variables() {
+    fn fix_variables() {
         let rand_x_i = || match OsRng.next_u32() % 3 {
             0 => Fr::zero(),
             1 => Fr::one(),
@@ -581,7 +581,7 @@ mod test {
     }
 
     #[test]
-    fn test_evaluate_for_rotation() {
+    fn evaluate_for_rotation() {
         let mut rng = OsRng;
         for num_vars in 0..16 {
             let bh = BooleanHypercube::new(num_vars);

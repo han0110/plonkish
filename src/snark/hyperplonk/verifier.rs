@@ -1,10 +1,14 @@
 use crate::{
     pcs::Evaluation,
-    piop::sum_check::{self, lagrange_eval, VirtualPolynomialInfo},
+    piop::sum_check::{
+        evaluate, lagrange_eval,
+        vanilla::{EvaluationsProver, VanillaSumCheck},
+        SumCheck,
+    },
     poly::multilinear::{rotation_eval, rotation_eval_points},
     util::{
         arithmetic::{inner_product, BooleanHypercube, PrimeField},
-        expression::{Query, Rotation},
+        expression::{Expression, Query, Rotation},
         transcript::TranscriptRead,
         Itertools,
     },
@@ -15,16 +19,21 @@ use std::collections::{BTreeSet, HashMap};
 #[allow(clippy::type_complexity)]
 pub(super) fn verify_sum_check<F: PrimeField>(
     num_vars: usize,
-    virtual_poly_info: &VirtualPolynomialInfo<F>,
+    expression: &Expression<F>,
     instances: &[&[F]],
     challenges: &[F],
     y: &[F],
     transcript: &mut impl TranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
-    let (x_eval, x) =
-        sum_check::verify_consistency(num_vars, virtual_poly_info, F::zero(), transcript)?;
+    let (x_eval, x) = VanillaSumCheck::<EvaluationsProver<_>>::verify(
+        &(),
+        num_vars,
+        expression.degree(),
+        F::zero(),
+        transcript,
+    )?;
 
-    let pcs_query = pcs_query(virtual_poly_info, instances.len());
+    let pcs_query = pcs_query(expression, instances.len());
     let (evals_for_rotation, evals) = pcs_query
         .iter()
         .map(|query| {
@@ -36,11 +45,11 @@ pub(super) fn verify_sum_check<F: PrimeField>(
         .into_iter()
         .unzip::<_, _, Vec<_>, Vec<_>>();
 
-    let evals = instance_evals(num_vars, virtual_poly_info, instances, &x)
+    let evals = instance_evals(num_vars, expression, instances, &x)
         .into_iter()
         .chain(evals)
         .collect();
-    if virtual_poly_info.evaluate(num_vars, &evals, challenges, &[y], &x) != x_eval {
+    if evaluate(expression, num_vars, &evals, challenges, &[y], &x) != x_eval {
         return Err(Error::InvalidSnark(
             "Unmatched between sum_check output and query evaluation".to_string(),
         ));
@@ -61,11 +70,11 @@ pub(super) fn verify_sum_check<F: PrimeField>(
 
 fn instance_evals<F: PrimeField>(
     num_vars: usize,
-    virtual_poly_info: &VirtualPolynomialInfo<F>,
+    expression: &Expression<F>,
     instances: &[&[F]],
     x: &[F],
 ) -> Vec<(Query, F)> {
-    let mut instance_query = virtual_poly_info.expression().used_query();
+    let mut instance_query = expression.used_query();
     instance_query.retain(|query| query.poly() < instances.len());
 
     let lagranges = {
@@ -115,10 +124,10 @@ fn instance_evals<F: PrimeField>(
 }
 
 pub(super) fn pcs_query<F: PrimeField>(
-    virtual_poly_info: &VirtualPolynomialInfo<F>,
+    expression: &Expression<F>,
     num_instance_poly: usize,
 ) -> BTreeSet<Query> {
-    let mut used_query = virtual_poly_info.expression().used_query();
+    let mut used_query = expression.used_query();
     used_query.retain(|query| query.poly() >= num_instance_poly);
     used_query
 }

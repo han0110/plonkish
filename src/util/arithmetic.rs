@@ -46,6 +46,16 @@ pub fn powers<F: Field>(scalar: F) -> impl Iterator<Item = F> {
     iter::successors(Some(F::one()), move |power| Some(scalar * power))
 }
 
+pub fn descending_powers<F: Field>(scalar: F, n: usize) -> Vec<F> {
+    let mut desc_powers = vec![F::zero(); n];
+    desc_powers
+        .iter_mut()
+        .rev()
+        .zip(powers(scalar))
+        .for_each(|(lhs, rhs)| *lhs = rhs);
+    desc_powers
+}
+
 pub fn product<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F {
     values
         .into_iter()
@@ -61,6 +71,41 @@ pub fn inner_product<'a, 'b, F: Field>(
         .map(|(lhs, rhs)| *lhs * rhs)
         .reduce(|acc, product| acc + product)
         .unwrap_or_default()
+}
+
+pub fn barycentric_weights<F: PrimeField>(points: &[F]) -> Vec<F> {
+    let mut weights = points
+        .iter()
+        .enumerate()
+        .map(|(j, point_j)| {
+            points
+                .iter()
+                .enumerate()
+                .filter_map(|(i, point_i)| (i != j).then(|| *point_j - point_i))
+                .reduce(|acc, value| acc * &value)
+                .unwrap_or_else(F::one)
+        })
+        .collect_vec();
+    weights.iter_mut().batch_invert();
+    weights
+}
+
+pub fn barycentric_interpolate<F: PrimeField>(
+    weights: &[F],
+    points: &[F],
+    evals: &[F],
+    x: &F,
+) -> F {
+    let (coeffs, sum_inv) = {
+        let mut coeffs = points.iter().map(|point| *x - point).collect_vec();
+        coeffs.iter_mut().batch_invert();
+        coeffs.iter_mut().zip(weights).for_each(|(coeff, weight)| {
+            *coeff *= weight;
+        });
+        let sum_inv = coeffs.iter().fold(F::zero(), |sum, coeff| sum + coeff);
+        (coeffs, sum_inv.invert().unwrap())
+    };
+    inner_product(&coeffs, evals) * &sum_inv
 }
 
 pub fn modulus<F: PrimeField>() -> BigUint {
@@ -95,11 +140,11 @@ pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
 
 #[cfg(test)]
 mod test {
-    use crate::util::arithmetic::field_size;
+    use crate::util::arithmetic;
     use halo2_curves::bn256;
 
     #[test]
-    fn test_field_size() {
-        assert_eq!(field_size::<bn256::Fr>(), 254);
+    fn field_size() {
+        assert_eq!(arithmetic::field_size::<bn256::Fr>(), 254);
     }
 }

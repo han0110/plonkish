@@ -10,7 +10,7 @@ use halo2_curves::bn256::Fr;
 use rand::rngs::OsRng;
 
 #[test]
-fn test_circuit_info() {
+fn circuit_info_plonk() {
     let circuit = StandardPlonk::<Fr>::rand(OsRng);
     let circuit_info = circuit_info(3, &circuit, vec![1]).unwrap();
     assert_eq!(
@@ -26,7 +26,7 @@ fn test_circuit_info() {
 }
 
 #[test]
-fn test_e2e() {
+fn e2e_plonk() {
     let circuit = StandardPlonk::rand(OsRng);
     let instances = circuit.instances();
     let instances = instances.iter().map(Vec::as_slice).collect_vec();

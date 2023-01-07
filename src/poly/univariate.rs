@@ -3,9 +3,9 @@ use crate::{
     util::{
         arithmetic::{div_ceil, horner, powers, Field},
         parallel::{num_threads, parallelize, parallelize_iter},
+        Itertools,
     },
 };
-use itertools::Itertools;
 use rand::RngCore;
 use std::{
     cmp::Ordering::{Equal, Greater, Less},

@@ -17,16 +17,15 @@ use hyperplonk::{
         },
         UniversalSnark,
     },
-    util::{end_timer, start_timer, transcript::Keccak256Transcript},
+    util::{end_timer, start_timer, transcript::Keccak256Transcript, Itertools},
 };
-use itertools::Itertools;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use std::ops::Range;
 
 type AggregationCircuit = circuit::AggregationCircuit<Bn256>;
 type MultilinearKzg = multilinear_kzg::MultilinearKzg<Bn256>;
 
-const K_RANGE: Range<usize> = 20..28;
+const K_RANGE: Range<usize> = 20..26;
 
 fn rng() -> impl RngCore {
     StdRng::from_seed(Default::default())

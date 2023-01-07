@@ -1,5 +1,3 @@
-use rayon::prelude::{FromParallelIterator, IntoParallelRefIterator, ParallelIterator};
-
 pub fn num_threads() -> usize {
     #[cfg(feature = "parallel")]
     return rayon::current_num_threads();
@@ -61,11 +59,24 @@ where
     v.sort_unstable();
 }
 
-pub fn par_map_collect<T, R, C>(v: &[T], f: impl Fn(&T) -> R + Send + Sync) -> C
+#[cfg(feature = "parallel")]
+pub fn par_map_collect<T, R, C>(
+    v: impl rayon::prelude::IntoParallelIterator<Item = T>,
+    f: impl Fn(T) -> R + Send + Sync,
+) -> C
 where
     T: Send + Sync,
     R: Send,
-    C: FromParallelIterator<R> + FromIterator<R>,
+    C: rayon::prelude::FromParallelIterator<R>,
 {
-    v.par_iter().map(f).collect()
+    use rayon::prelude::ParallelIterator;
+    v.into_par_iter().map(f).collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+pub fn par_map_collect<T, R, C>(v: impl IntoIterator<Item = T>, f: impl Fn(T) -> R) -> C
+where
+    C: FromIterator<R>,
+{
+    v.into_iter().map(f).collect()
 }

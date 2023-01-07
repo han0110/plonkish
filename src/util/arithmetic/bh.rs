@@ -90,6 +90,10 @@ impl BooleanHypercube {
         }
     }
 
+    pub const fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
     pub const fn primitive(&self) -> usize {
         self.primitive
     }

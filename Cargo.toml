@@ -38,6 +38,6 @@ frontend-halo2 = ["dep:halo2_proofs"]
 benchmark = ["timer", "parallel", "frontend-halo2", "dep:snark-verifier"]
 
 [[bench]]
-name = "snark"
+name = "proof_system"
 harness = false
 required-features = ["benchmark"]

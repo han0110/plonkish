@@ -1,18 +1,27 @@
 use crate::{
     pcs::Evaluation,
-    piop::sum_check::{self, VirtualPolynomial, VirtualPolynomialInfo},
+    piop::sum_check::{
+        vanilla::{EvaluationsProver, VanillaSumCheck},
+        SumCheck, VirtualPolynomial,
+    },
     poly::multilinear::MultilinearPolynomial,
     snark::hyperplonk::verifier::{pcs_query, point_offset, points},
     util::{
         arithmetic::{div_ceil, BatchInvert, BooleanHypercube, PrimeField},
+        end_timer,
         expression::{CommonPolynomial, Expression},
-        parallelize,
+        parallel::{par_map_collect, par_sort_unstable, parallelize},
+        start_timer,
         transcript::TranscriptWrite,
         Itertools,
     },
     Error,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    iter,
+};
 
 pub(super) fn instances_polys<'a, F: PrimeField>(
     num_vars: usize,
@@ -33,7 +42,7 @@ pub(super) fn instances_polys<'a, F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn lookup_permuted_polys<F: PrimeField + Ord>(
+pub(super) fn lookup_permuted_polys<F: PrimeField + Ord + Hash>(
     lookups: &[Vec<(Expression<F>, Expression<F>)>],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
@@ -45,11 +54,16 @@ pub(super) fn lookup_permuted_polys<F: PrimeField + Ord>(
     ),
     Error,
 > {
+    if lookups.is_empty() {
+        return Ok(Default::default());
+    }
+
+    let num_vars = polys[0].num_vars();
+    let nth_map = BooleanHypercube::new(num_vars).nth_map();
     let expression = lookups
         .iter()
         .flat_map(|lookup| lookup.iter().map(|(input, table)| (input + table)))
         .sum::<Expression<_>>();
-    let num_vars = polys[0].num_vars();
     let lagranges = {
         let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
         expression
@@ -71,7 +85,15 @@ pub(super) fn lookup_permuted_polys<F: PrimeField + Ord>(
     Ok(lookups
         .iter()
         .map(|lookup| {
-            lookup_permuted_poly(lookup, &lagranges, &identities, polys, challenges, theta)
+            lookup_permuted_poly(
+                lookup,
+                &nth_map,
+                &lagranges,
+                &identities,
+                polys,
+                challenges,
+                theta,
+            )
         })
         .try_collect::<_, Vec<_>, _>()?
         .into_iter()
@@ -79,8 +101,9 @@ pub(super) fn lookup_permuted_polys<F: PrimeField + Ord>(
 }
 
 #[allow(clippy::type_complexity)]
-fn lookup_permuted_poly<F: PrimeField + Ord>(
+fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
     lookup: &[(Expression<F>, Expression<F>)],
+    nth_map: &[usize],
     lagranges: &HashSet<(i32, usize)>,
     identities: &[u64],
     polys: &[&MultilinearPolynomial<F>],
@@ -126,7 +149,7 @@ fn lookup_permuted_poly<F: PrimeField + Ord>(
                 MultilinearPolynomial::new(compressed)
             })
             .reduce(|mut acc, poly| {
-                acc *= *theta;
+                acc *= theta;
                 &acc + &poly
             })
             .unwrap()
@@ -136,18 +159,28 @@ fn lookup_permuted_poly<F: PrimeField + Ord>(
         .iter()
         .map(|(input, table)| (input, table))
         .unzip::<_, _, Vec<_>, Vec<_>>();
-    let compressed_input_poly = compress(&inputs);
-    let compressed_table_poly = compress(&tables);
 
+    let timer = start_timer(|| "compressed_input_poly");
+    let compressed_input_poly = compress(&inputs);
+    end_timer(timer);
+
+    let timer = start_timer(|| "compressed_table_poly");
+    let compressed_table_poly = compress(&tables);
+    end_timer(timer);
+
+    let timer = start_timer(|| "permuted_input_poly");
     let permuted_input_poly = {
         let mut permuted_input_poly = compressed_input_poly.evals().to_vec();
-        permuted_input_poly[1..].sort();
+        par_sort_unstable(&mut permuted_input_poly[1..]);
         MultilinearPolynomial::new(permuted_input_poly)
     };
+    end_timer(timer);
+
+    let timer = start_timer(|| "permuted_table_poly");
     let permuted_table_poly = {
-        let mut permuted_table_poly = vec![F::zero(); 1 << compressed_input_poly.num_vars()];
+        let timer = start_timer(|| "table_count");
         let mut table_count = compressed_table_poly[1..].iter().fold(
-            BTreeMap::<_, u32>::new(),
+            HashMap::<_, u32>::new(),
             |mut table_count, value| {
                 table_count
                     .entry(value)
@@ -156,12 +189,16 @@ fn lookup_permuted_poly<F: PrimeField + Ord>(
                 table_count
             },
         );
-        let mut repeated_indices = permuted_input_poly
-            .iter()
-            .zip(permuted_table_poly.iter_mut())
+        end_timer(timer);
+
+        let timer = start_timer(|| "repeated_indices");
+        let mut permuted_table_poly = vec![F::zero(); 1 << num_vars];
+        let mut repeated_indices = permuted_table_poly
+            .iter_mut()
+            .zip(permuted_input_poly.iter())
             .enumerate()
             .skip(1)
-            .filter_map(|(idx, (input, table))| {
+            .filter_map(|(idx, (table, input))| {
                 if idx == 1 || *input != permuted_input_poly[idx - 1] {
                     *table = *input;
                     if let Some(count) = table_count.get_mut(input) {
@@ -181,11 +218,15 @@ fn lookup_permuted_poly<F: PrimeField + Ord>(
                 permuted_table_poly[repeated_indices.pop().unwrap()] = *value;
             }
         }
+        end_timer(timer);
+
         if cfg!(feature = "sanity-check") {
             assert!(repeated_indices.is_empty());
         }
+
         MultilinearPolynomial::new(permuted_table_poly)
     };
+    end_timer(timer);
 
     if cfg!(feature = "sanity-check") {
         let mut last = None;
@@ -201,8 +242,10 @@ fn lookup_permuted_poly<F: PrimeField + Ord>(
         }
     }
 
-    let [permuted_input_poly, permuted_table_poly] =
-        into_bh_order(num_vars, [permuted_input_poly, permuted_table_poly]);
+    let timer = start_timer(|| "into_bh_order");
+    let [permuted_input_poly, permuted_table_poly] = [&permuted_input_poly, &permuted_table_poly]
+        .map(|poly| MultilinearPolynomial::new(par_map_collect(nth_map, |b| poly[*b])));
+    end_timer(timer);
 
     Ok((
         (compressed_input_poly, compressed_table_poly),
@@ -248,6 +291,7 @@ fn lookup_z_poly<F: PrimeField>(
     let num_vars = compressed_input_poly.num_vars();
     let mut product = vec![F::zero(); 1 << num_vars];
 
+    let timer = start_timer(|| "product");
     parallelize(&mut product, |(product, start)| {
         for ((product, permuted_input), permuted_table) in product
             .iter_mut()
@@ -269,13 +313,15 @@ fn lookup_z_poly<F: PrimeField>(
             *product *= (*beta + compressed_input) * &(*gamma + compressed_table);
         }
     });
+    end_timer(timer);
 
+    let _timer = start_timer(|| "z_poly");
     let mut z_poly = MultilinearPolynomial::new(vec![F::zero(); 1 << num_vars]);
     z_poly[1] = F::one();
     for (b, b_next) in BooleanHypercube::new(num_vars)
         .iter()
         .skip(1)
-        .zip(BooleanHypercube::new(num_vars).iter().skip(2))
+        .tuple_windows()
     {
         z_poly[b_next] = z_poly[b] * &product[b];
     }
@@ -300,9 +346,10 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
     }
 
     let chunk_size = max_degree - 1;
-    let num_chunk = div_ceil(permutation_polys.len(), chunk_size);
+    let num_chunks = div_ceil(permutation_polys.len(), chunk_size);
     let num_vars = polys[0].num_vars();
 
+    let timer = start_timer(|| "products");
     let products = permutation_polys
         .chunks(chunk_size)
         .enumerate()
@@ -338,49 +385,67 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
             product
         })
         .collect_vec();
+    end_timer(timer);
 
-    let mut z = Vec::with_capacity(num_chunk << num_vars);
-    z.push(F::one());
-    for b in BooleanHypercube::new(num_vars).iter().skip(1) {
-        for product in products.iter() {
-            z.push(product[b] * z.last().unwrap())
-        }
-    }
+    let timer = start_timer(|| "z_polys");
+    let z = iter::empty()
+        .chain(iter::repeat_with(F::zero).take(num_chunks))
+        .chain(Some(F::one()))
+        .chain(
+            BooleanHypercube::new(num_vars)
+                .iter()
+                .skip(1)
+                .flat_map(|b| iter::repeat(b).take(num_chunks))
+                .zip(products.iter().cycle())
+                .scan(F::one(), |state, (b, product)| {
+                    *state *= &product[b];
+                    Some(*state)
+                }),
+        )
+        .take(num_chunks << num_vars)
+        .collect_vec();
 
     if cfg!(feature = "sanity-check") {
-        assert_eq!(*z.last().unwrap(), F::one());
+        let b_last = BooleanHypercube::new(num_vars).iter().last().unwrap();
+        assert_eq!(
+            *z.last().unwrap() * products.last().unwrap()[b_last],
+            F::one()
+        );
     }
 
     drop(products);
+    end_timer(timer);
 
-    let mut z_polys = vec![MultilinearPolynomial::new(vec![F::zero(); 1 << num_vars]); num_chunk];
-    for (idx, b) in (0..)
-        .step_by(num_chunk)
-        .zip(BooleanHypercube::new(num_vars).iter().skip(1))
-    {
-        for (z_poly, idx) in z_polys.iter_mut().zip(idx..) {
-            z_poly[b] = z[idx];
-        }
-    }
-    z_polys
+    let _timer = start_timer(|| "into_bh_order");
+    let nth_map = BooleanHypercube::new(num_vars)
+        .nth_map()
+        .into_iter()
+        .map(|b| num_chunks * b)
+        .collect_vec();
+    (0..num_chunks)
+        .map(|offset| MultilinearPolynomial::new(par_map_collect(&nth_map, |b| z[offset + b])))
+        .collect()
 }
 
 #[allow(clippy::type_complexity)]
 pub(super) fn prove_sum_check<F: PrimeField>(
     num_instance_poly: usize,
-    virtual_poly_info: &VirtualPolynomialInfo<F>,
+    expression: &Expression<F>,
     polys: &[&MultilinearPolynomial<F>],
     challenges: Vec<F>,
     y: Vec<F>,
     transcript: &mut impl TranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let num_vars = polys[0].num_vars();
-    let virtual_poly =
-        VirtualPolynomial::new(virtual_poly_info, polys.to_vec(), challenges, vec![y]);
-    let x = sum_check::prove(num_vars, virtual_poly, transcript)?;
+    let ys = [y];
+    let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
+    let x =
+        VanillaSumCheck::<EvaluationsProver<_>>::prove(&(), num_vars, virtual_poly, transcript)?;
 
-    let pcs_query = pcs_query(virtual_poly_info, num_instance_poly);
+    let pcs_query = pcs_query(expression, num_instance_poly);
     let point_offset = point_offset(&pcs_query);
+
+    let timer = start_timer(|| format!("evals-{}", pcs_query.len()));
     let evals = pcs_query
         .iter()
         .flat_map(|query| {
@@ -389,26 +454,11 @@ pub(super) fn prove_sum_check<F: PrimeField>(
                 .map(|(point, eval)| Evaluation::new(query.poly(), point, eval))
         })
         .collect_vec();
+    end_timer(timer);
 
     for eval in evals.iter() {
         transcript.write_scalar(*eval.value())?;
     }
 
     Ok((points(&pcs_query, &x), evals))
-}
-
-fn into_bh_order<F: PrimeField, const N: usize>(
-    num_vars: usize,
-    polys: [MultilinearPolynomial<F>; N],
-) -> [MultilinearPolynomial<F>; N] {
-    let nth_map = BooleanHypercube::new(num_vars).nth_map();
-    let mut outputs = [(); N].map(|_| MultilinearPolynomial::new(vec![F::zero(); 1 << num_vars]));
-    for (output, poly) in outputs.iter_mut().zip(polys.iter()) {
-        parallelize(&mut output[..], |(output, start)| {
-            for (output, b) in output.iter_mut().zip(start..) {
-                *output = poly[nth_map[b]]
-            }
-        })
-    }
-    outputs
 }

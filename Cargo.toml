@@ -9,14 +9,35 @@ itertools = "0.10.5"
 num-bigint = "0.4.3"
 num-integer = "0.1.45"
 rand = "0.8"
-rayon = "1.5.3"
 sha3 = "0.10.6"
-colored = { version = "2.0.0", optional = true }
+ark-std = { version = "^0.3.0", default-features = false }
+rayon = { version = "1.5.3", optional = true }
 
-[features]
-default = []
-timer = ["dep:colored"]
-sanity-check = []
+# frontend-halo2
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2022_10_22", optional = true }
+
+# benchmark
+snark-verifier = { git = "https://github.com/privacy-scaling-explorations/snark-verifier", tag = "v2022_12_23", default-features = false, features = ["loader_halo2", "system_halo2"], optional = true }
 
 [dev-dependencies]
 criterion = "0.4.0"
+
+[patch."https://github.com/privacy-scaling-explorations/halo2.git"]
+halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
+
+[patch."https://github.com/privacy-scaling-explorations/snark-verifier.git"]
+snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "feature/for-benchmark" }
+
+[features]
+default = ["parallel"]
+timer = ["ark-std/print-trace", "halo2_proofs?/print-trace"]
+parallel = ["dep:rayon"]
+sanity-check = []
+
+frontend-halo2 = ["dep:halo2_proofs"]
+benchmark = ["timer", "parallel", "frontend-halo2", "dep:snark-verifier"]
+
+[[bench]]
+name = "proof_system"
+harness = false
+required-features = ["benchmark"]

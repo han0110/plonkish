@@ -1,43 +1,11 @@
-use arithmetic::div_ceil;
-
 pub mod arithmetic;
 pub mod expression;
+pub mod parallel;
 mod timer;
 pub mod transcript;
 
 pub use itertools::Itertools;
-pub use rayon::current_num_threads as num_threads;
 pub use timer::{end_timer, start_timer};
-
-pub fn parallelize_iter<I, T, F>(iter: I, f: F)
-where
-    I: Send + Iterator<Item = T>,
-    T: Send,
-    F: Fn(T) + Send + Sync + Clone,
-{
-    rayon::scope(|scope| {
-        for item in iter {
-            let f = f.clone();
-            scope.spawn(move |_| f(item));
-        }
-    });
-}
-
-pub fn parallelize<T, F>(v: &mut [T], f: F)
-where
-    T: Send,
-    F: Fn((&mut [T], usize)) + Send + Sync + Clone,
-{
-    {
-        let num_threads = num_threads();
-        let chunk_size = div_ceil(v.len(), num_threads);
-        if chunk_size < num_threads {
-            f((v, 0));
-        } else {
-            parallelize_iter(v.chunks_mut(chunk_size).zip((0..).step_by(chunk_size)), f);
-        }
-    }
-}
 
 pub trait BitIndex {
     fn nth_bit(&self, nth: usize) -> bool;

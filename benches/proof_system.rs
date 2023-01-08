@@ -24,32 +24,15 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 use std::{env::args, ops::Range};
 
 fn main() {
-    let (system, circuit, k_range) = parse_args();
+    let (systems, circuit, k_range) = parse_args();
     match circuit {
-        Circuit::Aggregation => {
-            bench::<AggregationCircuit<Bn256>>(system, k_range);
-        }
-        Circuit::StandardPlonk => {
-            bench::<StandardPlonk<Fr>>(system, k_range);
-        }
+        Circuit::Aggregation => bench::<AggregationCircuit<Bn256>>(systems, k_range),
+        Circuit::StandardPlonk => bench::<StandardPlonk<Fr>>(systems, k_range),
     }
 }
 
-fn bench<C: CircuitExt<Fr>>(system: System, k_range: Range<usize>) {
-    match system {
-        System::All => {
-            k_range.for_each(|k| {
-                bench_hyperplonk::<C>(k);
-                bench_halo2::<C>(k);
-            });
-        }
-        System::HyperPlonk => {
-            k_range.for_each(bench_hyperplonk::<C>);
-        }
-        System::Halo2 => {
-            k_range.for_each(bench_halo2::<C>);
-        }
-    }
+fn bench<C: CircuitExt<Fr>>(systems: Vec<System>, k_range: Range<usize>) {
+    k_range.for_each(|k| systems.iter().for_each(|system| system.bench::<C>(k)));
 }
 
 fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
@@ -123,11 +106,23 @@ fn bench_halo2<C: CircuitExt<Fr>>(k: usize) {
     end_timer(timer);
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum System {
-    All,
     HyperPlonk,
     Halo2,
+}
+
+impl System {
+    fn all() -> Vec<System> {
+        vec![System::HyperPlonk, System::Halo2]
+    }
+
+    fn bench<C: CircuitExt<Fr>>(&self, k: usize) {
+        match self {
+            System::HyperPlonk => bench_hyperplonk::<C>(k),
+            System::Halo2 => bench_halo2::<C>(k),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,15 +140,15 @@ impl Circuit {
     }
 }
 
-fn parse_args() -> (System, Circuit, Range<usize>) {
-    let (system, circuit, k_range) = args().chain(Some("".to_string())).tuple_windows().fold(
-        (System::All, Circuit::Aggregation, 20..26),
-        |(mut system, mut circuit, mut k_range), (key, value)| {
+fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
+    let (systems, circuit, k_range) = args().chain(Some("".to_string())).tuple_windows().fold(
+        (Vec::new(), Circuit::Aggregation, 20..26),
+        |(mut systems, mut circuit, mut k_range), (key, value)| {
             match key.as_str() {
                 "--system" => match value.as_str() {
-                    "all" => system = System::All,
-                    "hyperplonk" => system = System::HyperPlonk,
-                    "halo2" => system = System::Halo2,
+                    "all" => systems = System::all(),
+                    "hyperplonk" => systems.push(System::HyperPlonk),
+                    "halo2" => systems.push(System::Halo2),
                     _ => panic!("system should be one of {{all,hyperplonk,halo2}}"),
                 },
                 "--circuit" => match value.as_str() {
@@ -172,13 +167,17 @@ fn parse_args() -> (System, Circuit, Range<usize>) {
                 }
                 _ => {}
             }
-            (system, circuit, k_range)
+            (systems, circuit, k_range)
         },
     );
     if k_range.start < circuit.min_k() {
         panic!("k should be at least {} for {circuit:?}", circuit.min_k());
     }
-    (system, circuit, k_range)
+    let mut systems = systems.into_iter().sorted().dedup().collect_vec();
+    if systems.is_empty() {
+        systems = System::all();
+    };
+    (systems, circuit, k_range)
 }
 
 fn std_rng() -> impl RngCore {

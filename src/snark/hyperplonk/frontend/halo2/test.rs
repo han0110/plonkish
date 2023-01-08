@@ -26,7 +26,8 @@ fn circuit_info_plonk() {
             vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
         )
         .constraints
-    )
+    );
+    assert_eq!(circuit_info.permutation_polys(), [6, 7, 8]);
 }
 
 #[test]

@@ -95,7 +95,12 @@ mod stand_plonk {
                             region.assign_fixed(|| "", column, offset, || Value::known(value))?;
                         }
                         for (column, value) in config.wires.into_iter().zip(wires.iter().copied()) {
-                            region.assign_advice(|| "", column, offset, || Value::known(value))?;
+                            let cell = region
+                                .assign_advice(|| "", column, offset, || Value::known(value))?
+                                .cell();
+                            if offset == 0 {
+                                region.constrain_equal(cell, cell)?;
+                            }
                         }
                     }
                     Ok(())

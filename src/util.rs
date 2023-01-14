@@ -5,7 +5,7 @@ mod timer;
 pub mod transcript;
 
 pub use itertools::Itertools;
-pub use timer::{end_timer, start_timer};
+pub use timer::{end_timer, start_timer, start_unit_timer};
 
 pub trait BitIndex {
     fn nth_bit(&self, nth: usize) -> bool;

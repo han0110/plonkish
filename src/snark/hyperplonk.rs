@@ -182,8 +182,8 @@ where
                 assert_eq!(witness_polys.len(), *num_witness_polys);
                 end_timer(timer);
 
-                for witness_poly in witness_polys.iter() {
-                    transcript.write_commitment(Pcs::commit(&pp.pcs, witness_poly)?)?;
+                for comm in Pcs::batch_commit(&pp.pcs, &witness_polys)? {
+                    transcript.write_commitment(comm)?;
                 }
                 witness_polys
             });
@@ -204,9 +204,10 @@ where
             lookup_permuted_polys(&pp.lookups, &polys, &challenges, &theta)?;
         end_timer(timer);
 
-        for (permuted_input_poly, permuted_table_poly) in lookup_permuted_polys.iter() {
-            transcript.write_commitment(Pcs::commit(&pp.pcs, permuted_input_poly)?)?;
-            transcript.write_commitment(Pcs::commit(&pp.pcs, permuted_table_poly)?)?;
+        if !lookup_permuted_polys.is_empty() {
+            for comm in Pcs::batch_commit(&pp.pcs, lookup_permuted_polys.iter().flatten())? {
+                transcript.write_commitment(comm)?;
+            }
         }
 
         // Phase n+1
@@ -229,8 +230,11 @@ where
             permutation_z_polys(pp.max_degree, &pp.permutation_polys, &polys, &beta, &gamma);
         end_timer(timer);
 
-        for z in lookup_z_polys.iter().chain(permutation_z_polys.iter()) {
-            transcript.write_commitment(Pcs::commit(&pp.pcs, z)?)?;
+        if !(lookup_z_polys.is_empty() && permutation_z_polys.is_empty()) {
+            for z in Pcs::batch_commit(&pp.pcs, lookup_z_polys.iter().chain(&permutation_z_polys))?
+            {
+                transcript.write_commitment(z)?;
+            }
         }
 
         // Phase n+2
@@ -241,11 +245,7 @@ where
         let polys = iter::empty()
             .chain(polys)
             .chain(pp.permutation_polys.iter().map(|(_, poly)| poly))
-            .chain(lookup_permuted_polys.iter().flat_map(
-                |(permuted_input_poly, permuted_table_poly)| {
-                    [permuted_input_poly, permuted_table_poly]
-                },
-            ))
+            .chain(lookup_permuted_polys.iter().flatten())
             .chain(lookup_z_polys.iter())
             .chain(permutation_z_polys.iter())
             .collect_vec();
@@ -678,11 +678,7 @@ pub(crate) mod test {
             iter::empty()
                 .chain(polys)
                 .chain(permutation_polys.into_iter().map(|(_, poly)| poly))
-                .chain(
-                    lookup_permuted_polys
-                        .into_iter()
-                        .flat_map(|(input, table)| [input, table]),
-                )
+                .chain(lookup_permuted_polys.into_iter().flatten())
                 .chain(lookup_z_polys)
                 .chain(permutation_z_polys)
                 .collect_vec(),

@@ -29,10 +29,12 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error>;
 
-    fn batch_commit(
+    fn batch_commit<'a>(
         pp: &Self::ProverParam,
-        polys: &[Self::Polynomial],
-    ) -> Result<Self::BatchCommitment, Error>;
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+    ) -> Result<Self::BatchCommitment, Error>
+    where
+        Self::Polynomial: 'a;
 
     fn open(
         pp: &Self::ProverParam,

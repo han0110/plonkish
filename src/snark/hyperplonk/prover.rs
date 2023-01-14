@@ -49,8 +49,8 @@ pub(super) fn lookup_permuted_polys<F: PrimeField + Ord + Hash>(
     theta: &F,
 ) -> Result<
     (
-        Vec<(MultilinearPolynomial<F>, MultilinearPolynomial<F>)>,
-        Vec<(MultilinearPolynomial<F>, MultilinearPolynomial<F>)>,
+        Vec<[MultilinearPolynomial<F>; 2]>,
+        Vec<[MultilinearPolynomial<F>; 2]>,
     ),
     Error,
 > {
@@ -109,13 +109,7 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
     theta: &F,
-) -> Result<
-    (
-        (MultilinearPolynomial<F>, MultilinearPolynomial<F>),
-        (MultilinearPolynomial<F>, MultilinearPolynomial<F>),
-    ),
-    Error,
-> {
+) -> Result<([MultilinearPolynomial<F>; 2], [MultilinearPolynomial<F>; 2]), Error> {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
     let compress = |expressions: &[&Expression<F>]| {
@@ -248,24 +242,24 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
     end_timer(timer);
 
     Ok((
-        (compressed_input_poly, compressed_table_poly),
-        (permuted_input_poly, permuted_table_poly),
+        [compressed_input_poly, compressed_table_poly],
+        [permuted_input_poly, permuted_table_poly],
     ))
 }
 
 pub(super) fn lookup_z_polys<F: PrimeField>(
-    compressed_polys: &[(MultilinearPolynomial<F>, MultilinearPolynomial<F>)],
-    permuted_polys: &[(MultilinearPolynomial<F>, MultilinearPolynomial<F>)],
+    compressed_polys: &[[MultilinearPolynomial<F>; 2]],
+    permuted_polys: &[[MultilinearPolynomial<F>; 2]],
     beta: &F,
     gamma: &F,
 ) -> Vec<MultilinearPolynomial<F>> {
     compressed_polys
         .iter()
-        .zip(permuted_polys.iter())
+        .zip_eq(permuted_polys.iter())
         .map(
             |(
-                (compressed_input_poly, compressed_table_poly),
-                (permuted_input_poly, permuted_table_poly),
+                [compressed_input_poly, compressed_table_poly],
+                [permuted_input_poly, permuted_table_poly],
             )| {
                 lookup_z_poly(
                     compressed_input_poly,

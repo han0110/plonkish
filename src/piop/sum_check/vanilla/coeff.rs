@@ -4,6 +4,7 @@ use crate::{
     util::{
         arithmetic::{div_ceil, horner, PrimeField},
         expression::{CommonPolynomial, Expression, Rotation},
+        impl_index,
         parallel::{num_threads, parallelize_iter},
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
@@ -13,7 +14,7 @@ use crate::{
 use std::{fmt::Debug, iter, ops::AddAssign};
 
 #[derive(Debug)]
-pub struct Coefficients<F: PrimeField>(Vec<F>);
+pub struct Coefficients<F>(Vec<F>);
 
 impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Coefficients<F> {
     type Auxiliary = ();
@@ -30,9 +31,9 @@ impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Coefficients<F> {
     }
 
     fn sum(&self) -> F {
-        self.0[1..]
+        self[1..]
             .iter()
-            .fold(self.0[0].double(), |acc, coeff| acc + coeff)
+            .fold(self[0].double(), |acc, coeff| acc + coeff)
     }
 
     fn evaluate(&self, _: &Self::Auxiliary, challenge: &F) -> F {
@@ -42,7 +43,7 @@ impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Coefficients<F> {
 
 impl<'rhs, F: PrimeField> AddAssign<&'rhs F> for Coefficients<F> {
     fn add_assign(&mut self, rhs: &'rhs F) {
-        self.0[0] += rhs;
+        self[0] += rhs;
     }
 }
 
@@ -61,6 +62,8 @@ impl<'rhs, F: PrimeField> AddAssign<(&'rhs F, &'rhs Coefficients<F>)> for Coeffi
         }
     }
 }
+
+impl_index!(Coefficients, 0);
 
 #[derive(Clone, Debug)]
 pub struct CoefficientsProver<F: PrimeField>(F, Vec<(F, Vec<Expression<F>>)>);
@@ -135,36 +138,24 @@ where
         Self(constant, flattened)
     }
 
-    fn prove_round<'a>(
-        &self,
-        state: &mut ProverState<'a, F>,
-        challenge: Option<&F>,
-    ) -> Self::RoundMessage {
-        if let Some(challenge) = challenge {
-            state.next_round(challenge);
+    fn prove_round<'a>(&self, state: &ProverState<'a, F>) -> Self::RoundMessage {
+        let mut coeffs = Coefficients(vec![F::zero(); state.expression.degree() + 1]);
+        coeffs += &(F::from(state.size() as u64) * &self.0);
+        if self.1.iter().all(|(_, products)| products.len() == 2) {
+            for (scalar, products) in self.1.iter() {
+                let [lhs, rhs] = [0, 1].map(|idx| &products[idx]);
+                coeffs += (scalar, &self.karatsuba::<true>(state, lhs, rhs));
+            }
+            coeffs[1] = state.sum - coeffs[0].double() - coeffs[2];
+        } else {
+            unimplemented!()
         }
-        self.coeffs(state)
+        coeffs
     }
 }
 
 impl<F: PrimeField> CoefficientsProver<F> {
-    fn coeffs<'a>(&self, state: &ProverState<'a, F>) -> Coefficients<F> {
-        let mut coeffs = Coefficients(vec![F::zero(); state.expression.degree() + 1]);
-        coeffs += &self.0;
-        for (scalar, products) in self.1.iter() {
-            match products.len() {
-                2 => {
-                    coeffs += (scalar, &self.karatsuba(state, &products[0], &products[1]));
-                }
-                _ => {
-                    unimplemented!()
-                }
-            }
-        }
-        coeffs
-    }
-
-    fn karatsuba<'a>(
+    fn karatsuba<'a, const LAZY: bool>(
         &self,
         state: &ProverState<'a, F>,
         lhs: &Expression<F>,
@@ -181,7 +172,7 @@ impl<F: PrimeField> CoefficientsProver<F> {
                 Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)),
             ) if query.rotation() == Rotation::cur() => {
                 let lhs = &state.eq_xys[*idx];
-                let rhs = state.poly::<true>(query);
+                let rhs = &state.polys[query.poly()][state.num_vars];
 
                 let evaluate_serial = |coeffs: &mut [F; 3], start: usize, n: usize| {
                     zip_self!(lhs.iter(), 2, start)
@@ -190,10 +181,11 @@ impl<F: PrimeField> CoefficientsProver<F> {
                         .for_each(|((lhs_0, lhs_1), (rhs_0, rhs_1))| {
                             let coeff_0 = *lhs_0 * rhs_0;
                             let coeff_2 = (*lhs_1 - lhs_0) * &(*rhs_1 - rhs_0);
-                            let coeff_1 = *lhs_1 * rhs_1 - &coeff_0 - &coeff_2;
                             coeffs[0] += &coeff_0;
-                            coeffs[1] += &coeff_1;
                             coeffs[2] += &coeff_2;
+                            if !LAZY {
+                                coeffs[1] += &(*lhs_1 * rhs_1 - &coeff_0 - &coeff_2);
+                            }
                         });
                 };
 
@@ -211,8 +203,10 @@ impl<F: PrimeField> CoefficientsProver<F> {
                     );
                     partials.iter().for_each(|partial| {
                         coeffs[0] += partial[0];
-                        coeffs[1] += partial[1];
                         coeffs[2] += partial[2];
+                        if !LAZY {
+                            coeffs[1] += partial[1];
+                        }
                     })
                 };
             }

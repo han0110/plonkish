@@ -1,16 +1,14 @@
-use crate::{
-    poly::impl_index,
-    util::{
-        arithmetic::{div_ceil, horner, powers, Field},
-        parallel::{num_threads, parallelize, parallelize_iter},
-        Itertools,
-    },
+use crate::util::{
+    arithmetic::{div_ceil, horner, powers, Field},
+    impl_index,
+    parallel::{num_threads, parallelize, parallelize_iter},
+    Itertools,
 };
 use rand::RngCore;
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
     iter::{self, Sum},
-    ops::{Add, AddAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,18 +188,6 @@ impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
     }
 }
 
-impl<F: Field> AddAssign<F> for UnivariatePolynomial<F> {
-    fn add_assign(&mut self, rhs: F) {
-        self.0[0] += &rhs;
-    }
-}
-
-impl<F: Field> SubAssign<F> for UnivariatePolynomial<F> {
-    fn sub_assign(&mut self, rhs: F) {
-        self.0[0] -= &rhs;
-    }
-}
-
 impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
@@ -256,15 +242,4 @@ impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> 
     }
 }
 
-impl_index!(
-    UnivariatePolynomial, 0,
-    [
-        usize => F,
-        Range<usize> => [F],
-        RangeFrom<usize> => [F],
-        RangeFull => [F],
-        RangeInclusive<usize> => [F],
-        RangeTo<usize> => [F],
-        RangeToInclusive<usize> => [F],
-    ]
-);
+impl_index!(UnivariatePolynomial, 0);

@@ -18,9 +18,8 @@ use hyperplonk::{
         },
         UniversalSnark,
     },
-    util::{end_timer, start_timer, transcript::Keccak256Transcript, Itertools},
+    util::{end_timer, start_timer, test::std_rng, transcript::Keccak256Transcript, Itertools},
 };
-use rand::{rngs::StdRng, RngCore, SeedableRng};
 use std::{env::args, ops::Range};
 
 fn main() {
@@ -178,8 +177,4 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
         systems = System::all();
     };
     (systems, circuit, k_range)
-}
-
-fn std_rng() -> impl RngCore {
-    StdRng::from_seed(Default::default())
 }

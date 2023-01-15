@@ -243,12 +243,8 @@ pub(super) fn permutation_polys<F: PrimeField>(
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        poly::multilinear::MultilinearPolynomial,
-        snark::hyperplonk::preprocess::{compose, PlonkishCircuitInfo},
-        util::{
-            arithmetic::PrimeField,
-            expression::{Expression, Query, Rotation},
-        },
+        snark::hyperplonk::util::{plonk_expression, plonk_with_lookup_expression},
+        util::expression::{Expression, Query, Rotation},
     };
     use halo2_curves::bn256::Fr;
     use std::array;
@@ -339,75 +335,5 @@ pub(crate) mod test {
             let eq = Expression::eq_xy(0);
             Expression::distribute_powers(&constraints, alpha) * eq
         });
-    }
-
-    pub(crate) fn plonk_circuit_info<F: PrimeField>(
-        num_vars: usize,
-        num_instances: usize,
-        preprocess_polys: [MultilinearPolynomial<F>; 5],
-        permutations: Vec<Vec<(usize, usize)>>,
-    ) -> PlonkishCircuitInfo<F> {
-        let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] =
-            &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
-        PlonkishCircuitInfo {
-            k: num_vars,
-            num_instances: vec![num_instances],
-            preprocess_polys: preprocess_polys.to_vec(),
-            num_witness_polys: vec![3],
-            num_challenges: vec![0],
-            constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi],
-            lookups: Vec::new(),
-            permutations,
-            max_degree: Some(4),
-        }
-    }
-
-    pub(crate) fn plonk_expression<F: PrimeField>() -> Expression<F> {
-        let circuit_info = plonk_circuit_info(
-            0,
-            0,
-            Default::default(),
-            vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
-        );
-        let (max_degree, expression) = compose(&circuit_info);
-        assert_eq!(max_degree, 4);
-        expression
-    }
-
-    pub(crate) fn plonk_with_lookup_circuit_info<F: PrimeField>(
-        num_vars: usize,
-        num_instances: usize,
-        preprocess_polys: [MultilinearPolynomial<F>; 9],
-        permutations: Vec<Vec<(usize, usize)>>,
-    ) -> PlonkishCircuitInfo<F> {
-        let [pi, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o] =
-            &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
-        PlonkishCircuitInfo {
-            k: num_vars,
-            num_instances: vec![num_instances],
-            preprocess_polys: preprocess_polys.to_vec(),
-            num_witness_polys: vec![3],
-            num_challenges: vec![0],
-            constraints: vec![q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi],
-            lookups: vec![vec![
-                (q_lookup * w_l, t_l.clone()),
-                (q_lookup * w_r, t_r.clone()),
-                (q_lookup * w_o, t_o.clone()),
-            ]],
-            permutations,
-            max_degree: Some(4),
-        }
-    }
-
-    pub(crate) fn plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
-        let circuit_info = plonk_with_lookup_circuit_info(
-            0,
-            0,
-            Default::default(),
-            vec![vec![(10, 1)], vec![(11, 1)], vec![(12, 1)]],
-        );
-        let (max_degree, expression) = compose(&circuit_info);
-        assert_eq!(max_degree, 4);
-        expression
     }
 }

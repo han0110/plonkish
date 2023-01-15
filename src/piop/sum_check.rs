@@ -44,6 +44,7 @@ pub trait SumCheck<F: Field>: Clone + Debug {
         pp: &Self::ProverParam,
         num_vars: usize,
         virtual_poly: VirtualPolynomial<F>,
+        sum: F,
         transcript: &mut impl TranscriptWrite<F>,
     ) -> Result<Vec<F>, Error>;
 
@@ -138,6 +139,7 @@ pub(crate) mod test {
         expression_fn: impl Fn(usize) -> Expression<Fr>,
         param_fn: impl Fn(usize) -> (S::ProverParam, S::VerifierParam),
         assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
+        sum: Fr,
     ) {
         for num_vars in num_vars_range {
             let expression = expression_fn(num_vars);
@@ -148,7 +150,7 @@ pub(crate) mod test {
             let proof = {
                 let virtual_poly = VirtualPolynomial::new(&expression, &polys, &challenges, &ys);
                 let mut transcript = Keccak256Transcript::<_, G1Affine>::new(Vec::new());
-                S::prove(&pp, num_vars, virtual_poly, &mut transcript).unwrap();
+                S::prove(&pp, num_vars, virtual_poly, sum, &mut transcript).unwrap();
                 transcript.finalize()
             };
             let accept = {
@@ -171,6 +173,21 @@ pub(crate) mod test {
         }
     }
 
+    pub fn run_zero_check<S: SumCheck<Fr>>(
+        num_vars_range: Range<usize>,
+        expression_fn: impl Fn(usize) -> Expression<Fr>,
+        param_fn: impl Fn(usize) -> (S::ProverParam, S::VerifierParam),
+        assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
+    ) {
+        run_sum_check::<S>(
+            num_vars_range,
+            expression_fn,
+            param_fn,
+            assignment_fn,
+            Fr::zero(),
+        )
+    }
+
     macro_rules! tests {
         ($impl:ty) => {
             #[test]
@@ -178,7 +195,7 @@ pub(crate) mod test {
                 use halo2_curves::bn256::Fr;
                 use rand::rngs::OsRng;
                 use $crate::{
-                    piop::sum_check::test::run_sum_check,
+                    piop::sum_check::test::run_zero_check,
                     poly::multilinear::MultilinearPolynomial,
                     util::{
                         arithmetic::{BooleanHypercube, Field},
@@ -188,7 +205,7 @@ pub(crate) mod test {
                     },
                 };
 
-                run_sum_check::<$impl>(
+                run_zero_check::<$impl>(
                     2..4,
                     |num_vars| {
                         let polys = (0..1 << num_vars)
@@ -231,7 +248,7 @@ pub(crate) mod test {
                 use rand::rngs::OsRng;
                 use std::iter;
                 use $crate::{
-                    piop::sum_check::test::run_sum_check,
+                    piop::sum_check::test::run_zero_check,
                     poly::multilinear::MultilinearPolynomial,
                     util::{
                         arithmetic::{BooleanHypercube, Field},
@@ -241,7 +258,7 @@ pub(crate) mod test {
                     },
                 };
 
-                run_sum_check::<$impl>(
+                run_zero_check::<$impl>(
                     2..16,
                     |num_vars| {
                         let polys = (-(num_vars as i32) + 1..num_vars as i32)
@@ -283,14 +300,12 @@ pub(crate) mod test {
                 use halo2_curves::bn256::Fr;
                 use rand::rngs::OsRng;
                 use $crate::{
-                    piop::sum_check::test::run_sum_check,
-                    snark::hyperplonk::{
-                        preprocess::test::plonk_expression, test::rand_plonk_assignment,
-                    },
+                    piop::sum_check::test::run_zero_check,
+                    snark::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
                     util::test::rand_vec,
                 };
 
-                run_sum_check::<$impl>(
+                run_zero_check::<$impl>(
                     2..16,
                     |_| plonk_expression(),
                     |_| ((), ()),
@@ -306,15 +321,14 @@ pub(crate) mod test {
                 use halo2_curves::bn256::Fr;
                 use rand::rngs::OsRng;
                 use $crate::{
-                    piop::sum_check::test::run_sum_check,
-                    snark::hyperplonk::{
-                        preprocess::test::plonk_with_lookup_expression,
-                        test::rand_plonk_with_lookup_assignment,
+                    piop::sum_check::test::run_zero_check,
+                    snark::hyperplonk::util::{
+                        plonk_with_lookup_expression, rand_plonk_with_lookup_assignment,
                     },
                     util::test::rand_vec,
                 };
 
-                run_sum_check::<$impl>(
+                run_zero_check::<$impl>(
                     2..16,
                     |_| plonk_with_lookup_expression(),
                     |_| ((), ()),

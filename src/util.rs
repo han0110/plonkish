@@ -17,11 +17,51 @@ impl BitIndex for usize {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test {
+macro_rules! impl_index {
+    (@ $name:ident, $field:tt, [$($range:ty => $output:ty),*$(,)?]) => {
+        $(
+            impl<F> std::ops::Index<$range> for $name<F> {
+                type Output = $output;
+
+                fn index(&self, index: $range) -> &$output {
+                    self.$field.index(index)
+                }
+            }
+
+            impl<F> std::ops::IndexMut<$range> for $name<F> {
+                fn index_mut(&mut self, index: $range) -> &mut $output {
+                    self.$field.index_mut(index)
+                }
+            }
+        )*
+    };
+    ($name:ident, $field:tt) => {
+        impl_index!(
+            @ $name, $field,
+            [
+                usize => F,
+                std::ops::Range<usize> => [F],
+                std::ops::RangeFrom<usize> => [F],
+                std::ops::RangeFull => [F],
+                std::ops::RangeInclusive<usize> => [F],
+                std::ops::RangeTo<usize> => [F],
+                std::ops::RangeToInclusive<usize> => [F],
+            ]
+        );
+    };
+}
+
+pub(crate) use impl_index;
+
+#[cfg(any(test, feature = "benchmark"))]
+pub mod test {
     use crate::util::arithmetic::Field;
-    use rand::RngCore;
+    use rand::{rngs::StdRng, RngCore, SeedableRng};
     use std::{array, iter, ops::Range};
+
+    pub fn std_rng() -> impl RngCore {
+        StdRng::from_seed(Default::default())
+    }
 
     pub fn rand_idx(range: Range<usize>, mut rng: impl RngCore) -> usize {
         range.start + (rng.next_u64() as usize % (range.end - range.start))

@@ -17,7 +17,7 @@ use crate::{
 use std::collections::{BTreeSet, HashMap};
 
 #[allow(clippy::type_complexity)]
-pub(super) fn verify_sum_check<F: PrimeField>(
+pub(super) fn verify_zero_check<F: PrimeField>(
     num_vars: usize,
     expression: &Expression<F>,
     instances: &[&[F]],
@@ -25,7 +25,7 @@ pub(super) fn verify_sum_check<F: PrimeField>(
     y: &[F],
     transcript: &mut impl TranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
-    let (x_eval, x) = VanillaSumCheck::<EvaluationsProver<_>>::verify(
+    let (x_eval, x) = VanillaSumCheck::<EvaluationsProver<_, true>>::verify(
         &(),
         num_vars,
         expression.degree(),

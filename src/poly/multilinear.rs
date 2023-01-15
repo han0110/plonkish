@@ -1,18 +1,16 @@
-use crate::{
-    poly::impl_index,
-    util::{
-        arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
-        expression::Rotation,
-        parallel::{num_threads, parallelize, parallelize_iter},
-        BitIndex, Itertools,
-    },
+use crate::util::{
+    arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
+    expression::Rotation,
+    impl_index,
+    parallel::{num_threads, parallelize, parallelize_iter},
+    BitIndex, Itertools,
 };
 use num_integer::Integer;
 use rand::RngCore;
 use std::{
     borrow::Cow,
     iter::{self, Sum},
-    ops::{Add, AddAssign, Range, Sub, SubAssign},
+    ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
 #[derive(Clone, Debug)]
@@ -251,18 +249,6 @@ impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPo
     }
 }
 
-impl<F: Field> AddAssign<F> for MultilinearPolynomial<F> {
-    fn add_assign(&mut self, rhs: F) {
-        self.evals[0] += &rhs;
-    }
-}
-
-impl<F: Field> SubAssign<F> for MultilinearPolynomial<F> {
-    fn sub_assign(&mut self, rhs: F) {
-        self.evals[0] -= &rhs;
-    }
-}
-
 impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs MultilinearPolynomial<F> {
     type Output = MultilinearPolynomial<F>;
 
@@ -317,18 +303,7 @@ impl<'a, F: Field> Sum<&'a MultilinearPolynomial<F>> for MultilinearPolynomial<F
     }
 }
 
-impl_index!(
-    MultilinearPolynomial, evals,
-    [
-        usize => F,
-        Range<usize> => [F],
-        RangeFrom<usize> => [F],
-        RangeFull => [F],
-        RangeInclusive<usize> => [F],
-        RangeTo<usize> => [F],
-        RangeToInclusive<usize> => [F],
-    ]
-);
+impl_index!(MultilinearPolynomial, evals);
 
 pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: &[F]) -> F {
     if rotation == Rotation::cur() {

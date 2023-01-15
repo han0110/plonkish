@@ -287,10 +287,13 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                 &Expression::Challenge(0),
             )
         };
+        let desc_powers_of_t = descending_powers(t, evals.len());
+        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
         let challenges = VanillaSumCheck::<CoefficientsProver<_>>::prove(
             &(),
             pp.num_vars(),
             VirtualPolynomial::new(&expression, polys.clone(), &[t], points),
+            tilde_gs_sum,
             transcript,
         )
         .unwrap();
@@ -302,7 +305,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .collect_vec();
         let g_prime = evals
             .iter()
-            .zip(descending_powers(t, evals.len()))
+            .zip(desc_powers_of_t)
             .fold(
                 vec![M::Scalar::zero(); polys.len()],
                 |mut coeffs, (eval, power_of_t)| {

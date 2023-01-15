@@ -5,6 +5,7 @@ use crate::{
             barycentric_interpolate, barycentric_weights, div_ceil, BooleanHypercube, PrimeField,
         },
         expression::{CommonPolynomial, Expression, Query, Rotation},
+        impl_index,
         parallel::{num_threads, parallelize_iter},
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
@@ -12,10 +13,14 @@ use crate::{
     Error,
 };
 use num_integer::Integer;
-use std::{cmp::Ordering, fmt::Debug, ops::Deref};
+use std::{
+    cmp::Ordering,
+    fmt::Debug,
+    ops::{AddAssign, Deref},
+};
 
-#[derive(Debug)]
-pub struct Evaluations<F: PrimeField>(Vec<F>);
+#[derive(Clone, Debug)]
+pub struct Evaluations<F>(Vec<F>);
 
 impl<F: PrimeField> Evaluations<F> {
     fn points(degree: usize) -> Vec<F> {
@@ -38,7 +43,7 @@ impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Evaluations<F> {
     }
 
     fn sum(&self) -> F {
-        self.0[0] + self.0[1]
+        self[0] + self[1]
     }
 
     fn auxiliary(degree: usize) -> Self::Auxiliary {
@@ -51,10 +56,23 @@ impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Evaluations<F> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct EvaluationsProver<F: PrimeField>(GraphEvaluator<F>);
+impl<'rhs, F: PrimeField> AddAssign<&'rhs Evaluations<F>> for Evaluations<F> {
+    fn add_assign(&mut self, rhs: &'rhs Evaluations<F>) {
+        zip_for_each!(
+            (self.0.iter_mut(), rhs.0.iter()),
+            (|(lhs, rhs)| *lhs += rhs)
+        );
+    }
+}
 
-impl<F> VanillaSumCheckProver<F> for EvaluationsProver<F>
+impl_index!(Evaluations, 0);
+
+#[derive(Clone, Debug)]
+pub struct EvaluationsProver<F: PrimeField, const IS_ZERO_CHECK: bool>(
+    GraphEvaluator<F, IS_ZERO_CHECK>,
+);
+
+impl<F, const IS_ZERO_CHECK: bool> VanillaSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
 where
     F: PrimeField,
 {
@@ -64,22 +82,15 @@ where
         Self(GraphEvaluator::new(state))
     }
 
-    fn prove_round<'a>(
-        &self,
-        state: &mut ProverState<'a, F>,
-        challenge: Option<&F>,
-    ) -> Self::RoundMessage {
-        if let Some(challenge) = challenge {
-            state.next_round(challenge);
-        }
+    fn prove_round<'a>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
         self.evals(state)
     }
 }
 
-impl<F: PrimeField> EvaluationsProver<F> {
+impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHECK> {
     fn evals<'a>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
         let num_evals = state.expression.degree() + 1;
-        let mut evals = vec![F::zero(); num_evals];
+        let mut evals = Evaluations(vec![F::zero(); num_evals]);
 
         let size = state.size();
         let num_threads = num_threads();
@@ -93,7 +104,7 @@ impl<F: PrimeField> EvaluationsProver<F> {
             }
         } else {
             let chunk_size = div_ceil(size, num_threads);
-            let mut partials = vec![vec![F::zero(); num_evals]; num_threads];
+            let mut partials = vec![Evaluations(vec![F::zero(); num_evals]); num_threads];
             parallelize_iter(
                 partials.iter_mut().zip((0..).step_by(chunk_size)),
                 |(partials, start)| {
@@ -106,20 +117,16 @@ impl<F: PrimeField> EvaluationsProver<F> {
                     }
                 },
             );
-            partials.iter().for_each(|partials| {
-                zip_for_each!(
-                    (evals.iter_mut(), partials),
-                    (|(eval, partial)| *eval += partial)
-                );
-            });
+            partials.iter().for_each(|partials| evals += partials);
         }
 
-        Evaluations(evals)
+        evals[0] = state.sum - evals[1];
+        evals
     }
 }
 
 #[derive(Clone, Debug, Default)]
-struct GraphEvaluator<F: PrimeField> {
+struct GraphEvaluator<F: PrimeField, const IS_ZERO_CHECK: bool> {
     num_vars: usize,
     constants: Vec<F>,
     challenges: Vec<F>,
@@ -131,7 +138,7 @@ struct GraphEvaluator<F: PrimeField> {
     calculations: Vec<Calculation>,
 }
 
-impl<F: PrimeField> GraphEvaluator<F> {
+impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> {
     fn new(state: &ProverState<F>) -> Self {
         let mut ev = Self {
             num_vars: state.num_vars,
@@ -303,7 +310,7 @@ impl<F: PrimeField> GraphEvaluator<F> {
         }
     }
 
-    fn evaluate_polys_at<const IS_FIRST_ROUND: bool, const POINT: usize>(
+    fn evaluate_polys_next<const IS_FIRST_ROUND: bool, const IS_FIRST_POINT: bool>(
         &self,
         data: &mut EvaluatorData<F>,
         state: &ProverState<F>,
@@ -320,8 +327,12 @@ impl<F: PrimeField> GraphEvaluator<F> {
             );
         }
 
-        if POINT == 0 {
-            let b_0 = if IS_FIRST_ROUND { data.bs[0].0 } else { b << 1 };
+        if IS_FIRST_POINT {
+            let (b_0, b_1) = if IS_FIRST_ROUND {
+                data.bs[0]
+            } else {
+                (b << 1, (b << 1) + 1)
+            };
             zip_for_each!(
                 (
                     data.lagranges.iter_mut(),
@@ -332,9 +343,9 @@ impl<F: PrimeField> GraphEvaluator<F> {
                     let lagrange = &state.lagranges[i];
                     if b == lagrange.0 >> 1 {
                         if lagrange.0.is_even() {
-                            *eval = lagrange.1;
                             *step = -lagrange.1;
                         } else {
+                            *eval = lagrange.1;
                             *step = lagrange.1;
                         }
                     } else {
@@ -343,37 +354,15 @@ impl<F: PrimeField> GraphEvaluator<F> {
                     }
                 })
             );
+            data.identity_step = F::from((1 << state.round) as u64);
             zip_for_each!(
                 (data.identitys.iter_mut(), self.identitys.iter()),
-                (|(eval, idx)| *eval =
-                    state.identities[*idx] + F::from((b << (state.round + 1)) as u64))
-            );
-            zip_for_each!(
-                (data.eq_xys.iter_mut(), self.eq_xys.iter()),
-                (|(eval, idx)| *eval = state.eq_xys[*idx][b_0])
-            );
-            zip_for_each!(
-                (data.polys.iter_mut(), self.polys.iter()),
-                (|(eval, (poly, rotation))| if IS_FIRST_ROUND {
-                    *eval = state.polys[*poly][self.num_vars][data.bs[*rotation].0]
-                } else {
-                    *eval = state.polys[*poly][self.rotations[*rotation].1][b_0]
+                (|(eval, idx)| {
+                    *eval = state.identities[*idx]
+                        + F::from((b << (state.round + 1)) as u64)
+                        + &data.identity_step
                 })
             );
-        } else if POINT == 1 {
-            let (b_0, b_1) = if IS_FIRST_ROUND {
-                data.bs[0]
-            } else {
-                (b << 1, (b << 1) + 1)
-            };
-            zip_for_each!(
-                (data.lagranges.iter_mut(), &data.lagrange_steps),
-                (|(eval, step)| *eval += step)
-            );
-            data.identity_step = F::from((1 << state.round) as u64);
-            data.identitys
-                .iter_mut()
-                .for_each(|eval| *eval += &data.identity_step);
             zip_for_each!(
                 (data.eq_xys.iter_mut(), self.eq_xys.iter()),
                 (|(eval, idx)| *eval = state.eq_xys[*idx][b_1])
@@ -416,33 +405,39 @@ impl<F: PrimeField> GraphEvaluator<F> {
         }
     }
 
-    fn evaluate_at<const IS_FIRST_ROUND: bool, const POINT: usize>(
+    fn evaluate_next<const IS_FIRST_ROUND: bool, const IS_FIRST_POINT: bool>(
         &self,
         eval: &mut F,
         state: &ProverState<F>,
         data: &mut EvaluatorData<F>,
         b: usize,
     ) {
-        self.evaluate_polys_at::<IS_FIRST_ROUND, POINT>(data, state, b);
+        self.evaluate_polys_next::<IS_FIRST_ROUND, IS_FIRST_POINT>(data, state, b);
+        if !cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND && IS_FIRST_POINT {
+            return;
+        }
+
         for (idx, calculation) in self.calculations.iter().enumerate() {
             calculation.calculate(&self.constants, &self.challenges, data, idx);
+        }
+        if cfg!(feature = "sanity-check") && IS_ZERO_CHECK {
+            assert_eq!(data.calculations.last().unwrap(), &F::zero());
         }
         *eval += data.calculations.last().unwrap();
     }
 
     fn evaluate<const IS_FIRST_ROUND: bool>(
         &self,
-        evals: &mut [F],
+        evals: &mut Evaluations<F>,
         data: &mut EvaluatorData<F>,
         state: &ProverState<F>,
         b: usize,
     ) {
-        assert!(evals.len() > 2);
+        assert!(evals.0.len() > 2);
 
-        self.evaluate_at::<IS_FIRST_ROUND, 0>(&mut evals[0], state, data, b);
-        self.evaluate_at::<IS_FIRST_ROUND, 1>(&mut evals[1], state, data, b);
-        for evals in evals[2..].iter_mut() {
-            self.evaluate_at::<IS_FIRST_ROUND, 2>(evals, state, data, b);
+        self.evaluate_next::<IS_FIRST_ROUND, true>(&mut evals[1], state, data, b);
+        for eval in evals[2..].iter_mut() {
+            self.evaluate_next::<IS_FIRST_ROUND, false>(eval, state, data, b);
         }
     }
 }
@@ -498,12 +493,12 @@ impl Calculation {
     ) {
         let load = |source: &ValueSource| source.load(constants, challenges, data);
         data.calculations[idx] = match self {
-            Calculation::Negate(v) => -*load(v),
-            Calculation::Add(a, b) => *load(a) + load(b),
-            Calculation::Sub(a, b) => *load(a) - load(b),
-            Calculation::Mul(a, b) => *load(a) * load(b),
-            Calculation::Double(v) => load(v).double(),
-            Calculation::Square(v) => load(v).square(),
+            Calculation::Negate(value) => -*load(value),
+            Calculation::Add(lhs, rhs) => *load(lhs) + load(rhs),
+            Calculation::Sub(lhs, rhs) => *load(lhs) - load(rhs),
+            Calculation::Mul(lhs, rhs) => *load(lhs) * load(rhs),
+            Calculation::Double(value) => load(value).double(),
+            Calculation::Square(value) => load(value).square(),
             Calculation::Horner(values, base) => {
                 let base = load(base);
                 values
@@ -554,5 +549,5 @@ mod test {
         vanilla::{EvaluationsProver, VanillaSumCheck},
     };
 
-    tests!(VanillaSumCheck<EvaluationsProver<Fr>>);
+    tests!(VanillaSumCheck<EvaluationsProver<Fr, true>>);
 }

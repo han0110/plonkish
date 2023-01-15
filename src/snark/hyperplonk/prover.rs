@@ -422,7 +422,7 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn prove_sum_check<F: PrimeField>(
+pub(super) fn prove_zero_check<F: PrimeField>(
     num_instance_poly: usize,
     expression: &Expression<F>,
     polys: &[&MultilinearPolynomial<F>],
@@ -433,8 +433,13 @@ pub(super) fn prove_sum_check<F: PrimeField>(
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
-    let x =
-        VanillaSumCheck::<EvaluationsProver<_>>::prove(&(), num_vars, virtual_poly, transcript)?;
+    let x = VanillaSumCheck::<EvaluationsProver<_, true>>::prove(
+        &(),
+        num_vars,
+        virtual_poly,
+        F::zero(),
+        transcript,
+    )?;
 
     let pcs_query = pcs_query(expression, num_instance_poly);
     let point_offset = point_offset(&pcs_query);

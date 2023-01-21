@@ -23,6 +23,9 @@ use std::{
 pub struct Evaluations<F>(Vec<F>);
 
 impl<F: PrimeField> Evaluations<F> {
+    fn new(degree: usize) -> Self {
+        Self(vec![F::zero(); degree + 1])
+    }
     fn points(degree: usize) -> Vec<F> {
         (0..degree as u64 + 1).map_into().collect_vec()
     }
@@ -89,36 +92,24 @@ where
 
 impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHECK> {
     fn evals<'a>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
-        let num_evals = state.expression.degree() + 1;
-        let mut evals = Evaluations(vec![F::zero(); num_evals]);
+        let mut evals = Evaluations::new(state.degree);
 
         let size = state.size();
-        let num_threads = num_threads();
-        if size < num_threads {
-            let bs = 0..size;
-            let mut data = self.0.data();
-            if state.round > 0 {
-                bs.for_each(|b| self.0.evaluate::<false>(&mut evals, &mut data, state, b))
-            } else {
-                bs.for_each(|b| self.0.evaluate::<true>(&mut evals, &mut data, state, b))
-            }
-        } else {
-            let chunk_size = div_ceil(size, num_threads);
-            let mut partials = vec![Evaluations(vec![F::zero(); num_evals]); num_threads];
-            parallelize_iter(
-                partials.iter_mut().zip((0..).step_by(chunk_size)),
-                |(partials, start)| {
-                    let bs = start..(start + chunk_size).min(size);
-                    let mut data = self.0.data();
-                    if state.round > 0 {
-                        bs.for_each(|b| self.0.evaluate::<false>(partials, &mut data, state, b))
-                    } else {
-                        bs.for_each(|b| self.0.evaluate::<true>(partials, &mut data, state, b))
-                    }
-                },
-            );
-            partials.iter().for_each(|partials| evals += partials);
-        }
+        let chunk_size = div_ceil(size, num_threads());
+        let mut partials = vec![Evaluations::new(state.degree); div_ceil(size, chunk_size)];
+        parallelize_iter(
+            partials.iter_mut().zip((0..).step_by(chunk_size)),
+            |(partials, start)| {
+                let bs = start..(start + chunk_size).min(size);
+                let mut data = self.0.data();
+                if state.round > 0 {
+                    bs.for_each(|b| self.0.evaluate::<false>(partials, &mut data, state, b))
+                } else {
+                    bs.for_each(|b| self.0.evaluate::<true>(partials, &mut data, state, b))
+                }
+            },
+        );
+        partials.iter().for_each(|partials| evals += partials);
 
         evals[0] = state.sum - evals[1];
         evals

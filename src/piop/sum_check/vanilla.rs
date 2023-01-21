@@ -24,12 +24,14 @@ pub use eval::EvaluationsProver;
 pub struct ProverState<'a, F: Field> {
     num_vars: usize,
     expression: &'a Expression<F>,
+    degree: usize,
     sum: F,
     lagranges: HashMap<i32, (usize, F)>,
     identities: Vec<F>,
     eq_xys: Vec<MultilinearPolynomial<F>>,
     polys: Vec<Vec<Cow<'a, MultilinearPolynomial<F>>>>,
     challenges: &'a [F],
+    buf: MultilinearPolynomial<F>,
     round: usize,
     bh: BooleanHypercube,
 }
@@ -79,12 +81,14 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
         Self {
             num_vars,
             expression: virtual_poly.expression,
+            degree: virtual_poly.expression.degree(),
             sum,
             lagranges,
             identities,
             eq_xys,
             polys,
             challenges: virtual_poly.challenges,
+            buf: MultilinearPolynomial::new(vec![F::zero(); 1 << (num_vars - 1)]),
             round: 0,
             bh,
         }
@@ -95,10 +99,6 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
     }
 
     fn next_round(&mut self, sum: F, challenge: &F) {
-        if self.round == self.num_vars - 1 {
-            return;
-        }
-
         self.sum = sum;
         self.lagranges.values_mut().for_each(|(b, value)| {
             if b.is_even() {
@@ -113,7 +113,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             .for_each(|constant| *constant += F::from(1 << self.round) * challenge);
         self.eq_xys
             .iter_mut()
-            .for_each(|eq_xy| *eq_xy = eq_xy.fix_variables(&[*challenge]));
+            .for_each(|eq_xy| eq_xy.fix_variable(challenge, &mut self.buf));
         if self.round == 0 {
             let rotation_maps = self
                 .expression
@@ -127,30 +127,41 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             for query in self.expression.used_query() {
                 if query.rotation() != Rotation::cur() {
                     let poly = &self.polys[query.poly()][self.num_vars];
-                    let rotated = MultilinearPolynomial::new(par_map_collect(
+                    let mut rotated = MultilinearPolynomial::new(par_map_collect(
                         &rotation_maps[&query.rotation()],
                         |b| poly[*b],
                     ));
+                    rotated.fix_variable(challenge, &mut self.buf);
                     self.polys[query.poly()]
                         [(query.rotation().0 + self.num_vars as i32) as usize] =
-                        Cow::Owned(rotated.fix_variables(&[*challenge]));
+                        Cow::Owned(rotated);
                 }
             }
+            let size = self.size();
             self.polys.iter_mut().for_each(|polys| {
-                polys[self.num_vars] =
-                    Cow::Owned(polys[self.num_vars].fix_variables(&[*challenge]));
+                let mut output = MultilinearPolynomial::new(vec![F::zero(); size]);
+                polys[self.num_vars].fix_variable_into(&mut output, challenge);
+                polys[self.num_vars] = Cow::Owned(output);
             });
         } else {
             self.polys.iter_mut().for_each(|polys| {
                 polys.iter_mut().for_each(|poly| {
                     if !poly.is_zero() {
-                        *poly = Cow::Owned(poly.fix_variables(&[*challenge]));
+                        poly.to_mut().fix_variable(challenge, &mut self.buf);
                     }
                 });
             });
         }
         self.round += 1;
         self.bh = BooleanHypercube::new(self.num_vars - self.round);
+    }
+
+    fn into_evals(self) -> Vec<F> {
+        debug_assert_eq!(self.round, self.num_vars);
+        self.polys
+            .iter()
+            .map(|polys| polys[self.num_vars].evals()[0])
+            .collect()
     }
 }
 
@@ -216,7 +227,7 @@ where
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
         transcript: &mut impl TranscriptWrite<F>,
-    ) -> Result<Vec<F>, Error> {
+    ) -> Result<(Vec<F>, Vec<F>), Error> {
         let _timer = start_timer(|| {
             let degree = virtual_poly.expression.degree();
             format!("sum_check_prove-{num_vars}-{degree}")
@@ -225,7 +236,7 @@ where
         let mut state = ProverState::new(num_vars, sum, virtual_poly);
         let mut challenges = Vec::with_capacity(num_vars);
         let prover = P::new(&state);
-        let aux = P::RoundMessage::auxiliary(state.expression.degree());
+        let aux = P::RoundMessage::auxiliary(state.degree);
 
         for _ in 0..num_vars {
             let msg = prover.prove_round(&state);
@@ -237,7 +248,7 @@ where
             state.next_round(msg.evaluate(&aux, &challenge), &challenge);
         }
 
-        Ok(challenges)
+        Ok((challenges, state.into_evals()))
     }
 
     fn verify(

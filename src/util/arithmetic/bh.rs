@@ -157,7 +157,7 @@ mod test {
     use crate::util::{arithmetic::BooleanHypercube, expression::Rotation};
 
     #[test]
-    #[ignore = "Cause it takes some minutes to run with release profile"]
+    #[ignore = "cause it takes some minutes to run with release profile"]
     fn boolean_hypercube_iter() {
         for num_vars in 0..32 {
             let bh = BooleanHypercube::new(num_vars);
@@ -170,7 +170,7 @@ mod test {
     }
 
     #[test]
-    #[ignore = "Cause it takes some minutes to run with release profile"]
+    #[ignore = "cause it takes some minutes to run with release profile"]
     fn boolean_hypercube_prev() {
         for num_vars in 0..32 {
             let bh = BooleanHypercube::new(num_vars);

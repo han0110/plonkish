@@ -22,7 +22,12 @@ use crate::{
 };
 use num_integer::Integer;
 use rand::RngCore;
-use std::{iter, marker::PhantomData, ops::Neg};
+use std::{
+    borrow::Cow,
+    iter,
+    marker::PhantomData,
+    ops::{Deref, Neg},
+};
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
@@ -269,30 +274,45 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
 
         let t = transcript.squeeze_challenge();
 
-        let expression = {
-            let eq_xys = evals
-                .iter()
-                .map(|eval| Expression::<M::Scalar>::eq_xy(eval.point()))
-                .collect_vec();
-            let polys = evals
-                .iter()
-                .map(|eval| Expression::Polynomial(Query::new(eval.poly(), Rotation::cur())))
-                .collect_vec();
-            Expression::distribute_powers(
-                &eq_xys
-                    .iter()
-                    .zip(polys.iter())
-                    .map(|(eq_xy, poly)| eq_xy * poly)
-                    .collect_vec(),
-                &Expression::Challenge(0),
-            )
-        };
+        let timer = start_timer(|| "merged_polys");
         let desc_powers_of_t = descending_powers(t, evals.len());
+        let merged_polys = evals.iter().zip(desc_powers_of_t.iter()).fold(
+            vec![(M::Scalar::one(), Cow::<MultilinearPolynomial<_>>::default()); points.len()],
+            |mut merged_polys, (eval, power_of_t)| {
+                if merged_polys[eval.point()].1.is_zero() {
+                    merged_polys[eval.point()] = (*power_of_t, Cow::Borrowed(polys[eval.poly()]));
+                } else {
+                    let coeff = merged_polys[eval.point()].0;
+                    if coeff != M::Scalar::one() {
+                        merged_polys[eval.point()].0 = M::Scalar::one();
+                        *merged_polys[eval.point()].1.to_mut() *= &coeff;
+                    }
+                    *merged_polys[eval.point()].1.to_mut() += (power_of_t, polys[eval.poly()]);
+                }
+                merged_polys
+            },
+        );
+        end_timer(timer);
+
+        let expression = merged_polys
+            .iter()
+            .enumerate()
+            .map(|(idx, (scalar, _))| {
+                Expression::<M::Scalar>::eq_xy(idx)
+                    * Expression::Polynomial(Query::new(idx, Rotation::cur()))
+                    * scalar
+            })
+            .sum();
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
-        let challenges = VanillaSumCheck::<CoefficientsProver<_>>::prove(
+        let (challenges, _) = VanillaSumCheck::<CoefficientsProver<_>>::prove(
             &(),
             pp.num_vars(),
-            VirtualPolynomial::new(&expression, polys.clone(), &[t], points),
+            VirtualPolynomial::new(
+                &expression,
+                merged_polys.iter().map(|(_, poly)| poly.deref()),
+                &[],
+                points,
+            ),
             tilde_gs_sum,
             transcript,
         )
@@ -303,19 +323,10 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .iter()
             .map(|point| eq_xy_eval(&challenges, point))
             .collect_vec();
-        let g_prime = evals
-            .iter()
-            .zip(desc_powers_of_t)
-            .fold(
-                vec![M::Scalar::zero(); polys.len()],
-                |mut coeffs, (eval, power_of_t)| {
-                    coeffs[eval.poly()] += power_of_t * &eq_xy_evals[eval.point()];
-                    coeffs
-                },
-            )
-            .iter()
-            .zip(polys)
-            .map(|(coeff, poly)| poly * coeff)
+        let g_prime = merged_polys
+            .into_iter()
+            .zip(eq_xy_evals.iter())
+            .map(|((scalar, poly), eq_xy_eval)| (scalar * eq_xy_eval, poly.into_owned()))
             .sum::<MultilinearPolynomial<_>>();
         end_timer(timer);
 

@@ -7,9 +7,9 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     snark::hyperplonk::verifier::{pcs_query, point_offset, points},
     util::{
-        arithmetic::{div_ceil, BatchInvert, BooleanHypercube, PrimeField},
+        arithmetic::{descending_powers, div_ceil, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,
-        expression::{CommonPolynomial, Expression},
+        expression::{CommonPolynomial, Expression, Rotation},
         parallel::{par_map_collect, par_sort_unstable, parallelize},
         start_timer,
         transcript::TranscriptWrite,
@@ -112,10 +112,12 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
 ) -> Result<([MultilinearPolynomial<F>; 2], [MultilinearPolynomial<F>; 2]), Error> {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
+    let desc_powers_of_theta = descending_powers(*theta, lookup.len());
     let compress = |expressions: &[&Expression<F>]| {
-        expressions
+        desc_powers_of_theta
             .iter()
-            .map(|expression| {
+            .copied()
+            .zip(expressions.iter().map(|expression| {
                 let mut compressed = vec![F::zero(); 1 << num_vars];
                 parallelize(&mut compressed, |(compressed, start)| {
                     for (b, compressed) in (start..).zip(compressed) {
@@ -141,12 +143,8 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
                     }
                 });
                 MultilinearPolynomial::new(compressed)
-            })
-            .reduce(|mut acc, poly| {
-                acc *= theta;
-                &acc + &poly
-            })
-            .unwrap()
+            }))
+            .sum::<MultilinearPolynomial<_>>()
     };
 
     let (inputs, tables) = lookup
@@ -433,7 +431,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
-    let x = VanillaSumCheck::<EvaluationsProver<_, true>>::prove(
+    let (x, evals) = VanillaSumCheck::<EvaluationsProver<_, true>>::prove(
         &(),
         num_vars,
         virtual_poly,
@@ -449,7 +447,11 @@ pub(super) fn prove_zero_check<F: PrimeField>(
         .iter()
         .flat_map(|query| {
             (point_offset[&query.rotation()]..)
-                .zip(polys[query.poly()].evaluate_for_rotation(&x, query.rotation()))
+                .zip(if query.rotation() == Rotation::cur() {
+                    vec![evals[query.poly()]]
+                } else {
+                    polys[query.poly()].evaluate_for_rotation(&x, query.rotation())
+                })
                 .map(|(point, eval)| Evaluation::new(query.poly(), point, eval))
         })
         .collect_vec();

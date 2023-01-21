@@ -46,7 +46,7 @@ pub trait SumCheck<F: Field>: Clone + Debug {
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
         transcript: &mut impl TranscriptWrite<F>,
-    ) -> Result<Vec<F>, Error>;
+    ) -> Result<(Vec<F>, Vec<F>), Error>;
 
     fn verify(
         vp: &Self::VerifierParam,

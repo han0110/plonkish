@@ -132,6 +132,10 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHEC
         }
         partials.iter().for_each(|partials| evals += partials);
 
+        if cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND {
+            assert_eq!(evals[1], F::zero());
+        }
+
         evals[0] = state.sum - evals[1];
         evals
     }
@@ -490,15 +494,13 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
         b: usize,
     ) {
         self.evaluate_polys_next::<IS_FIRST_ROUND, IS_FIRST_POINT>(data, state, b);
+
         if !cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND && IS_FIRST_POINT {
             return;
         }
 
         for (calculation, idx) in self.indexed_calculations.iter().zip(self.offsets.4..) {
             calculation.calculate(&mut data.calculations, idx);
-        }
-        if cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND && IS_FIRST_POINT {
-            assert_eq!(data.calculations.last().unwrap(), &F::zero());
         }
         *eval += data.calculations.last().unwrap();
     }

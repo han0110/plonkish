@@ -12,7 +12,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 pub mod vanilla;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VirtualPolynomial<'a, F> {
     expression: &'a Expression<F>,
     polys: Vec<&'a MultilinearPolynomial<F>>,

@@ -14,8 +14,9 @@ use crate::{
 };
 use num_integer::Integer;
 use std::{
-    cmp::Ordering,
+    collections::BTreeSet,
     fmt::Debug,
+    iter,
     ops::{AddAssign, Deref},
 };
 
@@ -72,7 +73,7 @@ impl_index!(Evaluations, 0);
 
 #[derive(Clone, Debug)]
 pub struct EvaluationsProver<F: PrimeField, const IS_ZERO_CHECK: bool>(
-    GraphEvaluator<F, IS_ZERO_CHECK>,
+    Vec<GraphEvaluator<F, IS_ZERO_CHECK>>,
 );
 
 impl<F, const IS_ZERO_CHECK: bool> VanillaSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
@@ -82,33 +83,53 @@ where
     type RoundMessage = Evaluations<F>;
 
     fn new(state: &ProverState<F>) -> Self {
-        Self(GraphEvaluator::new(state))
+        let (dense, sparse) = split_sparse(state);
+        Self(
+            iter::empty()
+                .chain(Some((&dense, false)))
+                .chain(sparse.iter().zip(iter::repeat(true)))
+                .map(|(expression, is_sparse)| {
+                    GraphEvaluator::new(state.num_vars, state.challenges, expression, is_sparse)
+                })
+                .collect(),
+        )
     }
 
     fn prove_round<'a>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
-        self.evals(state)
+        if state.round > 0 {
+            self.evals::<false>(state)
+        } else {
+            self.evals::<true>(state)
+        }
     }
 }
 
 impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHECK> {
-    fn evals<'a>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
+    fn evals<'a, const IS_FIRST_ROUND: bool>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
         let mut evals = Evaluations::new(state.degree);
 
         let size = state.size();
         let chunk_size = div_ceil(size, num_threads());
         let mut partials = vec![Evaluations::new(state.degree); div_ceil(size, chunk_size)];
-        parallelize_iter(
-            partials.iter_mut().zip((0..).step_by(chunk_size)),
-            |(partials, start)| {
-                let bs = start..(start + chunk_size).min(size);
-                let mut data = self.0.data();
-                if state.round > 0 {
-                    bs.for_each(|b| self.0.evaluate::<false>(partials, &mut data, state, b))
-                } else {
-                    bs.for_each(|b| self.0.evaluate::<true>(partials, &mut data, state, b))
-                }
-            },
-        );
+        for ev in self.0.iter() {
+            if let Some(sparse_bs) = ev.sparse_bs(state) {
+                let mut data = ev.data();
+                sparse_bs.into_iter().for_each(|b| {
+                    ev.evaluate::<IS_FIRST_ROUND>(&mut partials[0], &mut data, state, b)
+                })
+            } else {
+                parallelize_iter(
+                    partials.iter_mut().zip((0..).step_by(chunk_size)),
+                    |(partials, start)| {
+                        let bs = start..(start + chunk_size).min(size);
+                        let mut data = ev.data();
+                        bs.for_each(|b| {
+                            ev.evaluate::<IS_FIRST_ROUND>(partials, &mut data, state, b)
+                        })
+                    },
+                );
+            }
+        }
         partials.iter().for_each(|partials| evals += partials);
 
         evals[0] = state.sum - evals[1];
@@ -120,25 +141,46 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHEC
 struct GraphEvaluator<F: PrimeField, const IS_ZERO_CHECK: bool> {
     num_vars: usize,
     constants: Vec<F>,
-    challenges: Vec<F>,
     lagranges: Vec<i32>,
     identitys: Vec<usize>,
     eq_xys: Vec<usize>,
     rotations: Vec<(Rotation, usize)>,
     polys: Vec<(usize, usize)>,
-    calculations: Vec<Calculation>,
+    calculations: Vec<Calculation<ValueSource>>,
+    indexed_calculations: Vec<Calculation<usize>>,
+    offsets: (usize, usize, usize, usize, usize),
+    sparse: Option<Expression<F>>,
 }
 
 impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> {
-    fn new(state: &ProverState<F>) -> Self {
+    fn new(num_vars: usize, challenges: &[F], expression: &Expression<F>, is_sparse: bool) -> Self {
         let mut ev = Self {
-            num_vars: state.num_vars,
+            num_vars,
             constants: vec![F::from(0), F::from(1), F::from(2)],
-            challenges: state.challenges.to_vec(),
-            rotations: vec![(Rotation(0), state.num_vars)],
+            rotations: vec![(Rotation(0), num_vars)],
             ..Default::default()
         };
-        ev.register_expression(state.expression);
+
+        let (scalar, expression) = extract_scalar(expression, challenges);
+        let expression = expression
+            .map(|expression| expression * scalar)
+            .unwrap_or_else(|| Expression::Constant(scalar));
+        ev.register_expression(&expression);
+        ev.offsets.0 = ev.constants.len();
+        ev.offsets.1 = ev.offsets.0 + ev.lagranges.len();
+        ev.offsets.2 = ev.offsets.1 + ev.identitys.len();
+        ev.offsets.3 = ev.offsets.2 + ev.eq_xys.len();
+        ev.offsets.4 = ev.offsets.3 + ev.polys.len();
+        ev.indexed_calculations = ev
+            .calculations
+            .iter()
+            .map(|calculation| calculation.indexed(&ev.offsets))
+            .collect();
+
+        if is_sparse {
+            ev.sparse = Some(expression)
+        }
+
         ev
     }
 
@@ -183,7 +225,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
         ValueSource::Poly(self.register(|ev| &mut ev.polys, &(query.poly(), rotation)))
     }
 
-    fn register_calculation(&mut self, calculation: Calculation) -> ValueSource {
+    fn register_calculation(&mut self, calculation: Calculation<ValueSource>) -> ValueSource {
         ValueSource::Calculation(self.register(|ev| &mut ev.calculations, &calculation))
     }
 
@@ -196,7 +238,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
                 CommonPolynomial::EqXY(idx) => self.register_eq_xy(*idx),
             },
             Expression::Polynomial(query) => self.register_poly_eval(query),
-            Expression::Challenge(challenge) => ValueSource::Challenge(*challenge),
+            Expression::Challenge(_) => unreachable!(),
             Expression::Negated(value) => {
                 if let Expression::Constant(constant) = value.deref() {
                     self.register_constant(&-*constant)
@@ -237,7 +279,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
                             other
                         }
                         _ => {
-                            if lhs < rhs {
+                            if lhs <= rhs {
                                 self.register_calculation(Calculation::Add(lhs, rhs))
                             } else {
                                 self.register_calculation(Calculation::Add(rhs, lhs))
@@ -255,13 +297,15 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
                     }
                     (ValueSource::Constant(1), other) | (other, ValueSource::Constant(1)) => other,
                     (ValueSource::Constant(2), other) | (other, ValueSource::Constant(2)) => {
-                        self.register_calculation(Calculation::Double(other))
+                        self.register_calculation(Calculation::Add(other, other))
                     }
-                    (lhs, rhs) => match lhs.cmp(&rhs) {
-                        Ordering::Equal => self.register_calculation(Calculation::Square(lhs)),
-                        Ordering::Less => self.register_calculation(Calculation::Mul(lhs, rhs)),
-                        Ordering::Greater => self.register_calculation(Calculation::Mul(rhs, lhs)),
-                    },
+                    (lhs, rhs) => {
+                        if lhs <= rhs {
+                            self.register_calculation(Calculation::Mul(lhs, rhs))
+                        } else {
+                            self.register_calculation(Calculation::Mul(rhs, lhs))
+                        }
+                    }
                 }
             }
             Expression::Scaled(value, scalar) => {
@@ -275,30 +319,57 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
                     self.register_calculation(Calculation::Mul(value, scalar))
                 }
             }
-            Expression::DistributePowers(values, base) => {
-                let values = values
-                    .iter()
-                    .map(|value| self.register_expression(value))
-                    .collect_vec();
-                let base = self.register_expression(base);
-                self.register_calculation(Calculation::Horner(values, base))
-            }
+            Expression::DistributePowers(_, _) => unreachable!(),
         }
     }
 
+    fn sparse_bs(&self, state: &ProverState<F>) -> Option<Vec<usize>> {
+        self.sparse.as_ref().map(|sparse| {
+            sparse
+                .evaluate(
+                    &|_| None,
+                    &|poly| match poly {
+                        CommonPolynomial::Lagrange(i) => Some(vec![state.lagranges[&i].0 >> 1]),
+                        _ => None,
+                    },
+                    &|_| None,
+                    &|_| None,
+                    &|bs| bs,
+                    &|lhs, rhs| match (lhs, rhs) {
+                        (None, None) => None,
+                        (Some(bs), None) | (None, Some(bs)) => Some(bs),
+                        (Some(mut lhs), Some(rhs)) => {
+                            lhs.extend(rhs);
+                            Some(lhs)
+                        }
+                    },
+                    &|lhs, rhs| match (lhs, rhs) {
+                        (None, None) => None,
+                        (Some(bs), None) | (None, Some(bs)) => Some(bs),
+                        (Some(lhs), Some(rhs)) => Some(
+                            BTreeSet::from_iter(lhs)
+                                .intersection(&BTreeSet::from_iter(rhs))
+                                .cloned()
+                                .collect(),
+                        ),
+                    },
+                    &|bs, _| bs,
+                )
+                .unwrap()
+        })
+    }
+
     fn data(&self) -> EvaluatorData<F> {
-        EvaluatorData {
+        let mut data = EvaluatorData {
             bs: vec![(0, 0); self.rotations.len()],
-            lagranges: vec![F::zero(); self.lagranges.len()],
             lagrange_steps: vec![F::zero(); self.lagranges.len()],
-            identitys: vec![F::zero(); self.identitys.len()],
             identity_step: F::zero(),
-            eq_xys: vec![F::zero(); self.eq_xys.len()],
             eq_xy_steps: vec![F::zero(); self.eq_xys.len()],
-            polys: vec![F::zero(); self.polys.len()],
             poly_steps: vec![F::zero(); self.polys.len()],
-            calculations: vec![F::zero(); self.calculations.len()],
-        }
+            calculations: vec![F::zero(); self.offsets.4 + self.calculations.len()],
+        };
+        data.calculations[..self.constants.len()].clone_from_slice(&self.constants);
+        data
     }
 
     fn evaluate_polys_next<const IS_FIRST_ROUND: bool, const IS_FIRST_POINT: bool>(
@@ -307,7 +378,22 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
         state: &ProverState<F>,
         b: usize,
     ) {
-        if IS_FIRST_ROUND {
+        macro_rules! calculation {
+            (lagranges) => {
+                data.calculations[self.offsets.0..]
+            };
+            (identities) => {
+                data.calculations[self.offsets.1..]
+            };
+            (eq_xys) => {
+                data.calculations[self.offsets.2..]
+            };
+            (polys) => {
+                data.calculations[self.offsets.3..]
+            };
+        }
+
+        if IS_FIRST_ROUND && IS_FIRST_POINT {
             let bh = BooleanHypercube::new(self.num_vars);
             zip_for_each!(
                 (data.bs.iter_mut(), self.rotations.iter()),
@@ -326,7 +412,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
             };
             zip_for_each!(
                 (
-                    data.lagranges.iter_mut(),
+                    calculation!(lagranges).iter_mut(),
                     data.lagrange_steps.iter_mut(),
                     self.lagranges.iter()
                 ),
@@ -347,28 +433,27 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
             );
             data.identity_step = F::from((1 << state.round) as u64);
             zip_for_each!(
-                (data.identitys.iter_mut(), self.identitys.iter()),
+                (calculation!(identities).iter_mut(), self.identitys.iter()),
                 (|(eval, idx)| {
                     *eval = state.identities[*idx]
-                        + F::from((b << (state.round + 1)) as u64)
-                        + &data.identity_step
+                        + F::from((1 << state.round) + (b << (state.round + 1)) as u64)
                 })
             );
             zip_for_each!(
-                (data.eq_xys.iter_mut(), self.eq_xys.iter()),
+                (calculation!(eq_xys).iter_mut(), self.eq_xys.iter()),
                 (|(eval, idx)| *eval = state.eq_xys[*idx][b_1])
             );
             zip_for_each!(
-                (data.polys.iter_mut(), self.polys.iter()),
+                (data.eq_xy_steps.iter_mut(), self.eq_xys.iter()),
+                (|(step, idx)| *step = state.eq_xys[*idx][b_1] - &state.eq_xys[*idx][b_0])
+            );
+            zip_for_each!(
+                (calculation!(polys).iter_mut(), self.polys.iter()),
                 (|(eval, (poly, rotation))| if IS_FIRST_ROUND {
                     *eval = state.polys[*poly][self.num_vars][data.bs[*rotation].1]
                 } else {
                     *eval = state.polys[*poly][self.rotations[*rotation].1][b_1]
                 })
-            );
-            zip_for_each!(
-                (data.eq_xy_steps.iter_mut(), self.eq_xys.iter()),
-                (|(step, idx)| *step = state.eq_xys[*idx][b_1] - &state.eq_xys[*idx][b_0])
             );
             zip_for_each!(
                 (data.poly_steps.iter_mut(), self.polys.iter()),
@@ -384,14 +469,15 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
         } else {
             zip_for_each!(
                 [
-                    (data.lagranges.iter_mut(), &data.lagrange_steps),
-                    (data.eq_xys.iter_mut(), &data.eq_xy_steps),
-                    (data.polys.iter_mut(), &data.poly_steps)
+                    (calculation!(lagranges).iter_mut(), &data.lagrange_steps),
+                    (calculation!(eq_xys).iter_mut(), &data.eq_xy_steps),
+                    (calculation!(polys).iter_mut(), &data.poly_steps)
                 ],
                 (|(eval, step)| *eval += step)
             );
-            data.identitys
+            calculation!(identities)
                 .iter_mut()
+                .take(self.identitys.len())
                 .for_each(|eval| *eval += &data.identity_step);
         }
     }
@@ -408,10 +494,10 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
             return;
         }
 
-        for (idx, calculation) in self.calculations.iter().enumerate() {
-            calculation.calculate(&self.constants, &self.challenges, data, idx);
+        for (calculation, idx) in self.indexed_calculations.iter().zip(self.offsets.4..) {
+            calculation.calculate(&mut data.calculations, idx);
         }
-        if cfg!(feature = "sanity-check") && IS_ZERO_CHECK {
+        if cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND && IS_FIRST_POINT {
             assert_eq!(data.calculations.last().unwrap(), &F::zero());
         }
         *eval += data.calculations.last().unwrap();
@@ -436,7 +522,6 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ValueSource {
     Constant(usize),
-    Challenge(usize),
     Lagrange(usize),
     Identity(usize),
     EqXY(usize),
@@ -445,57 +530,45 @@ enum ValueSource {
 }
 
 impl ValueSource {
-    fn load<'a, F: PrimeField>(
-        &self,
-        constants: &'a [F],
-        challenges: &'a [F],
-        data: &'a EvaluatorData<F>,
-    ) -> &'a F {
+    fn indexed(&self, offsets: &(usize, usize, usize, usize, usize)) -> usize {
         match self {
-            ValueSource::Constant(idx) => &constants[*idx],
-            ValueSource::Challenge(idx) => &challenges[*idx],
-            ValueSource::Lagrange(idx) => &data.lagranges[*idx],
-            ValueSource::Identity(idx) => &data.identitys[*idx],
-            ValueSource::EqXY(idx) => &data.eq_xys[*idx],
-            ValueSource::Poly(idx) => &data.polys[*idx],
-            ValueSource::Calculation(idx) => &data.calculations[*idx],
+            ValueSource::Constant(idx) => *idx,
+            ValueSource::Lagrange(idx) => offsets.0 + idx,
+            ValueSource::Identity(idx) => offsets.1 + idx,
+            ValueSource::EqXY(idx) => offsets.2 + idx,
+            ValueSource::Poly(idx) => offsets.3 + idx,
+            ValueSource::Calculation(idx) => offsets.4 + idx,
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Calculation {
-    Negate(ValueSource),
-    Add(ValueSource, ValueSource),
-    Sub(ValueSource, ValueSource),
-    Mul(ValueSource, ValueSource),
-    Double(ValueSource),
-    Square(ValueSource),
-    Horner(Vec<ValueSource>, ValueSource),
+enum Calculation<T> {
+    Negate(T),
+    Add(T, T),
+    Sub(T, T),
+    Mul(T, T),
 }
 
-impl Calculation {
-    fn calculate<F: PrimeField>(
-        &self,
-        constants: &[F],
-        challenges: &[F],
-        data: &mut EvaluatorData<F>,
-        idx: usize,
-    ) {
-        let load = |source: &ValueSource| source.load(constants, challenges, data);
-        data.calculations[idx] = match self {
-            Calculation::Negate(value) => -*load(value),
-            Calculation::Add(lhs, rhs) => *load(lhs) + load(rhs),
-            Calculation::Sub(lhs, rhs) => *load(lhs) - load(rhs),
-            Calculation::Mul(lhs, rhs) => *load(lhs) * load(rhs),
-            Calculation::Double(value) => load(value).double(),
-            Calculation::Square(value) => load(value).square(),
-            Calculation::Horner(values, base) => {
-                let base = load(base);
-                values
-                    .iter()
-                    .fold(F::zero(), |acc, item| acc * base + load(item))
-            }
+impl Calculation<ValueSource> {
+    fn indexed(&self, offsets: &(usize, usize, usize, usize, usize)) -> Calculation<usize> {
+        use Calculation::*;
+        match self {
+            Negate(value) => Negate(value.indexed(offsets)),
+            Add(lhs, rhs) => Add(lhs.indexed(offsets), rhs.indexed(offsets)),
+            Sub(lhs, rhs) => Sub(lhs.indexed(offsets), rhs.indexed(offsets)),
+            Mul(lhs, rhs) => Mul(lhs.indexed(offsets), rhs.indexed(offsets)),
+        }
+    }
+}
+
+impl Calculation<usize> {
+    fn calculate<F: PrimeField>(&self, data: &mut [F], idx: usize) {
+        data[idx] = match self {
+            Calculation::Negate(value) => -data[*value],
+            Calculation::Add(lhs, rhs) => data[*lhs] + &data[*rhs],
+            Calculation::Sub(lhs, rhs) => data[*lhs] - &data[*rhs],
+            Calculation::Mul(lhs, rhs) => data[*lhs] * &data[*rhs],
         };
     }
 }
@@ -503,15 +576,111 @@ impl Calculation {
 #[derive(Debug)]
 struct EvaluatorData<F: PrimeField> {
     bs: Vec<(usize, usize)>,
-    lagranges: Vec<F>,
     lagrange_steps: Vec<F>,
-    identitys: Vec<F>,
     identity_step: F,
-    eq_xys: Vec<F>,
     eq_xy_steps: Vec<F>,
-    polys: Vec<F>,
     poly_steps: Vec<F>,
     calculations: Vec<F>,
+}
+
+fn split_sparse<F: PrimeField>(state: &ProverState<F>) -> (Expression<F>, Vec<Expression<F>>) {
+    state.expression.evaluate(
+        &|constant| (Expression::Constant(constant), Vec::new()),
+        &|poly| match poly {
+            CommonPolynomial::Lagrange(_) => (
+                Expression::Constant(F::zero()),
+                vec![Expression::<F>::CommonPolynomial(poly)],
+            ),
+            _ => (Expression::CommonPolynomial(poly), Vec::new()),
+        },
+        &|query| {
+            // TODO: Recognize sparse selectors
+            (Expression::Polynomial(query), Vec::new())
+        },
+        &|challenge| (Expression::Challenge(challenge), Vec::new()),
+        &|(dense, sparse)| (-dense, sparse.iter().map(|sparse| -sparse).collect()),
+        &|(lhs_dense, lhs_sparse), (rhs_dense, rhs_sparse)| {
+            (lhs_dense + rhs_dense, [lhs_sparse, rhs_sparse].concat())
+        },
+        &|(lhs_dense, lhs_sparse), (rhs_dense, rhs_sparse)| match (
+            lhs_dense, lhs_sparse, rhs_dense, rhs_sparse,
+        ) {
+            (lhs_dense, sparse, rhs_dense, empty) | (rhs_dense, empty, lhs_dense, sparse)
+                if empty.is_empty() =>
+            {
+                (
+                    lhs_dense * &rhs_dense,
+                    sparse.iter().map(|sparse| sparse * &rhs_dense).collect(),
+                )
+            }
+            (lhs_dense, lhs_sparse, rhs_dense, rhs_sparse) => (
+                iter::once(lhs_dense)
+                    .chain(lhs_sparse)
+                    .sum::<Expression<_>>()
+                    * iter::once(rhs_dense)
+                        .chain(rhs_sparse)
+                        .sum::<Expression<_>>(),
+                Vec::new(),
+            ),
+        },
+        &|(dense, sparse), scalar| {
+            (
+                dense * scalar,
+                sparse.iter().map(|sparse| sparse * scalar).collect(),
+            )
+        },
+    )
+}
+
+fn extract_scalar<F: PrimeField>(
+    expression: &Expression<F>,
+    challenges: &[F],
+) -> (F, Option<Expression<F>>) {
+    expression.evaluate(
+        &|constant| (constant, None),
+        &|poly| (F::one(), Some(Expression::CommonPolynomial(poly))),
+        &|query| (F::one(), Some(Expression::Polynomial(query))),
+        &|challenge| (challenges[challenge], None),
+        &|(scalar, expression)| match expression {
+            Some(expression) => (scalar, Some(-expression)),
+            None => (-scalar, None),
+        },
+        &|lhs, rhs| match (lhs, rhs) {
+            ((lhs, None), (rhs, None)) => (lhs + rhs, None),
+            ((scalar, _), other) | (other, (scalar, _)) if scalar == F::zero() => other,
+            (lhs, rhs) => {
+                let [lhs, rhs] = [lhs, rhs].map(|(scalar, expression)| {
+                    if scalar == F::one() {
+                        expression
+                    } else {
+                        expression
+                            .map(|expression| expression * scalar)
+                            .or_else(|| Some(Expression::Constant(scalar)))
+                    }
+                });
+                (
+                    F::one(),
+                    match (lhs, rhs) {
+                        (Some(lhs), Some(rhs)) => Some(lhs + rhs),
+                        (Some(e), None) | (None, Some(e)) => Some(e),
+                        (None, None) => None,
+                    },
+                )
+            }
+        },
+        &|lhs, rhs| match (lhs, rhs) {
+            ((lhs, _), (rhs, _)) if lhs == F::zero() || rhs == F::zero() => (F::zero(), None),
+            ((lhs, None), (rhs, None)) => (lhs * rhs, None),
+            ((lhs, None), (rhs, Some(expression))) | ((rhs, Some(expression)), (lhs, None)) => {
+                (lhs * rhs, Some(expression))
+            }
+            ((lhs_scalar, Some(lhs_expression)), (rhs_scalar, Some(rhs_expression))) => (
+                lhs_scalar * rhs_scalar,
+                Some(lhs_expression * rhs_expression),
+            ),
+        },
+        &|(lhs, expression), rhs| (lhs * rhs, expression),
+    )
 }
 
 macro_rules! zip_for_each {

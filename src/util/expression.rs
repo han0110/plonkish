@@ -2,6 +2,7 @@ use crate::util::Itertools;
 use std::{
     collections::BTreeSet,
     fmt::Debug,
+    io::{self, Cursor},
     iter::{Product, Sum},
     ops::{Add, Mul, Neg, Sub},
 };
@@ -244,6 +245,64 @@ impl<F: Clone> Expression<F> {
             &|a, _| a,
         )
         .unwrap_or_default()
+    }
+
+    pub fn write(&self, writer: &mut impl io::Write) -> io::Result<()>
+    where
+        F: Debug,
+    {
+        match self {
+            Expression::Constant(constant) => write!(writer, "{:?}", *constant),
+            Expression::CommonPolynomial(poly) => match poly {
+                CommonPolynomial::Lagrange(i) => write!(writer, "l_{}", i),
+                CommonPolynomial::Identity(idx) => write!(writer, "id_{}", idx),
+                CommonPolynomial::EqXY(idx) => write!(writer, "eq_{}", idx),
+            },
+            Expression::Polynomial(query) => {
+                write!(writer, "p_{}_{}", query.poly(), query.rotation().0)
+            }
+            Expression::Challenge(challenge) => write!(writer, "c_{}", challenge),
+            Expression::Negated(value) => {
+                writer.write_all(b"(-")?;
+                value.write(writer)?;
+                writer.write_all(b")")
+            }
+            Expression::Sum(lhs, rhs) => {
+                writer.write_all(b"(")?;
+                lhs.write(writer)?;
+                writer.write_all(b" + ")?;
+                rhs.write(writer)?;
+                writer.write_all(b")")
+            }
+            Expression::Product(lhs, rhs) => {
+                lhs.write(writer)?;
+                writer.write_all(b" * ")?;
+                rhs.write(writer)
+            }
+            Expression::Scaled(value, scalar) => {
+                write!(writer, "{:?} * ", *scalar)?;
+                value.write(writer)
+            }
+            Expression::DistributePowers(exprs, scalar) => {
+                for (expr, exp) in exprs.iter().zip((1..exprs.len()).rev()) {
+                    scalar.write(writer)?;
+                    write!(writer, "^{exp} * ")?;
+                    expr.write(writer)?;
+                    write!(writer, " + ")?;
+                }
+                exprs.last().unwrap().write(writer)?;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn identifier(&self) -> String
+    where
+        F: Debug,
+    {
+        let mut buf = Cursor::new(Vec::new());
+        self.write(&mut buf).unwrap();
+        String::from_utf8(buf.into_inner()).unwrap()
     }
 }
 

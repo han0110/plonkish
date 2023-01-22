@@ -124,7 +124,7 @@ pub fn witness_collector<'a, F, C>(
     k: usize,
     circuit: &'a C,
     instances: &'a [&[F]],
-) -> impl FnMut(&[F]) -> Result<Vec<Vec<F>>, crate::Error> + 'a
+) -> impl 'a + Clone + FnMut(&[F]) -> Result<Vec<Vec<F>>, crate::Error>
 where
     F: Field,
     C: Circuit<F>,
@@ -135,13 +135,15 @@ where
         (cs, config)
     };
 
+    let phase_map =
+        HashMap::<_, _>::from_iter(phase_offsets(&cs.challenge_phase()).into_iter().zip(0..));
     let num_witness_polys = num_by_phase(&cs.advice_column_phase());
     let advice_idx_in_phase = idx_in_phase(&cs.advice_column_phase());
     let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
     let row_map = row_map(k);
-    let mut phase = 0;
 
     move |challenges| {
+        let phase = phase_map[&challenges.len()];
         let mut witness_collector = WitnessCollector {
             k: k as u32,
             phase,
@@ -161,7 +163,6 @@ where
         )
         .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
 
-        phase += 1;
         Ok(batch_invert_assigned(witness_collector.advices))
     }
 }
@@ -533,21 +534,24 @@ fn idx_in_phase(phases: &[u8]) -> Vec<usize> {
 }
 
 fn idx_order_by_phase(phases: &[u8], offset: usize) -> Vec<usize> {
-    let phase_offsets = num_by_phase(phases)
+    phases
+        .iter()
+        .copied()
+        .scan(phase_offsets(phases), |state, phase| {
+            let index = state[phase as usize];
+            state[phase as usize] += 1;
+            Some(offset + index)
+        })
+        .collect()
+}
+
+fn phase_offsets(phases: &[u8]) -> Vec<usize> {
+    num_by_phase(phases)
         .into_iter()
         .scan(0, |state, num| {
             let offset = *state;
             *state += num;
             Some(offset)
-        })
-        .collect_vec();
-    phases
-        .iter()
-        .copied()
-        .scan(phase_offsets, |state, phase| {
-            let index = state[phase as usize];
-            state[phase as usize] += 1;
-            Some(offset + index)
         })
         .collect()
 }

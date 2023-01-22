@@ -22,7 +22,12 @@ use crate::{
 };
 use num_integer::Integer;
 use rand::RngCore;
-use std::{iter, marker::PhantomData, ops::Neg};
+use std::{
+    borrow::Cow,
+    iter,
+    marker::PhantomData,
+    ops::{Deref, Neg},
+};
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
@@ -162,11 +167,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
         let num_vars = ilog2(size);
         if param.num_vars() < num_vars {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too many variates to trim to (param supports variates up to {} but got {})",
-                param.num_vars(),
-                num_vars
-            )));
+            return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }
         let pp = Self::ProverParam {
             g1: param.g1,
@@ -181,21 +182,22 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     }
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
-        if pp.num_vars() < poly.num_vars() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too many variates of poly to open (param supports variates up to {} but got {})",
-                pp.num_vars(),
-                poly.num_vars()
-            )));
-        }
+        validate_input("commit", pp.num_vars(), [poly], None)?;
+
         Ok(variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into())
     }
 
-    fn batch_commit(
+    fn batch_commit<'a>(
         pp: &Self::ProverParam,
-        polys: &[Self::Polynomial],
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
     ) -> Result<Self::BatchCommitment, Error> {
-        polys.iter().map(|poly| Self::commit(pp, poly)).collect()
+        let polys = polys.into_iter().collect_vec();
+        validate_input("batch commit", pp.num_vars(), polys.iter().copied(), None)?;
+
+        Ok(polys
+            .iter()
+            .map(|poly| variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into())
+            .collect())
     }
 
     fn open(
@@ -205,27 +207,14 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        if pp.num_vars() < poly.num_vars() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too many variates of poly to open (param supports variates up to {} but got {})",
-                pp.num_vars(),
-                poly.num_vars()
-            )));
-        }
-        if poly.num_vars() != point.len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Invalid point to open (expect point to have {} variates but got {})",
-                poly.num_vars(),
-                point.len()
-            )));
-        }
+        validate_input("open", pp.num_vars(), [poly], [point])?;
 
         let mut remainder = poly.evals().to_vec();
         let quotients = point
             .iter()
             .enumerate()
             .map(|(idx, x_i)| {
-                let timer = start_timer(|| "quotient");
+                let timer = start_timer(|| "quotients");
                 let mut quotient = vec![M::Scalar::zero(); remainder.len() >> 1];
                 parallelize(&mut quotient, |(quotient, start)| {
                     for (quotient, (remainder_0, remainder_1)) in quotient.iter_mut().zip(
@@ -237,9 +226,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                         *quotient = *remainder_1 - remainder_0;
                     }
                 });
-                end_timer(timer);
 
-                let timer = start_timer(|| "remainder");
                 let mut next_remainder = vec![M::Scalar::zero(); remainder.len() >> 1];
                 parallelize(&mut next_remainder, |(next_remainder, start)| {
                     for (next_remainder, (remainder_0, remainder_1)) in
@@ -282,58 +269,51 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        let num_vars = points.first().expect("to have at least 1 point").len();
-        if pp.num_vars() < num_vars {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too many variates of poly to batch open (param supports variates up to {} but got {})",
-                pp.num_vars(),
-                num_vars
-            )));
-        }
         let polys = polys.into_iter().collect_vec();
-        for poly in polys.iter() {
-            if poly.num_vars() != num_vars {
-                return Err(Error::InvalidPcsParam(format!(
-                    "Invalid poly to batch open with (expect all polys to have {} variates but got {})",
-                    num_vars,
-                    poly.num_vars()
-                )));
-            }
-        }
-        for point in points.iter() {
-            if point.len() != num_vars {
-                return Err(Error::InvalidPcsParam(format!(
-                    "Invalid point to open (expect point to have {} variates but got {})",
-                    num_vars,
-                    point.len()
-                )));
-            }
-        }
+        validate_input("batch open", pp.num_vars(), polys.iter().copied(), points)?;
 
         let t = transcript.squeeze_challenge();
 
-        let expression = {
-            let eq_xys = evals
-                .iter()
-                .map(|eval| Expression::<M::Scalar>::eq_xy(eval.point()))
-                .collect_vec();
-            let polys = evals
-                .iter()
-                .map(|eval| Expression::Polynomial(Query::new(eval.poly(), Rotation::cur())))
-                .collect_vec();
-            Expression::distribute_powers(
-                &eq_xys
-                    .iter()
-                    .zip(polys.iter())
-                    .map(|(eq_xy, poly)| eq_xy * poly)
-                    .collect_vec(),
-                &Expression::Challenge(0),
-            )
-        };
-        let challenges = VanillaSumCheck::<CoefficientsProver<_>>::prove(
+        let timer = start_timer(|| "merged_polys");
+        let desc_powers_of_t = descending_powers(t, evals.len());
+        let merged_polys = evals.iter().zip(desc_powers_of_t.iter()).fold(
+            vec![(M::Scalar::one(), Cow::<MultilinearPolynomial<_>>::default()); points.len()],
+            |mut merged_polys, (eval, power_of_t)| {
+                if merged_polys[eval.point()].1.is_zero() {
+                    merged_polys[eval.point()] = (*power_of_t, Cow::Borrowed(polys[eval.poly()]));
+                } else {
+                    let coeff = merged_polys[eval.point()].0;
+                    if coeff != M::Scalar::one() {
+                        merged_polys[eval.point()].0 = M::Scalar::one();
+                        *merged_polys[eval.point()].1.to_mut() *= &coeff;
+                    }
+                    *merged_polys[eval.point()].1.to_mut() += (power_of_t, polys[eval.poly()]);
+                }
+                merged_polys
+            },
+        );
+        end_timer(timer);
+
+        let expression = merged_polys
+            .iter()
+            .enumerate()
+            .map(|(idx, (scalar, _))| {
+                Expression::<M::Scalar>::eq_xy(idx)
+                    * Expression::Polynomial(Query::new(idx, Rotation::cur()))
+                    * scalar
+            })
+            .sum();
+        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
+        let (challenges, _) = VanillaSumCheck::<CoefficientsProver<_>>::prove(
             &(),
-            num_vars,
-            VirtualPolynomial::new(&expression, polys.clone(), &[t], points),
+            pp.num_vars(),
+            VirtualPolynomial::new(
+                &expression,
+                merged_polys.iter().map(|(_, poly)| poly.deref()),
+                &[],
+                points,
+            ),
+            tilde_gs_sum,
             transcript,
         )
         .unwrap();
@@ -343,19 +323,10 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .iter()
             .map(|point| eq_xy_eval(&challenges, point))
             .collect_vec();
-        let g_prime = evals
-            .iter()
-            .zip(descending_powers(t, evals.len()))
-            .fold(
-                vec![M::Scalar::zero(); polys.len()],
-                |mut coeffs, (eval, power_of_t)| {
-                    coeffs[eval.poly()] += power_of_t * &eq_xy_evals[eval.point()];
-                    coeffs
-                },
-            )
-            .iter()
-            .zip(polys)
-            .map(|(coeff, poly)| poly * coeff)
+        let g_prime = merged_polys
+            .into_iter()
+            .zip(eq_xy_evals.iter())
+            .map(|((scalar, poly), eq_xy_eval)| (scalar * eq_xy_eval, poly.into_owned()))
             .sum::<MultilinearPolynomial<_>>();
         end_timer(timer);
 
@@ -376,13 +347,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         eval: &M::Scalar,
         transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        if vp.num_vars() < point.len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too many variates of poly to verify (param supports variates up to {} but got {})",
-                vp.num_vars(),
-                point.len()
-            )));
-        }
+        validate_input("verify", vp.num_vars(), [], [point])?;
 
         let quotients = transcript.read_n_commitments(point.len())?;
 
@@ -415,23 +380,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptRead<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        let num_vars = points.first().expect("to have at least 1 point").len();
-        if vp.num_vars() < num_vars {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too many variates of poly to verify (param supports variates up to {} but got {})",
-                vp.num_vars(),
-                num_vars
-            )));
-        }
-        for point in points.iter() {
-            if point.len() != num_vars {
-                return Err(Error::InvalidPcsParam(format!(
-                    "Invalid point to open (expect point to have {} variates but got {})",
-                    num_vars,
-                    point.len()
-                )));
-            }
-        }
+        validate_input("batch verify", vp.num_vars(), [], points)?;
 
         let t = transcript.squeeze_challenge();
 
@@ -439,7 +388,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
         let (g_prime_eval, challenges) = VanillaSumCheck::<CoefficientsProver<_>>::verify(
             &(),
-            num_vars,
+            vp.num_vars(),
             2,
             tilde_gs_sum,
             transcript,
@@ -463,6 +412,52 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         Self::verify(vp, &g_prime, &challenges, &g_prime_eval, transcript)?;
 
         Ok(())
+    }
+}
+
+fn validate_input<'a, F: Field>(
+    function: &str,
+    param_num_vars: usize,
+    polys: impl IntoIterator<Item = &'a MultilinearPolynomial<F>>,
+    points: impl IntoIterator<Item = &'a Vec<F>>,
+) -> Result<(), Error> {
+    let polys = polys.into_iter().collect_vec();
+    let points = points.into_iter().collect_vec();
+    for poly in polys.iter() {
+        if param_num_vars < poly.num_vars() {
+            return Err(err_too_many_variates(
+                function,
+                param_num_vars,
+                poly.num_vars(),
+            ));
+        }
+    }
+    let input_num_vars = polys
+        .iter()
+        .map(|poly| poly.num_vars())
+        .chain(points.iter().map(|point| point.len()))
+        .next()
+        .expect("To have at least 1 poly or point");
+    for point in points.into_iter() {
+        if point.len() != input_num_vars {
+            return Err(Error::InvalidPcsParam(format!(
+                "Invalid point (expect point to have {input_num_vars} variates but got {})",
+                point.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn err_too_many_variates(function: &str, upto: usize, got: usize) -> Error {
+    if function == "trim" {
+        Error::InvalidPcsParam(format!(
+            "Too many variates of poly to {function} (param supports variates up to {upto} but got {got})"
+        ))
+    } else {
+        Error::InvalidPcsParam(format!(
+            "Too many variates to {function} (param supports variates up to {upto} but got {got})"
+        ))
     }
 }
 

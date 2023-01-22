@@ -18,13 +18,24 @@ use hyperplonk::{
         },
         UniversalSnark,
     },
-    util::{end_timer, start_timer, transcript::Keccak256Transcript, Itertools},
+    util::{end_timer, start_timer, test::std_rng, transcript::Keccak256Transcript, Itertools},
 };
-use rand::{rngs::StdRng, RngCore, SeedableRng};
-use std::{env::args, ops::Range};
+use std::{
+    env::args,
+    fmt::Display,
+    fs::{create_dir, File, OpenOptions},
+    io::Write,
+    iter,
+    ops::Range,
+    path::Path,
+    time::{Duration, Instant},
+};
+
+const OUTPUT_DIR: &str = "./target/bench";
 
 fn main() {
     let (systems, circuit, k_range) = parse_args();
+    create_output(&systems);
     match circuit {
         Circuit::Aggregation => bench::<AggregationCircuit<Bn256>>(systems, k_range),
         Circuit::StandardPlonk => bench::<StandardPlonk<Fr>>(systems, k_range),
@@ -53,57 +64,57 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     let (pp, vp) = HyperPlonk::preprocess(&param, circuit_info).unwrap();
     end_timer(timer);
 
-    let timer = start_timer(|| format!("hyperplonk_prove-{k}"));
-    let proof = {
+    let proof = sample(System::HyperPlonk, k, || {
+        let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let mut transcript = Keccak256Transcript::new(Vec::new());
-        HyperPlonk::prove(&pp, &instances, witness, &mut transcript, std_rng()).unwrap();
+        HyperPlonk::prove(&pp, &instances, witness.clone(), &mut transcript, std_rng()).unwrap();
         transcript.finalize()
-    };
-    end_timer(timer);
+    });
 
-    let timer = start_timer(|| format!("hyperplonk_verify-{k}"));
+    let _timer = start_timer(|| format!("hyperplonk_verify-{k}"));
     let accept = {
         let mut transcript = Keccak256Transcript::new(proof.as_slice());
         HyperPlonk::verify(&vp, &instances, &mut transcript, std_rng()).is_ok()
     };
     assert!(accept);
-    end_timer(timer);
 }
 
 fn bench_halo2<C: CircuitExt<Fr>>(k: usize) {
     let circuit = C::rand(k, std_rng());
-    let instances = circuit.instances();
+    let circuits = &[circuit];
+    let instances = circuits[0].instances();
     let instances = instances.iter().map(Vec::as_slice).collect_vec();
+    let instances = [instances.as_slice()];
 
     let timer = start_timer(|| format!("halo2_setup-{k}"));
     let param = ParamsKZG::<Bn256>::setup(k as u32, std_rng());
     end_timer(timer);
 
     let timer = start_timer(|| format!("halo2_preprocess-{k}"));
-    let vk = keygen_vk::<_, _, _, false>(&param, &circuit).unwrap();
-    let pk = keygen_pk::<_, _, _, false>(&param, vk, &circuit).unwrap();
-    let create_proof =
-        |c, d, e, f| create_proof::<_, ProverGWC<_>, _, _, _, _, false>(&param, &pk, c, d, e, f);
+    let vk = keygen_vk::<_, _, _, false>(&param, &circuits[0]).unwrap();
+    let pk = keygen_pk::<_, _, _, false>(&param, vk, &circuits[0]).unwrap();
+    end_timer(timer);
+
+    let create_proof = |c, d, e, mut f: Blake2bWrite<_, _, _>| {
+        create_proof::<_, ProverGWC<_>, _, _, _, _, false>(&param, &pk, c, d, e, &mut f).unwrap();
+        f.finalize()
+    };
     let verify_proof =
         |c, d, e| verify_proof::<_, VerifierGWC<_>, _, _, _, false>(&param, pk.get_vk(), c, d, e);
-    end_timer(timer);
 
-    let timer = start_timer(|| format!("halo2_prove-{k}"));
-    let proof = {
-        let mut transcript = Blake2bWrite::init(Vec::new());
-        create_proof(&[circuit], &[&instances], std_rng(), &mut transcript).unwrap();
-        transcript.finalize()
-    };
-    end_timer(timer);
+    let proof = sample(System::Halo2, k, || {
+        let _timer = start_timer(|| format!("halo2_prove-{k}"));
+        let transcript = Blake2bWrite::init(Vec::new());
+        create_proof(circuits, &instances, std_rng(), transcript)
+    });
 
-    let timer = start_timer(|| format!("halo2_verify-{k}"));
+    let _timer = start_timer(|| format!("halo2_verify-{k}"));
     let accept = {
         let mut transcript = Blake2bRead::init(proof.as_slice());
         let strategy = SingleStrategy::new(&param);
-        verify_proof(strategy, &[&instances], &mut transcript).is_ok()
+        verify_proof(strategy, &instances, &mut transcript).is_ok()
     };
     assert!(accept);
-    end_timer(timer);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -117,10 +128,30 @@ impl System {
         vec![System::HyperPlonk, System::Halo2]
     }
 
+    fn output_path(&self) -> String {
+        format!("{OUTPUT_DIR}/{}", self)
+    }
+
+    fn output(&self) -> File {
+        OpenOptions::new()
+            .append(true)
+            .open(self.output_path())
+            .unwrap()
+    }
+
     fn bench<C: CircuitExt<Fr>>(&self, k: usize) {
         match self {
             System::HyperPlonk => bench_hyperplonk::<C>(k),
             System::Halo2 => bench_halo2::<C>(k),
+        }
+    }
+}
+
+impl Display for System {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            System::HyperPlonk => write!(f, "hyperplonk"),
+            System::Halo2 => write!(f, "halo2"),
         }
     }
 }
@@ -180,6 +211,36 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
     (systems, circuit, k_range)
 }
 
-fn std_rng() -> impl RngCore {
-    StdRng::from_seed(Default::default())
+fn create_output(systems: &[System]) {
+    if !Path::new(OUTPUT_DIR).exists() {
+        create_dir(OUTPUT_DIR).unwrap();
+    }
+    for system in systems {
+        File::create(system.output_path()).unwrap();
+    }
+}
+
+fn sample(system: System, k: usize, prove: impl Fn() -> Vec<u8>) -> Vec<u8> {
+    let mut proof = Vec::new();
+    let sample_size = sample_size(k);
+    let sum = iter::repeat_with(|| {
+        let start = Instant::now();
+        proof = prove();
+        start.elapsed()
+    })
+    .take(sample_size)
+    .sum::<Duration>();
+    let avg = sum / sample_size as u32;
+    writeln!(&mut system.output(), "{k}, {}", avg.as_millis()).unwrap();
+    proof
+}
+
+fn sample_size(k: usize) -> usize {
+    if k < 16 {
+        20
+    } else if k < 20 {
+        5
+    } else {
+        1
+    }
 }

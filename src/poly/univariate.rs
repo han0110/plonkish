@@ -1,16 +1,14 @@
-use crate::{
-    poly::impl_index,
-    util::{
-        arithmetic::{div_ceil, horner, powers, Field},
-        parallel::{num_threads, parallelize, parallelize_iter},
-        Itertools,
-    },
+use crate::util::{
+    arithmetic::{div_ceil, horner, powers, Field},
+    impl_index,
+    parallel::{num_threads, parallelize, parallelize_iter},
+    Itertools,
 };
 use rand::RngCore;
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
     iter::{self, Sum},
-    ops::{Add, AddAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,7 +59,7 @@ impl<F: Field> UnivariatePolynomial<F> {
 
     pub fn evaluate(&self, x: &F) -> F {
         let num_threads = num_threads();
-        if self.coeffs().len() * 2 < num_threads {
+        if self.coeffs().len() < num_threads {
             return horner(&self.0, x);
         }
 
@@ -190,18 +188,6 @@ impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
     }
 }
 
-impl<F: Field> AddAssign<F> for UnivariatePolynomial<F> {
-    fn add_assign(&mut self, rhs: F) {
-        self.0[0] += &rhs;
-    }
-}
-
-impl<F: Field> SubAssign<F> for UnivariatePolynomial<F> {
-    fn sub_assign(&mut self, rhs: F) {
-        self.0[0] -= &rhs;
-    }
-}
-
 impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
@@ -226,20 +212,6 @@ impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
     }
 }
 
-impl<F: Field> Sum<UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = UnivariatePolynomial<F>>>(mut iter: I) -> UnivariatePolynomial<F> {
-        let init = match (iter.next(), iter.next()) {
-            (Some(lhs), Some(rhs)) => &lhs + &rhs,
-            (Some(lhs), None) => return lhs,
-            _ => unreachable!(),
-        };
-        iter.fold(init, |mut acc, poly| {
-            acc += &poly;
-            acc
-        })
-    }
-}
-
 impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
     fn sum<I: Iterator<Item = &'a UnivariatePolynomial<F>>>(
         mut iter: I,
@@ -247,7 +219,7 @@ impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> 
         let init = match (iter.next(), iter.next()) {
             (Some(lhs), Some(rhs)) => lhs + rhs,
             (Some(lhs), None) => return lhs.clone(),
-            _ => unreachable!(),
+            _ => return UnivariatePolynomial::zero(),
         };
         iter.fold(init, |mut acc, poly| {
             acc += poly;
@@ -256,15 +228,14 @@ impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> 
     }
 }
 
-impl_index!(
-    UnivariatePolynomial, 0,
-    [
-        usize => F,
-        Range<usize> => [F],
-        RangeFrom<usize> => [F],
-        RangeFull => [F],
-        RangeInclusive<usize> => [F],
-        RangeTo<usize> => [F],
-        RangeToInclusive<usize> => [F],
-    ]
-);
+impl<F: Field> Sum<UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
+    fn sum<I: Iterator<Item = UnivariatePolynomial<F>>>(iter: I) -> UnivariatePolynomial<F> {
+        iter.reduce(|mut acc, poly| {
+            acc += &poly;
+            acc
+        })
+        .unwrap_or_else(UnivariatePolynomial::zero)
+    }
+}
+
+impl_index!(UnivariatePolynomial, 0);

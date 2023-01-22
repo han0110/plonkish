@@ -127,11 +127,14 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         Ok(variable_base_msm(&poly[..], &pp.powers_of_s[..=poly.degree()]).into())
     }
 
-    fn batch_commit(
+    fn batch_commit<'a>(
         pp: &Self::ProverParam,
-        polys: &[Self::Polynomial],
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
     ) -> Result<Self::BatchCommitment, Error> {
-        polys.iter().map(|poly| Self::commit(pp, poly)).collect()
+        polys
+            .into_iter()
+            .map(|poly| Self::commit(pp, poly))
+            .collect()
     }
 
     fn open(
@@ -141,11 +144,11 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::Scalar, Commitment = M::G1Affine>,
     ) -> Result<(), Error> {
-        if pp.degree() < poly.degree() - 1 {
+        if pp.degree() < poly.degree() {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large degree of poly to open (param supports degree up to {} but got {})",
                 pp.degree(),
-                poly.degree() - 1
+                poly.degree()
             )));
         }
 

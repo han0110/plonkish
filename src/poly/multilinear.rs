@@ -1,18 +1,17 @@
-use crate::{
-    poly::impl_index,
-    util::{
-        arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
-        expression::Rotation,
-        parallel::{num_threads, parallelize, parallelize_iter},
-        BitIndex, Itertools,
-    },
+use crate::util::{
+    arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
+    expression::Rotation,
+    impl_index,
+    parallel::{num_threads, parallelize, parallelize_iter},
+    BitIndex, Itertools,
 };
 use num_integer::Integer;
 use rand::RngCore;
 use std::{
     borrow::Cow,
     iter::{self, Sum},
-    ops::{Add, AddAssign, Range, Sub, SubAssign},
+    mem,
+    ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
 #[derive(Clone, Debug)]
@@ -33,7 +32,7 @@ impl<F> MultilinearPolynomial<F> {
             0
         } else {
             let num_vars = ilog2(evals.len());
-            assert_eq!(evals.len(), 1 << num_vars);
+            debug_assert_eq!(evals.len(), 1 << num_vars);
             num_vars
         };
 
@@ -110,16 +109,11 @@ impl<F: Field> MultilinearPolynomial<F> {
     }
 
     pub fn evaluate(&self, x: &[F]) -> F {
-        assert_eq!(x.len(), self.num_vars);
-
-        self.fix_variables(x)[0]
-    }
-
-    pub fn fix_variables(&self, x: &[F]) -> Self {
-        assert!(x.len() <= self.num_vars);
+        debug_assert_eq!(x.len(), self.num_vars);
 
         let mut evals = Cow::Borrowed(self.evals());
         let mut bits = Vec::new();
+        let mut buf = Vec::with_capacity(self.evals.len() >> 1);
         for x_i in x.iter() {
             if x_i == &F::zero() || x_i == &F::one() {
                 bits.push(x_i == &F::one());
@@ -128,82 +122,94 @@ impl<F: Field> MultilinearPolynomial<F> {
 
             let distance = bits.len() + 1;
             let skip = usize_from_bits_be(bits.drain(..).rev());
-            evals = merge!(&evals, x_i, distance, skip).into()
+            merge(&mut evals, x_i, distance, skip, &mut buf);
         }
 
-        if !bits.is_empty() {
-            let distance = bits.len();
-            let step = 1 << distance;
-            let skip = usize_from_bits_be(bits.drain(..).rev());
-            let mut next_evals = vec![F::zero(); evals.len() >> distance];
-            parallelize(&mut next_evals, |(next_evals, start)| {
-                for (next_eval, eval) in next_evals
-                    .iter_mut()
-                    .zip(evals[(start << distance) + skip..].iter().step_by(step))
-                {
-                    *next_eval = *eval;
-                }
-            });
-            evals = next_evals.into()
-        }
+        evals[usize_from_bits_be(bits.drain(..).rev())]
+    }
 
-        Self::new(evals.into_owned())
+    pub fn fix_variable_into(&self, target: &mut Self, x_i: &F) {
+        target.num_vars = self.num_vars - 1;
+        merge_into(self.evals(), &mut target.evals, x_i, 1, 0);
+    }
+
+    pub fn fix_variable(&mut self, x_i: &F, buf: &mut Self) {
+        self.fix_variable_into(buf, x_i);
+        mem::swap(self, buf);
     }
 
     pub fn evaluate_for_rotation(&self, x: &[F], rotation: Rotation) -> Vec<F> {
-        assert_eq!(x.len(), self.num_vars);
+        debug_assert_eq!(x.len(), self.num_vars);
         if rotation == Rotation::cur() {
             return vec![self.evaluate(x)];
         }
 
         let distance = rotation.distance();
         let num_x = self.num_vars - distance;
+        let mut evals = vec![F::zero(); 1 << distance];
+        let chunk_size = div_ceil(evals.len(), num_threads());
         if rotation < Rotation::cur() {
             let x = &x[distance..];
             let flipped_x = x.iter().map(flip).collect_vec();
             let pattern = rotation_eval_point_pattern::<false>(self.num_vars, distance);
             let offset_mask = (1 << self.num_vars) - (1 << num_x);
-            let mut evals = vec![F::zero(); pattern.len()];
-            parallelize(&mut evals, |(evals, start)| {
-                for (eval, pat) in evals.iter_mut().zip(pattern[start..].iter()) {
-                    let offset = pat & offset_mask;
-                    let mut evals = Cow::Borrowed(&self[offset..offset + (1 << num_x)]);
-                    for (idx, (x_i, flipped_x_i)) in x.iter().zip(flipped_x.iter()).enumerate() {
-                        let x_i = if pat.nth_bit(idx) { flipped_x_i } else { x_i };
-                        evals = merge!(&evals, x_i).into();
+            parallelize_iter(
+                evals.chunks_mut(chunk_size).zip(pattern.chunks(chunk_size)),
+                |(evals, pattern)| {
+                    let mut buf = vec![F::zero(); 1 << (num_x - 1)];
+                    let mut last_buf = Some(vec![F::zero(); 1 << (num_x - 1)]);
+                    for (eval, pat) in evals.iter_mut().zip(pattern.iter()) {
+                        let offset = pat & offset_mask;
+                        let mut evals = Cow::Borrowed(&self[offset..offset + (1 << num_x)]);
+                        for (idx, (x_i, flipped_x_i)) in x.iter().zip(flipped_x.iter()).enumerate()
+                        {
+                            let x_i = if pat.nth_bit(idx) { flipped_x_i } else { x_i };
+                            merge_into(&evals, &mut buf, x_i, 1, 0);
+                            if let Cow::Owned(_) = evals {
+                                mem::swap(evals.to_mut(), &mut buf);
+                            } else {
+                                evals = mem::replace(&mut buf, last_buf.take().unwrap()).into();
+                            }
+                        }
+                        *eval = evals[0];
+                        last_buf = Some(evals.into_owned());
                     }
-                    *eval = evals[0];
-                }
-            });
-            evals
+                },
+            );
         } else {
             let x = &x[..num_x];
             let flipped_x = x.iter().map(flip).collect_vec();
             let pattern = rotation_eval_point_pattern::<true>(self.num_vars, distance);
             let skip_mask = (1 << distance) - 1;
-            let mut evals = vec![F::zero(); pattern.len()];
-            parallelize(&mut evals, |(evals, start)| {
-                for (eval, pat) in evals.iter_mut().zip(pattern[start..].iter()) {
-                    let mut evals = {
+            parallelize_iter(
+                evals.chunks_mut(chunk_size).zip(pattern.chunks(chunk_size)),
+                |(evals, pattern)| {
+                    let mut buf = Vec::with_capacity(self.evals.len() >> 1);
+                    let mut last_buf = Some(Vec::with_capacity(self.evals.len() >> 1));
+                    for (eval, pat) in evals.iter_mut().zip(pattern.iter()) {
+                        let mut evals = Cow::Borrowed(self.evals());
                         let skip = pat & skip_mask;
                         let x_0 = if pat.nth_bit(distance) {
                             &flipped_x[0]
                         } else {
                             &x[0]
                         };
-                        merge!(self.evals(), x_0, distance + 1, skip)
-                    };
-                    for ((x_i, flipped_x_i), idx) in
-                        x.iter().zip(flipped_x.iter()).zip(distance..).skip(1)
-                    {
-                        let x_i = if pat.nth_bit(idx) { flipped_x_i } else { x_i };
-                        evals = merge!(&evals, x_i);
+                        merge_into(&evals, &mut buf, x_0, distance + 1, skip);
+                        evals = mem::replace(&mut buf, last_buf.take().unwrap()).into();
+
+                        for ((x_i, flipped_x_i), idx) in
+                            x.iter().zip(flipped_x.iter()).zip(distance..).skip(1)
+                        {
+                            let x_i = if pat.nth_bit(idx) { flipped_x_i } else { x_i };
+                            merge(&mut evals, x_i, 1, 0, &mut buf);
+                        }
+                        *eval = evals[0];
+                        last_buf = Some(evals.into_owned());
                     }
-                    *eval = evals[0];
-                }
-            });
-            evals
+                },
+            );
         }
+        evals
     }
 }
 
@@ -219,13 +225,31 @@ impl<'lhs, 'rhs, F: Field> Add<&'rhs MultilinearPolynomial<F>> for &'lhs Multili
 
 impl<'rhs, F: Field> AddAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
     fn add_assign(&mut self, rhs: &'rhs MultilinearPolynomial<F>) {
-        assert_eq!(self.num_vars, rhs.num_vars);
+        debug_assert_eq!(self.num_vars, rhs.num_vars);
 
         parallelize(&mut self.evals, |(lhs, start)| {
             for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                 *lhs += rhs;
             }
         });
+    }
+}
+
+impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs MultilinearPolynomial<F>)>
+    for MultilinearPolynomial<F>
+{
+    fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs MultilinearPolynomial<F>)) {
+        debug_assert_eq!(self.num_vars, rhs.num_vars);
+
+        if scalar == &F::one() {
+            *self += rhs;
+        } else if scalar != &F::zero() {
+            parallelize(&mut self.evals, |(lhs, start)| {
+                for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                    *lhs += &(*scalar * rhs);
+                }
+            });
+        }
     }
 }
 
@@ -241,25 +265,13 @@ impl<'lhs, 'rhs, F: Field> Sub<&'rhs MultilinearPolynomial<F>> for &'lhs Multili
 
 impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
     fn sub_assign(&mut self, rhs: &'rhs MultilinearPolynomial<F>) {
-        assert_eq!(self.num_vars, rhs.num_vars);
+        debug_assert_eq!(self.num_vars, rhs.num_vars);
 
         parallelize(&mut self.evals, |(lhs, start)| {
             for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                 *lhs -= rhs;
             }
         });
-    }
-}
-
-impl<F: Field> AddAssign<F> for MultilinearPolynomial<F> {
-    fn add_assign(&mut self, rhs: F) {
-        self.evals[0] += &rhs;
-    }
-}
-
-impl<F: Field> SubAssign<F> for MultilinearPolynomial<F> {
-    fn sub_assign(&mut self, rhs: F) {
-        self.evals[0] -= &rhs;
     }
 }
 
@@ -287,20 +299,6 @@ impl<'rhs, F: Field> MulAssign<&'rhs F> for MultilinearPolynomial<F> {
     }
 }
 
-impl<F: Field> Sum<MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
-    fn sum<I: Iterator<Item = MultilinearPolynomial<F>>>(mut iter: I) -> MultilinearPolynomial<F> {
-        let init = match (iter.next(), iter.next()) {
-            (Some(lhs), Some(rhs)) => &lhs + &rhs,
-            (Some(lhs), None) => return lhs,
-            _ => unreachable!(),
-        };
-        iter.fold(init, |mut acc, poly| {
-            acc += &poly;
-            acc
-        })
-    }
-}
-
 impl<'a, F: Field> Sum<&'a MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
     fn sum<I: Iterator<Item = &'a MultilinearPolynomial<F>>>(
         mut iter: I,
@@ -317,18 +315,30 @@ impl<'a, F: Field> Sum<&'a MultilinearPolynomial<F>> for MultilinearPolynomial<F
     }
 }
 
-impl_index!(
-    MultilinearPolynomial, evals,
-    [
-        usize => F,
-        Range<usize> => [F],
-        RangeFrom<usize> => [F],
-        RangeFull => [F],
-        RangeInclusive<usize> => [F],
-        RangeTo<usize> => [F],
-        RangeToInclusive<usize> => [F],
-    ]
-);
+impl<F: Field> Sum<MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
+    fn sum<I: Iterator<Item = MultilinearPolynomial<F>>>(iter: I) -> MultilinearPolynomial<F> {
+        iter.reduce(|mut acc, poly| {
+            acc += &poly;
+            acc
+        })
+        .unwrap()
+    }
+}
+
+impl<F: Field> Sum<(F, MultilinearPolynomial<F>)> for MultilinearPolynomial<F> {
+    fn sum<I: Iterator<Item = (F, MultilinearPolynomial<F>)>>(
+        mut iter: I,
+    ) -> MultilinearPolynomial<F> {
+        let (scalar, mut poly) = iter.next().unwrap();
+        poly *= &scalar;
+        iter.fold(poly, |mut acc, (scalar, poly)| {
+            acc += (&scalar, &poly);
+            acc
+        })
+    }
+}
+
+impl_index!(MultilinearPolynomial, evals);
 
 pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: &[F]) -> F {
     if rotation == Rotation::cur() {
@@ -351,7 +361,7 @@ pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: 
         (
             rotation_eval_coeff_pattern::<true>(num_vars, distance),
             (num_vars - 1..).take(distance).collect(),
-            x[num_vars - distance..].iter().collect_vec(),
+            x[num_vars - distance..].iter().collect(),
         )
     };
     x.into_iter().zip(nths).enumerate().fold(
@@ -362,7 +372,13 @@ pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: 
                 .step_by(1 << idx)
                 .map(|pat| pat.nth_bit(nth))
                 .zip(zip_self!(evals.iter()))
-                .map(merge_with_pattern_fn(x_i))
+                .map(|(bit, (eval_0, eval_1))| {
+                    if bit {
+                        (*eval_0 - eval_1) * x_i + eval_1
+                    } else {
+                        (*eval_1 - eval_0) * x_i + eval_0
+                    }
+                })
                 .collect_vec()
                 .into()
         },
@@ -469,18 +485,28 @@ fn bit_to_field<F: Field>(bit: bool) -> F {
     }
 }
 
-fn merge_fn<F: Field>(x_i: &F) -> impl Fn((&F, &F)) -> F + '_ {
-    move |(eval_0, eval_1)| (*eval_1 - eval_0) * x_i + eval_0
+fn merge<F: Field>(evals: &mut Cow<[F]>, x_i: &F, distance: usize, skip: usize, buf: &mut Vec<F>) {
+    merge_into(evals, buf, x_i, distance, skip);
+    if let Cow::Owned(_) = evals {
+        mem::swap(evals.to_mut(), buf);
+    } else {
+        *evals = mem::replace(buf, Vec::with_capacity(buf.len() >> 1)).into();
+    }
 }
 
-fn merge_with_pattern_fn<F: Field>(x_i: &F) -> impl Fn((bool, (&F, &F))) -> F + '_ {
-    move |(bit, (eval_0, eval_1))| {
-        if bit {
-            (*eval_0 - eval_1) * x_i + eval_1
-        } else {
-            (*eval_1 - eval_0) * x_i + eval_0
+fn merge_into<F: Field>(evals: &[F], target: &mut Vec<F>, x_i: &F, distance: usize, skip: usize) {
+    debug_assert!(target.capacity() >= evals.len() >> distance);
+    target.resize_with(evals.len() >> distance, F::zero);
+
+    let step = 1 << distance;
+    parallelize(target, |(target, start)| {
+        let start = (start << distance) + skip;
+        for (target, (eval_0, eval_1)) in
+            target.iter_mut().zip(zip_self!(evals.iter(), step, start))
+        {
+            *target = (*eval_1 - eval_0) * x_i + eval_0;
         }
-    }
+    });
 }
 
 macro_rules! zip_self {
@@ -498,50 +524,12 @@ macro_rules! zip_self {
     };
 }
 
-macro_rules! merge {
-    (@ $evals:expr, $x_i:expr, $distance:expr, $skip:expr) => {{
-        use $crate::{
-            poly::multilinear::merge_fn,
-            util::{arithmetic::div_ceil, parallel::{num_threads, parallelize_iter}},
-        };
-
-        let step = 1 << $distance;
-        let merge_serial = |output: &mut [F], start: usize| {
-            let start = (start << $distance) + $skip;
-            for (output, merged) in output
-                .iter_mut()
-                .zip(zip_self!($evals.iter(), step, start).map(merge_fn($x_i)))
-            {
-                *output = merged;
-            }
-        };
-
-        let mut output = vec![F::zero(); $evals.len() >> $distance];
-        if output.len() < 32 {
-            merge_serial(&mut output, 0);
-        } else {
-            let chunk_size = div_ceil(output.len(), num_threads());
-            parallelize_iter(
-                output.chunks_mut(chunk_size).zip((0..).step_by(chunk_size)),
-                |(output, start)| merge_serial(output, start),
-            );
-        }
-        output
-    }};
-    ($evals:expr, $x_i:expr, $distance:expr, $skip:expr) => {
-        merge!(@ $evals, $x_i, $distance, $skip)
-    };
-    ($evals:expr, $x_i:expr) => {
-        merge!(@ $evals, $x_i, 1, 0)
-    }
-}
-
-pub(crate) use {merge, zip_self};
+pub(crate) use zip_self;
 
 #[cfg(test)]
 mod test {
     use crate::{
-        poly::multilinear::{merge, rotation_eval, MultilinearPolynomial},
+        poly::multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
         util::{
             arithmetic::{BooleanHypercube, Field},
             expression::Rotation,
@@ -553,16 +541,19 @@ mod test {
     use rand::{rngs::OsRng, RngCore};
     use std::{borrow::Cow, iter};
 
-    fn fix_variables_simple<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
+    fn fix_variables<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
         x.iter()
             .fold(Cow::Borrowed(evals), |evals, x_i| {
-                merge!(&evals, x_i).into()
+                zip_self!(evals.iter())
+                    .map(|(eval_0, eval_1)| (*eval_1 - eval_0) * x_i + eval_0)
+                    .collect_vec()
+                    .into()
             })
             .into_owned()
     }
 
     #[test]
-    fn fix_variables() {
+    fn fix_variable() {
         let rand_x_i = || match OsRng.next_u32() % 3 {
             0 => Fr::zero(),
             1 => Fr::one(),
@@ -571,11 +562,20 @@ mod test {
         };
         for num_vars in 0..16 {
             let poly = MultilinearPolynomial::rand(num_vars, OsRng);
-            for x in (0..num_vars).map(|n| iter::repeat_with(rand_x_i).take(n).collect_vec()) {
+            for x in (1..=num_vars).map(|n| iter::repeat_with(rand_x_i).take(n).collect_vec()) {
+                let mut buf = MultilinearPolynomial::new(vec![Fr::zero(); 1 << (num_vars - 1)]);
                 assert_eq!(
-                    poly.fix_variables(&x).evals(),
-                    fix_variables_simple(poly.evals(), &x)
+                    x.iter()
+                        .fold(poly.clone(), |mut poly, x_i| {
+                            poly.fix_variable(x_i, &mut buf);
+                            poly
+                        })
+                        .evals(),
+                    fix_variables(poly.evals(), &x)
                 );
+                if x.len() == num_vars {
+                    assert_eq!(poly.evaluate(&x), fix_variables(poly.evals(), &x)[0]);
+                }
             }
         }
     }

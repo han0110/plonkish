@@ -4,8 +4,8 @@ use crate::{
             circuit::{CircuitExt, StandardPlonk},
             circuit_info, witness_collector,
         },
-        preprocess::test::plonk_circuit_info,
         test::run_hyperplonk,
+        util::plonk_circuit_info,
     },
     util::Itertools,
 };

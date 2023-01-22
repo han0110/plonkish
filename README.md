@@ -1,4 +1,4 @@
-# HyerPlonk
+# HyperPlonk
 
 ## Benchmark
 

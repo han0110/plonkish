@@ -27,6 +27,7 @@ impl<F: PrimeField> Evaluations<F> {
     fn new(degree: usize) -> Self {
         Self(vec![F::zero(); degree + 1])
     }
+
     fn points(degree: usize) -> Vec<F> {
         (0..degree as u64 + 1).map_into().collect_vec()
     }
@@ -644,8 +645,8 @@ fn extract_scalar<F: PrimeField>(
         &|query| (F::one(), Some(Expression::Polynomial(query))),
         &|challenge| (challenges[challenge], None),
         &|(scalar, expression)| match expression {
-            Some(expression) => (scalar, Some(-expression)),
-            None => (-scalar, None),
+            Some(expression) if scalar == F::one() => (F::one(), Some(-expression)),
+            _ => (-scalar, expression),
         },
         &|lhs, rhs| match (lhs, rhs) {
             ((lhs, None), (rhs, None)) => (lhs + rhs, None),

@@ -1,0 +1,18 @@
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hyperplonk = { path = "../hyperplonk", features = ["frontend-halo2", "benchmark"] }
+halo2_curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", tag = "0.3.0", package = "halo2curves" }
+halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
+snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "feature/for-benchmark", default-features = false, features = ["loader_halo2", "system_halo2"] }
+rand = "0.8"
+
+[features]
+timer = ["halo2_proofs/print-trace", "hyperplonk/timer"]
+
+[[bench]]
+name = "proof_system"
+harness = false

@@ -1,3 +1,4 @@
+use benchmark::halo2::AggregationCircuit;
 use halo2_curves::bn256::{Bn256, Fr};
 use halo2_proofs::{
     plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
@@ -13,7 +14,7 @@ use hyperplonk::{
     snark::{
         self,
         hyperplonk::frontend::halo2::{
-            circuit::{AggregationCircuit, CircuitExt, StandardPlonk},
+            circuit::{CircuitExt, StandardPlonk},
             circuit_info, witness_collector,
         },
         UniversalSnark,
@@ -31,7 +32,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const OUTPUT_DIR: &str = "./target/bench";
+const OUTPUT_DIR: &str = "../target/bench";
 
 fn main() {
     let (systems, circuit, k_range) = parse_args();

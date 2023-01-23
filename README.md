@@ -5,7 +5,7 @@
 ### Proof systems
 
 ```sh
-Usage: cargo bench --features benchmark --bench proof_system -- [OPTIONS]
+Usage: cargo bench --bench proof_system -- [OPTIONS]
 
 Options:
   --system <SYSTEM>    Proof system(s) to run. [possible values: hyperplonk, halo2]
@@ -16,7 +16,7 @@ Options:
 For example to compare different proof systems on aggregation circuit, run:
 
 ```sh
-cargo bench --features benchmark --bench proof_system -- \
+cargo bench --bench proof_system -- \
     --system hyperplonk \
     --system halo2 \
     --circuit aggregation \

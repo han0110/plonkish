@@ -11,6 +11,7 @@ use hyperplonk::{
         transcript::Keccak256Transcript,
     },
 };
+use pprof::criterion::{Output, PProfProfiler};
 
 type ZeroCheck = VanillaSumCheck<EvaluationsProver<Fr, true>>;
 
@@ -30,7 +31,7 @@ fn zero_check(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("zero_check");
     group.sample_size(10);
-    for num_vars in 20..26 {
+    for num_vars in 20..24 {
         let (expression, polys, challenges, ys) = setup(num_vars);
         let virtual_poly = VirtualPolynomial::new(&expression, &polys, &challenges, &ys);
         let id = BenchmarkId::from_parameter(num_vars);
@@ -40,5 +41,9 @@ fn zero_check(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, zero_check);
-criterion_main!(benches);
+criterion_group! {
+    name = bench;
+    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    targets = zero_check
+}
+criterion_main!(bench);

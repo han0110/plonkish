@@ -21,6 +21,7 @@ snark-verifier = { git = "https://github.com/privacy-scaling-explorations/snark-
 
 [dev-dependencies]
 criterion = "0.4.0"
+pprof = { version = "0.11.0", features = ["criterion", "flamegraph"] }
 
 [patch."https://github.com/privacy-scaling-explorations/halo2.git"]
 halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
@@ -46,3 +47,8 @@ required-features = ["benchmark"]
 name = "zero_check"
 harness = false
 required-features = ["benchmark"]
+
+[profile.flamegraph]
+inherits = "release"
+debug = true
+codegen-units = 1

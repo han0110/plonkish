@@ -114,7 +114,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHEC
         let mut partials = vec![Evaluations::new(state.degree); div_ceil(size, chunk_size)];
         for ev in self.0.iter() {
             if let Some(sparse_bs) = ev.sparse_bs(state) {
-                let mut data = ev.data();
+                let mut data = ev.data(state, 0);
                 sparse_bs.into_iter().for_each(|b| {
                     ev.evaluate::<IS_FIRST_ROUND>(&mut partials[0], &mut data, state, b)
                 })
@@ -123,7 +123,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHEC
                     partials.iter_mut().zip((0..).step_by(chunk_size)),
                     |(partials, start)| {
                         let bs = start..(start + chunk_size).min(size);
-                        let mut data = ev.data();
+                        let mut data = ev.data(state, start);
                         bs.for_each(|b| {
                             ev.evaluate::<IS_FIRST_ROUND>(partials, &mut data, state, b)
                         })
@@ -335,6 +335,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
                     &|_| None,
                     &|poly| match poly {
                         CommonPolynomial::Lagrange(i) => Some(vec![state.lagranges[&i].0 >> 1]),
+                        CommonPolynomial::Identity(_) => unimplemented!(),
                         _ => None,
                     },
                     &|_| None,
@@ -364,16 +365,26 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
         })
     }
 
-    fn data(&self) -> EvaluatorData<F> {
+    fn data(&self, state: &ProverState<F>, start: usize) -> EvaluatorData<F> {
         let mut data = EvaluatorData {
             bs: vec![(0, 0); self.rotations.len()],
             lagrange_steps: vec![F::zero(); self.lagranges.len()],
-            identity_step: F::zero(),
+            identity_step_first: F::from(1 << (state.round + 1))
+                - F::from(((state.degree - 1) << state.round) as u64),
+            identity_step: F::from(1 << state.round),
             eq_xy_steps: vec![F::zero(); self.eq_xys.len()],
             poly_steps: vec![F::zero(); self.polys.len()],
             calculations: vec![F::zero(); self.offsets.4 + self.calculations.len()],
         };
         data.calculations[..self.constants.len()].clone_from_slice(&self.constants);
+        data.calculations[self.offsets.1..]
+            .iter_mut()
+            .zip(self.identitys.iter())
+            .for_each(|(eval, idx)| {
+                *eval = state.identities[*idx]
+                    + F::from((1 << state.round) + (start << (state.round + 1)) as u64)
+                    - data.identity_step_first;
+            });
         data
     }
 
@@ -436,14 +447,9 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
                     }
                 })
             );
-            data.identity_step = F::from((1 << state.round) as u64);
-            zip_for_each!(
-                (calculation!(identities).iter_mut(), self.identitys.iter()),
-                (|(eval, idx)| {
-                    *eval = state.identities[*idx]
-                        + F::from((1 << state.round) + (b << (state.round + 1)) as u64)
-                })
-            );
+            calculation!(identities)
+                .iter_mut()
+                .for_each(|eval| *eval += data.identity_step_first);
             zip_for_each!(
                 (calculation!(eq_xys).iter_mut(), self.eq_xys.iter()),
                 (|(eval, idx)| *eval = state.eq_xys[*idx][b_1])
@@ -580,6 +586,7 @@ impl Calculation<usize> {
 struct EvaluatorData<F: PrimeField> {
     bs: Vec<(usize, usize)>,
     lagrange_steps: Vec<F>,
+    identity_step_first: F,
     identity_step: F,
     eq_xy_steps: Vec<F>,
     poly_steps: Vec<F>,

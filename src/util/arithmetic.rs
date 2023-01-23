@@ -42,6 +42,14 @@ pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
         .fold(F::zero(), |acc, coeff| acc * x + coeff)
 }
 
+pub fn steps<F: Field>(start: F) -> impl Iterator<Item = F> {
+    steps_by(start, F::one())
+}
+
+pub fn steps_by<F: Field>(start: F, step: F) -> impl Iterator<Item = F> {
+    iter::successors(Some(start), move |state| Some(step + state))
+}
+
 pub fn powers<F: Field>(scalar: F) -> impl Iterator<Item = F> {
     iter::successors(Some(F::one()), move |power| Some(scalar * power))
 }

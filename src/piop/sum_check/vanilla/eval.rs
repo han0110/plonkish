@@ -2,13 +2,13 @@ use crate::{
     piop::sum_check::vanilla::{ProverState, VanillaSumCheckProver, VanillaSumCheckRoundMessage},
     util::{
         arithmetic::{
-            barycentric_interpolate, barycentric_weights, div_ceil, BooleanHypercube, PrimeField,
+            barycentric_interpolate, barycentric_weights, div_ceil, steps, BooleanHypercube,
+            PrimeField,
         },
         expression::{CommonPolynomial, Expression, Query, Rotation},
         impl_index,
         parallel::{num_threads, parallelize_iter},
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
     },
     Error,
 };
@@ -29,7 +29,7 @@ impl<F: PrimeField> Evaluations<F> {
     }
 
     fn points(degree: usize) -> Vec<F> {
-        (0..degree as u64 + 1).map_into().collect_vec()
+        steps(F::zero()).take(degree + 1).collect()
     }
 }
 
@@ -161,7 +161,7 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
     fn new(num_vars: usize, challenges: &[F], expression: &Expression<F>, is_sparse: bool) -> Self {
         let mut ev = Self {
             num_vars,
-            constants: vec![F::from(0), F::from(1), F::from(2)],
+            constants: vec![F::zero(), F::one(), F::one().double()],
             rotations: vec![(Rotation(0), num_vars)],
             ..Default::default()
         };

@@ -7,7 +7,9 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     snark::hyperplonk::verifier::{pcs_query, point_offset, points},
     util::{
-        arithmetic::{descending_powers, div_ceil, BatchInvert, BooleanHypercube, PrimeField},
+        arithmetic::{
+            descending_powers, div_ceil, steps_by, BatchInvert, BooleanHypercube, PrimeField,
+        },
         end_timer,
         expression::{CommonPolynomial, Expression, Rotation},
         parallel::{par_map_collect, par_sort_unstable, parallelize},
@@ -363,13 +365,14 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
             product.iter_mut().batch_invert();
 
             for ((poly, _), idx) in permutation_polys.iter().zip(chunk_idx * chunk_size..) {
+                let id_offset = idx << num_vars;
                 parallelize(&mut product, |(product, start)| {
-                    for ((product, value), id) in product
+                    for ((product, value), beta_id) in product
                         .iter_mut()
                         .zip(polys[*poly][start..].iter())
-                        .zip(((idx << num_vars) + start) as u64..)
+                        .zip(steps_by(F::from((id_offset + start) as u64) * beta, *beta))
                     {
-                        *product *= (F::from(id) * beta) + gamma + value;
+                        *product *= beta_id + gamma + value;
                     }
                 });
             }

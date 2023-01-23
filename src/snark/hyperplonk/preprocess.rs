@@ -1,7 +1,7 @@
 use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{div_ceil, PrimeField},
+        arithmetic::{div_ceil, steps, PrimeField},
         expression::{CommonPolynomial, Expression, Query, Rotation},
         Itertools,
     },
@@ -220,8 +220,8 @@ pub(super) fn permutation_polys<F: PrimeField>(
     };
     let mut permutations = (0..permutation_polys.len() as u64)
         .map(|idx| {
-            (idx << num_vars..(idx + 1) << num_vars)
-                .map(F::from)
+            steps(F::from(idx << num_vars))
+                .take(1 << num_vars)
                 .collect_vec()
         })
         .collect_vec();

@@ -53,7 +53,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                 .collect()
         };
         let identities = (0..)
-            .map(|idx| F::from((idx as u64) << num_vars))
+            .map(|idx| F::from(idx << num_vars))
             .take(
                 virtual_poly
                     .expression

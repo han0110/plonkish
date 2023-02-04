@@ -13,10 +13,8 @@ mod aggregation {
             },
         },
     };
-    use hyperplonk::{
-        snark::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk},
-        util::Itertools,
-    };
+    use hyperplonk::snark::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk};
+    use itertools::Itertools;
     use rand::{rngs::StdRng, RngCore, SeedableRng};
     use snark_verifier::{
         loader::{

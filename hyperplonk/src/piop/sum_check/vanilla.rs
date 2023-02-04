@@ -170,7 +170,7 @@ pub trait VanillaSumCheckProver<F: Field>: Clone + Debug {
 
     fn new(state: &ProverState<F>) -> Self;
 
-    fn prove_round<'a>(&self, state: &ProverState<'a, F>) -> Self::RoundMessage;
+    fn prove_round(&self, state: &ProverState<F>) -> Self::RoundMessage;
 }
 
 pub trait VanillaSumCheckRoundMessage<F: Field>: Sized + Debug {

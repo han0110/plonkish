@@ -4,15 +4,31 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hyperplonk = { path = "../hyperplonk", features = ["frontend-halo2", "benchmark"] }
+rand = "0.8"
+itertools = "0.10.5"
+gnuplot = "0.0.37"
+
+# hyperplonk
 halo2_curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", tag = "0.3.0", package = "halo2curves" }
+hyperplonk = { path = "../hyperplonk", features = ["frontend-halo2", "benchmark"] }
+
+# halo2
 halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
 snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "feature/for-benchmark", default-features = false, features = ["loader_halo2", "system_halo2"] }
-rand = "0.8"
+
+# espresso
+ark-ff = { version = "0.3.0", default-features = false }
+ark-bn254 = { version = "0.3.0", default-features = false, features = ["curve"] }
+espresso_subroutines = { git = "https://github.com/EspressoSystems/hyperplonk", package = "subroutines", default-features = false, features = ["parallel"] }
+espresso_hyperplonk = { git = "https://github.com/EspressoSystems/hyperplonk", package = "hyperplonk", default-features = false, features = ["parallel"] }
 
 [features]
-timer = ["halo2_proofs/print-trace", "hyperplonk/timer"]
+default = []
+timer = ["hyperplonk/timer", "halo2_proofs/print-trace", "espresso_subroutines/print-trace", "espresso_hyperplonk/print-trace"]
 
 [[bench]]
 name = "proof_system"
 harness = false
+
+[[bin]]
+name = "plotter"

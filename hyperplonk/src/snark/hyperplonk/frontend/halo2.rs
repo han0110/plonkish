@@ -124,7 +124,7 @@ pub fn witness_collector<'a, F, C>(
     k: usize,
     circuit: &'a C,
     instances: &'a [&[F]],
-) -> impl 'a + Clone + FnMut(&[F]) -> Result<Vec<Vec<F>>, crate::Error>
+) -> impl Fn(&[F]) -> Result<Vec<Vec<F>>, crate::Error> + 'a
 where
     F: Field,
     C: Circuit<F>,

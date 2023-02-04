@@ -96,7 +96,7 @@ where
         )
     }
 
-    fn prove_round<'a>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
+    fn prove_round(&self, state: &ProverState<F>) -> Evaluations<F> {
         if state.round > 0 {
             self.evals::<false>(state)
         } else {
@@ -106,7 +106,7 @@ where
 }
 
 impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHECK> {
-    fn evals<'a, const IS_FIRST_ROUND: bool>(&self, state: &ProverState<'a, F>) -> Evaluations<F> {
+    fn evals<const IS_FIRST_ROUND: bool>(&self, state: &ProverState<F>) -> Evaluations<F> {
         let mut evals = Evaluations::new(state.degree);
 
         let size = state.size();

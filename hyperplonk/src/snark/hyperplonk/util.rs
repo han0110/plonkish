@@ -97,7 +97,7 @@ pub fn rand_plonk_circuit<F: PrimeField>(
 ) -> (
     PlonkishCircuitInfo<F>,
     Vec<Vec<F>>,
-    impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
+    impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
 ) {
     let size = 1 << num_vars;
     let mut polys = [(); 9].map(|_| vec![F::zero(); size]);
@@ -162,7 +162,7 @@ pub fn rand_plonk_assignment<F: PrimeField>(
     mut rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, mut witness) = rand_plonk_circuit(num_vars, &mut rng);
+        let (circuit_info, instances, witness) = rand_plonk_circuit(num_vars, &mut rng);
         let witness = witness(&[]).unwrap();
         let polys = iter::empty()
             .chain(instances_polys(num_vars, &instances))
@@ -199,7 +199,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
 ) -> (
     PlonkishCircuitInfo<F>,
     Vec<Vec<F>>,
-    impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
+    impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
 ) {
     let size = 1 << num_vars;
     let mut polys = [(); 13].map(|_| vec![F::zero(); size]);
@@ -296,8 +296,7 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
     mut rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, mut witness) =
-            rand_plonk_with_lookup_circuit(num_vars, &mut rng);
+        let (circuit_info, instances, witness) = rand_plonk_with_lookup_circuit(num_vars, &mut rng);
         let witness = witness(&[]).unwrap();
         let polys = iter::empty()
             .chain(instances_polys(num_vars, &instances))

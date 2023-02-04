@@ -8,7 +8,7 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            descending_powers, div_ceil, fixed_base_msm, ilog2, inner_product, variable_base_msm,
+            descending_powers, div_ceil, fixed_base_msm, inner_product, variable_base_msm,
             window_size, window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine,
         },
         end_timer,
@@ -89,7 +89,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type BatchCommitment = Vec<M::G1Affine>;
 
     fn setup(size: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
-        let num_vars = ilog2(size);
+        let num_vars = size.next_power_of_two().ilog2() as usize;
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
             .take(num_vars)
             .collect_vec();
@@ -165,7 +165,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         param: &Self::Param,
         size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        let num_vars = ilog2(size);
+        let num_vars = size.next_power_of_two().ilog2() as usize;
         if param.num_vars() < num_vars {
             return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }

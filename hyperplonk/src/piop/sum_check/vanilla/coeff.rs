@@ -138,7 +138,7 @@ where
         Self(constant, flattened)
     }
 
-    fn prove_round<'a>(&self, state: &ProverState<'a, F>) -> Self::RoundMessage {
+    fn prove_round(&self, state: &ProverState<F>) -> Self::RoundMessage {
         let mut coeffs = Coefficients(vec![F::zero(); state.expression.degree() + 1]);
         coeffs += &(F::from(state.size() as u64) * &self.0);
         if self.1.iter().all(|(_, products)| products.len() == 2) {
@@ -155,9 +155,9 @@ where
 }
 
 impl<F: PrimeField> CoefficientsProver<F> {
-    fn karatsuba<'a, const LAZY: bool>(
+    fn karatsuba<const LAZY: bool>(
         &self,
-        state: &ProverState<'a, F>,
+        state: &ProverState<F>,
         lhs: &Expression<F>,
         rhs: &Expression<F>,
     ) -> Coefficients<F> {

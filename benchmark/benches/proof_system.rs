@@ -1,4 +1,6 @@
-use benchmark::halo2::AggregationCircuit;
+use benchmark::{espresso::standard_plonk, halo2::AggregationCircuit};
+use espresso_hyperplonk::{prelude::MockCircuit, HyperPlonkSNARK};
+use espresso_subroutines::{MultilinearKzgPCS, PolyIOP, PolynomialCommitmentScheme};
 use halo2_curves::bn256::{Bn256, Fr};
 use halo2_proofs::{
     plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
@@ -19,8 +21,9 @@ use hyperplonk::{
         },
         UniversalSnark,
     },
-    util::{end_timer, start_timer, test::std_rng, transcript::Keccak256Transcript, Itertools},
+    util::{end_timer, start_timer, test::std_rng, transcript::Keccak256Transcript},
 };
+use itertools::Itertools;
 use std::{
     env::args,
     fmt::Display,
@@ -37,14 +40,7 @@ const OUTPUT_DIR: &str = "../target/bench";
 fn main() {
     let (systems, circuit, k_range) = parse_args();
     create_output(&systems);
-    match circuit {
-        Circuit::Aggregation => bench::<AggregationCircuit<Bn256>>(systems, k_range),
-        Circuit::StandardPlonk => bench::<StandardPlonk<Fr>>(systems, k_range),
-    }
-}
-
-fn bench<C: CircuitExt<Fr>>(systems: Vec<System>, k_range: Range<usize>) {
-    k_range.for_each(|k| systems.iter().for_each(|system| system.bench::<C>(k)));
+    k_range.for_each(|k| systems.iter().for_each(|system| system.bench(k, circuit)));
 }
 
 fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
@@ -68,7 +64,7 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     let proof = sample(System::HyperPlonk, k, || {
         let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let mut transcript = Keccak256Transcript::new(Vec::new());
-        HyperPlonk::prove(&pp, &instances, witness.clone(), &mut transcript, std_rng()).unwrap();
+        HyperPlonk::prove(&pp, &instances, &witness, &mut transcript, std_rng()).unwrap();
         transcript.finalize()
     });
 
@@ -118,19 +114,57 @@ fn bench_halo2<C: CircuitExt<Fr>>(k: usize) {
     assert!(accept);
 }
 
+fn bench_espresso_hyperplonk(circuit: MockCircuit<ark_bn254::Fr>) {
+    macro_rules! hyperplonk {
+        ($func:ident($($args:expr),*)) => {
+            <PolyIOP<ark_bn254::Fr> as HyperPlonkSNARK<ark_bn254::Bn254, MultilinearKzgPCS<ark_bn254::Bn254>>>::$func($($args),*)
+        };
+    }
+
+    let k = circuit.num_variables();
+    let MockCircuit {
+        index,
+        public_inputs,
+        witnesses,
+        ..
+    } = &circuit;
+
+    let timer = start_timer(|| format!("espresso_hyperplonk_setup-{k}"));
+    let param = MultilinearKzgPCS::gen_srs_for_testing(&mut std_rng(), k).unwrap();
+    end_timer(timer);
+
+    let timer = start_timer(|| format!("espresso_hyperplonk_preprocess-{k}"));
+    let (pk, vk) = hyperplonk!(preprocess(index, &param)).unwrap();
+    end_timer(timer);
+
+    let proof = sample(System::EspressoHyperPlonk, k, || {
+        let _timer = start_timer(|| format!("espresso_hyperplonk_prove-{k}"));
+        hyperplonk!(prove(&pk, public_inputs, witnesses)).unwrap()
+    });
+
+    let _timer = start_timer(|| format!("espresso_hyperplonk_verify-{k}"));
+    let accept = hyperplonk!(verify(&vk, public_inputs, &proof)).unwrap();
+    assert!(accept);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum System {
     HyperPlonk,
     Halo2,
+    EspressoHyperPlonk,
 }
 
 impl System {
     fn all() -> Vec<System> {
-        vec![System::HyperPlonk, System::Halo2]
+        vec![
+            System::HyperPlonk,
+            System::Halo2,
+            System::EspressoHyperPlonk,
+        ]
     }
 
     fn output_path(&self) -> String {
-        format!("{OUTPUT_DIR}/{}", self)
+        format!("{OUTPUT_DIR}/{self}")
     }
 
     fn output(&self) -> File {
@@ -140,10 +174,39 @@ impl System {
             .unwrap()
     }
 
-    fn bench<C: CircuitExt<Fr>>(&self, k: usize) {
+    fn support(&self, circuit: Circuit) -> bool {
         match self {
-            System::HyperPlonk => bench_hyperplonk::<C>(k),
-            System::Halo2 => bench_halo2::<C>(k),
+            System::HyperPlonk | System::Halo2 => match circuit {
+                Circuit::Aggregation | Circuit::StandardPlonk => true,
+            },
+            System::EspressoHyperPlonk => match circuit {
+                Circuit::StandardPlonk => true,
+                Circuit::Aggregation => false,
+            },
+        }
+    }
+
+    fn bench(&self, k: usize, circuit: Circuit) {
+        if !self.support(circuit) {
+            println!("skip benchmark on {circuit} with {self} because it's not compatible");
+            return;
+        }
+
+        println!("start benchmark on 2^{k} {circuit} with {self}");
+
+        match self {
+            System::HyperPlonk => match circuit {
+                Circuit::Aggregation => bench_hyperplonk::<AggregationCircuit<Bn256>>(k),
+                Circuit::StandardPlonk => bench_hyperplonk::<StandardPlonk<Fr>>(k),
+            },
+            System::Halo2 => match circuit {
+                Circuit::Aggregation => bench_halo2::<AggregationCircuit<Bn256>>(k),
+                Circuit::StandardPlonk => bench_halo2::<StandardPlonk<Fr>>(k),
+            },
+            System::EspressoHyperPlonk => match circuit {
+                Circuit::StandardPlonk => bench_espresso_hyperplonk(standard_plonk(k)),
+                Circuit::Aggregation => unreachable!(),
+            },
         }
     }
 }
@@ -153,6 +216,7 @@ impl Display for System {
         match self {
             System::HyperPlonk => write!(f, "hyperplonk"),
             System::Halo2 => write!(f, "halo2"),
+            System::EspressoHyperPlonk => write!(f, "espresso_hyperplonk"),
         }
     }
 }
@@ -172,6 +236,15 @@ impl Circuit {
     }
 }
 
+impl Display for Circuit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Circuit::Aggregation => write!(f, "aggregation"),
+            Circuit::StandardPlonk => write!(f, "standard_plonk"),
+        }
+    }
+}
+
 fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
     let (systems, circuit, k_range) = args().chain(Some("".to_string())).tuple_windows().fold(
         (Vec::new(), Circuit::Aggregation, 20..26),
@@ -181,7 +254,10 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
                     "all" => systems = System::all(),
                     "hyperplonk" => systems.push(System::HyperPlonk),
                     "halo2" => systems.push(System::Halo2),
-                    _ => panic!("system should be one of {{all,hyperplonk,halo2}}"),
+                    "espresso_hyperplonk" => systems.push(System::EspressoHyperPlonk),
+                    _ => panic!(
+                        "system should be one of {{all,hyperplonk,halo2,espresso_hyperplonk}}"
+                    ),
                 },
                 "--circuit" => match value.as_str() {
                     "aggregation" => circuit = Circuit::Aggregation,
@@ -221,19 +297,19 @@ fn create_output(systems: &[System]) {
     }
 }
 
-fn sample(system: System, k: usize, prove: impl Fn() -> Vec<u8>) -> Vec<u8> {
-    let mut proof = Vec::new();
+fn sample<T>(system: System, k: usize, prove: impl Fn() -> T) -> T {
+    let mut proof = None;
     let sample_size = sample_size(k);
     let sum = iter::repeat_with(|| {
         let start = Instant::now();
-        proof = prove();
+        proof = Some(prove());
         start.elapsed()
     })
     .take(sample_size)
     .sum::<Duration>();
     let avg = sum / sample_size as u32;
     writeln!(&mut system.output(), "{k}, {}", avg.as_millis()).unwrap();
-    proof
+    proof.unwrap()
 }
 
 fn sample_size(k: usize) -> usize {

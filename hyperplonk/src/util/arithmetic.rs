@@ -132,16 +132,6 @@ pub fn usize_from_bits_be(bits: impl Iterator<Item = bool>) -> usize {
     bits.fold(0, |int, bit| (int << 1) + (bit as usize))
 }
 
-pub fn ilog2(n: usize) -> usize {
-    assert!(n > 0);
-
-    if n.is_power_of_two() {
-        (1usize.leading_zeros() - n.leading_zeros()) as usize
-    } else {
-        (0usize.leading_zeros() - n.leading_zeros()) as usize
-    }
-}
-
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
     Integer::div_ceil(&dividend, &divisor)
 }

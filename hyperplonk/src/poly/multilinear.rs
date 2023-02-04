@@ -1,5 +1,5 @@
 use crate::util::{
-    arithmetic::{div_ceil, ilog2, usize_from_bits_be, BooleanHypercube, Field},
+    arithmetic::{div_ceil, usize_from_bits_be, BooleanHypercube, Field},
     expression::Rotation,
     impl_index,
     parallel::{num_threads, parallelize, parallelize_iter},
@@ -31,7 +31,7 @@ impl<F> MultilinearPolynomial<F> {
         let num_vars = if evals.is_empty() {
             0
         } else {
-            let num_vars = ilog2(evals.len());
+            let num_vars = evals.len().ilog2() as usize;
             debug_assert_eq!(evals.len(), 1 << num_vars);
             num_vars
         };

@@ -1,8 +1,5 @@
 [workspace]
-members = [
-  "benchmark",
-  "hyperplonk",
-]
+members = ["benchmark", "hyperplonk"]
 
 [profile.flamegraph]
 inherits = "release"

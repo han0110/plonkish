@@ -56,10 +56,10 @@ pub(crate) use impl_index;
 #[cfg(any(test, feature = "benchmark"))]
 pub mod test {
     use crate::util::arithmetic::Field;
-    use rand::{rngs::StdRng, RngCore, SeedableRng};
+    use rand::{rngs::StdRng, CryptoRng, RngCore, SeedableRng};
     use std::{array, iter, ops::Range};
 
-    pub fn std_rng() -> impl RngCore {
+    pub fn std_rng() -> impl RngCore + CryptoRng {
         StdRng::from_seed(Default::default())
     }
 

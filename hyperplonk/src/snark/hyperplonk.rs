@@ -154,7 +154,7 @@ where
     fn prove(
         pp: &Self::ProverParam,
         instances: &[&[F]],
-        mut witness_collector: impl FnMut(&[F]) -> Result<Vec<Vec<F>>, Error>,
+        witness_collector: &impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
         transcript: &mut impl TranscriptWrite<F, Commitment = Pcs::Commitment>,
         _: impl RngCore,
     ) -> Result<(), Error> {
@@ -373,7 +373,7 @@ pub(crate) mod test {
         num_vars_range: Range<usize>,
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<Fr>, Vec<Vec<Fr>>, W),
     ) where
-        W: FnMut(&[Fr]) -> Result<Vec<Vec<Fr>>, Error>,
+        W: Fn(&[Fr]) -> Result<Vec<Vec<Fr>>, Error>,
     {
         type Pcs = multilinear_kzg::MultilinearKzg<Bn256>;
         type HyperPlonk = hyperplonk::HyperPlonk<Pcs>;
@@ -393,7 +393,7 @@ pub(crate) mod test {
             let timer = start_timer(|| format!("prove-{num_vars}"));
             let proof = {
                 let mut transcript = Keccak256Transcript::new(Vec::new());
-                HyperPlonk::prove(&pp, &instances, witness, &mut transcript, OsRng).unwrap();
+                HyperPlonk::prove(&pp, &instances, &witness, &mut transcript, OsRng).unwrap();
                 transcript.finalize()
             };
             end_timer(timer);

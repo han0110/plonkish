@@ -254,14 +254,14 @@ impl<F: Clone> Expression<F> {
         match self {
             Expression::Constant(constant) => write!(writer, "{:?}", *constant),
             Expression::CommonPolynomial(poly) => match poly {
-                CommonPolynomial::Lagrange(i) => write!(writer, "l_{}", i),
-                CommonPolynomial::Identity(idx) => write!(writer, "id_{}", idx),
-                CommonPolynomial::EqXY(idx) => write!(writer, "eq_{}", idx),
+                CommonPolynomial::Lagrange(i) => write!(writer, "l_{i}"),
+                CommonPolynomial::Identity(idx) => write!(writer, "id_{idx}"),
+                CommonPolynomial::EqXY(idx) => write!(writer, "eq_{idx}"),
             },
             Expression::Polynomial(query) => {
                 write!(writer, "p_{}_{}", query.poly(), query.rotation().0)
             }
-            Expression::Challenge(challenge) => write!(writer, "c_{}", challenge),
+            Expression::Challenge(challenge) => write!(writer, "c_{challenge}"),
             Expression::Negated(value) => {
                 writer.write_all(b"(-")?;
                 value.write(writer)?;

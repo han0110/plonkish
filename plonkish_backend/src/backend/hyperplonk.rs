@@ -84,7 +84,6 @@ where
         BatchCommitment = Vec<C>,
     >,
 {
-    type CircuitInfo = PlonkishCircuitInfo<F>;
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
     type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
 

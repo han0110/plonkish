@@ -19,7 +19,6 @@ where
     F: Field,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    type CircuitInfo: Debug;
     type ProverParam: Debug;
     type VerifierParam: Debug;
 

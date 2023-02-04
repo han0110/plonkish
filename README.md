@@ -1,4 +1,4 @@
-# HyperPlonk
+# Plonkish Backend
 
 ## Benchmark
 

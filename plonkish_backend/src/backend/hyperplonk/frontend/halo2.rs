@@ -1,6 +1,6 @@
 use crate::{
+    backend::hyperplonk::PlonkishCircuitInfo,
     poly::multilinear::MultilinearPolynomial,
-    snark::hyperplonk::PlonkishCircuitInfo,
     util::{
         arithmetic::{BatchInvert, BooleanHypercube, Field},
         expression::{Expression, Query, Rotation},

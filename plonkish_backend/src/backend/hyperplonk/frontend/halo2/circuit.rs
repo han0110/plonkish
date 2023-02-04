@@ -14,7 +14,7 @@ pub trait CircuitExt<F: Field>: Circuit<F> {
 
 mod stand_plonk {
     use crate::{
-        snark::hyperplonk::frontend::halo2::circuit::CircuitExt,
+        backend::hyperplonk::frontend::halo2::circuit::CircuitExt,
         util::{arithmetic::Field, Itertools},
     };
     use halo2_proofs::{

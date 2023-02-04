@@ -8,9 +8,8 @@ rand = "0.8"
 itertools = "0.10.5"
 gnuplot = "0.0.37"
 
-# hyperplonk
-halo2_curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", tag = "0.3.0", package = "halo2curves" }
-hyperplonk = { path = "../hyperplonk", features = ["frontend-halo2", "benchmark"] }
+# plonkish_backend
+plonkish_backend = { path = "../plonkish_backend", features = ["benchmark"] }
 
 # halo2
 halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
@@ -24,7 +23,7 @@ espresso_hyperplonk = { git = "https://github.com/EspressoSystems/hyperplonk", p
 
 [features]
 default = []
-timer = ["hyperplonk/timer", "halo2_proofs/print-trace", "espresso_subroutines/print-trace", "espresso_hyperplonk/print-trace"]
+timer = ["plonkish_backend/timer", "halo2_proofs/print-trace", "espresso_subroutines/print-trace", "espresso_hyperplonk/print-trace"]
 
 [[bench]]
 name = "proof_system"

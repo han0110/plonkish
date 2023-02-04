@@ -1,7 +1,6 @@
 pub use aggregation::AggregationCircuit;
 
 mod aggregation {
-    use halo2_curves::{pairing::Engine, CurveAffine};
     use halo2_proofs::{
         circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
         plonk::{create_proof, keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error},
@@ -13,8 +12,11 @@ mod aggregation {
             },
         },
     };
-    use hyperplonk::snark::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk};
     use itertools::Itertools;
+    use plonkish_backend::{
+        backend::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk},
+        halo2_curves::{pairing::Engine, CurveAffine},
+    };
     use rand::{rngs::StdRng, RngCore, SeedableRng};
     use snark_verifier::{
         loader::{

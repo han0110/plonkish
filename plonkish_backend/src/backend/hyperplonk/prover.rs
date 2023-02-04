@@ -1,11 +1,11 @@
 use crate::{
+    backend::hyperplonk::verifier::{pcs_query, point_offset, points},
     pcs::Evaluation,
     piop::sum_check::{
         vanilla::{EvaluationsProver, VanillaSumCheck},
         SumCheck, VirtualPolynomial,
     },
     poly::multilinear::MultilinearPolynomial,
-    snark::hyperplonk::verifier::{pcs_query, point_offset, points},
     util::{
         arithmetic::{
             descending_powers, div_ceil, steps_by, BatchInvert, BooleanHypercube, PrimeField,

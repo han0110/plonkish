@@ -1,5 +1,5 @@
 use crate::{
-    snark::hyperplonk::{
+    backend::hyperplonk::{
         frontend::halo2::{
             circuit::{CircuitExt, StandardPlonk},
             circuit_info, witness_collector,

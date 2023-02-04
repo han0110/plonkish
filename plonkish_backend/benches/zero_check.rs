@@ -1,11 +1,11 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use halo2_curves::bn256::{Fr, G1Affine};
-use hyperplonk::{
+use plonkish_backend::{
+    backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
     piop::sum_check::{
         vanilla::{EvaluationsProver, VanillaSumCheck},
         SumCheck, VirtualPolynomial,
     },
-    snark::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
     util::{
         test::{rand_vec, std_rng},
         transcript::Keccak256Transcript,

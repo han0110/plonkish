@@ -1,7 +1,6 @@
 use benchmark::{espresso::standard_plonk, halo2::AggregationCircuit};
 use espresso_hyperplonk::{prelude::MockCircuit, HyperPlonkSNARK};
 use espresso_subroutines::{MultilinearKzgPCS, PolyIOP, PolynomialCommitmentScheme};
-use halo2_curves::bn256::{Bn256, Fr};
 use halo2_proofs::{
     plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
     poly::kzg::{
@@ -11,19 +10,20 @@ use halo2_proofs::{
     },
     transcript::{Blake2bRead, Blake2bWrite, TranscriptReadBuffer, TranscriptWriterBuffer},
 };
-use hyperplonk::{
-    pcs::multilinear_kzg,
-    snark::{
+use itertools::Itertools;
+use plonkish_backend::{
+    backend::{
         self,
         hyperplonk::frontend::halo2::{
             circuit::{CircuitExt, StandardPlonk},
             circuit_info, witness_collector,
         },
-        UniversalSnark,
+        PlonkishBackend,
     },
+    halo2_curves::bn256::{Bn256, Fr},
+    pcs::multilinear_kzg,
     util::{end_timer, start_timer, test::std_rng, transcript::Keccak256Transcript},
 };
-use itertools::Itertools;
 use std::{
     env::args,
     fmt::Display,
@@ -45,7 +45,7 @@ fn main() {
 
 fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     type MultilinearKzg = multilinear_kzg::MultilinearKzg<Bn256>;
-    type HyperPlonk = snark::hyperplonk::HyperPlonk<MultilinearKzg>;
+    type HyperPlonk = backend::hyperplonk::HyperPlonk<MultilinearKzg>;
 
     let circuit = C::rand(k, std_rng());
     let instances = circuit.instances();

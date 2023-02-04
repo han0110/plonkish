@@ -269,28 +269,37 @@ impl Log {
     }
 
     fn group(&mut self, key_fn: &impl Fn(&Log) -> (bool, &str)) {
-        let mut durations =
+        let mut grouped =
             self.components
                 .iter_mut()
-                .fold(HashMap::<_, _>::new(), |mut durations, log| {
-                    durations
-                        .entry(key_fn(log).1.to_string())
-                        .and_modify(|duration| *duration += log.duration)
-                        .or_insert(log.duration);
-                    durations
+                .fold(HashMap::<_, Log>::new(), |mut grouped, log| {
+                    let (is_unit, key) = key_fn(log);
+                    grouped
+                        .entry(key.to_string())
+                        .and_modify(|group| {
+                            group.duration += log.duration;
+                            for (lhs, rhs) in group.components.iter_mut().zip(log.components.iter())
+                            {
+                                assert!(lhs.components.is_empty() && rhs.components.is_empty());
+                                lhs.duration += rhs.duration;
+                            }
+                        })
+                        .or_insert_with(|| {
+                            let mut group = log.clone();
+                            if is_unit {
+                                group.components.truncate(0);
+                            }
+                            group
+                        });
+                    grouped
                 });
         self.name = key_fn(self).1.to_string();
         self.components.retain_mut(|log| {
-            let (is_unit, key) = key_fn(log);
-            durations
-                .remove(key)
-                .map(|duration| {
-                    log.duration = duration;
-                    if is_unit {
-                        log.components.truncate(0);
-                    } else {
-                        log.group(key_fn)
-                    }
+            grouped
+                .remove(key_fn(log).1)
+                .map(|mut group| {
+                    group.group(key_fn);
+                    *log = group;
                 })
                 .is_some()
         });
@@ -318,15 +327,19 @@ impl Log {
                 .unwrap_or_default()
         )?;
 
-        let rest = (!self.components.is_empty()).then(|| {
-            let duration = self.duration - self.components.iter().map(|log| log.duration).sum();
-            Log {
-                name: "rest".to_string(),
-                depth: self.depth + 1,
-                duration,
-                ..Default::default()
-            }
-        });
+        let rest_duration = self
+            .duration
+            .checked_sub(self.components.iter().map(|log| log.duration).sum())
+            .unwrap_or_default();
+        let rest =
+            (!self.components.is_empty() && rest_duration >= Duration::from_millis(1)).then(|| {
+                Log {
+                    name: "rest".to_string(),
+                    depth: self.depth + 1,
+                    duration: rest_duration,
+                    ..Default::default()
+                }
+            });
         for log in self.components.iter().chain(&rest) {
             let percentage = Some(Percentage::new(log.duration, self.duration));
             log.fmt(f, max_depth, percentage)?;

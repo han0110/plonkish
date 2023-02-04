@@ -1,9 +1,12 @@
 use crate::{
-    poly::multilinear::MultilinearPolynomial,
-    snark::hyperplonk::{
-        preprocess::{compose, permutation_polys, PlonkishCircuitInfo},
-        prover::{instances_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
+    backend::{
+        hyperplonk::{
+            preprocess::{compose, permutation_polys},
+            prover::{instances_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
+        },
+        PlonkishCircuitInfo,
     },
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::PrimeField,
         expression::{Expression, Query, Rotation},

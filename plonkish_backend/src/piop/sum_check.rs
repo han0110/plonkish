@@ -300,8 +300,8 @@ pub(crate) mod test {
                 use halo2_curves::bn256::Fr;
                 use rand::rngs::OsRng;
                 use $crate::{
+                    backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
                     piop::sum_check::test::run_zero_check,
-                    snark::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
                     util::test::rand_vec,
                 };
 
@@ -321,10 +321,10 @@ pub(crate) mod test {
                 use halo2_curves::bn256::Fr;
                 use rand::rngs::OsRng;
                 use $crate::{
-                    piop::sum_check::test::run_zero_check,
-                    snark::hyperplonk::util::{
+                    backend::hyperplonk::util::{
                         plonk_with_lookup_expression, rand_plonk_with_lookup_assignment,
                     },
+                    piop::sum_check::test::run_zero_check,
                     util::test::rand_vec,
                 };
 

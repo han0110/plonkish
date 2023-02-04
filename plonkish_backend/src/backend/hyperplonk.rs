@@ -1,7 +1,5 @@
 use crate::{
-    pcs::PolynomialCommitmentScheme,
-    poly::multilinear::MultilinearPolynomial,
-    snark::{
+    backend::{
         hyperplonk::{
             preprocess::{compose, permutation_polys},
             prover::{
@@ -10,8 +8,10 @@ use crate::{
             },
             verifier::verify_zero_check,
         },
-        UniversalSnark,
+        PlonkishBackend, PlonkishCircuitInfo,
     },
+    pcs::PolynomialCommitmentScheme,
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, PrimeField},
         end_timer,
@@ -32,8 +32,6 @@ mod verifier;
 
 #[cfg(any(test, feature = "benchmark"))]
 pub mod util;
-
-pub use preprocess::PlonkishCircuitInfo;
 
 #[derive(Clone, Debug)]
 pub struct HyperPlonk<Pcs>(PhantomData<Pcs>);
@@ -74,7 +72,7 @@ where
     permutation_comms: Vec<(usize, Pcs::Commitment)>,
 }
 
-impl<F, C, Pcs> UniversalSnark<F, Pcs> for HyperPlonk<Pcs>
+impl<F, C, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
 where
     F: PrimeField + Ord + Hash,
     C: Clone + Debug,
@@ -96,7 +94,7 @@ where
 
     fn preprocess(
         param: &Pcs::Param,
-        circuit_info: Self::CircuitInfo,
+        circuit_info: PlonkishCircuitInfo<F>,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
         assert!(circuit_info.is_well_formed());
 
@@ -353,15 +351,14 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        pcs::multilinear_kzg,
-        snark::{
+        backend::{
             hyperplonk::{
                 self,
-                preprocess::PlonkishCircuitInfo,
                 util::{rand_plonk_circuit, rand_plonk_with_lookup_circuit},
             },
-            UniversalSnark,
+            PlonkishBackend, PlonkishCircuitInfo,
         },
+        pcs::multilinear_kzg,
         util::{end_timer, start_timer, transcript::Keccak256Transcript, Itertools},
         Error,
     };

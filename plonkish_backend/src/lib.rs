@@ -1,10 +1,12 @@
 #![allow(clippy::op_ref)]
 
+pub mod backend;
 pub mod pcs;
 pub mod piop;
 pub mod poly;
-pub mod snark;
 pub mod util;
+
+pub use halo2_curves;
 
 #[derive(Clone, Debug)]
 pub enum Error {

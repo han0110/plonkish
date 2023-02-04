@@ -1,0 +1,40 @@
+[package]
+name = "hyperplonk"
+version = "0.1.1"
+edition = "2021"
+
+[dependencies]
+halo2_curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", tag = "0.3.0", package = "halo2curves" }
+itertools = "0.10.5"
+num-bigint = "0.4.3"
+num-integer = "0.1.45"
+rand = "0.8"
+sha3 = "0.10.6"
+
+# timer
+ark-std = { version = "^0.3.0", default-features = false, optional = true }
+
+# parallel
+rayon = { version = "1.5.3", optional = true }
+
+# frontend-halo2
+halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark", optional = true }
+
+[dev-dependencies]
+criterion = "0.4.0"
+pprof = { version = "0.11.0", features = ["criterion", "flamegraph"] }
+
+[features]
+default = ["parallel"]
+
+timer = ["dep:ark-std", "ark-std?/print-trace", "halo2_proofs?/print-trace"]
+parallel = ["dep:rayon"]
+frontend-halo2 = ["dep:halo2_proofs"]
+
+benchmark = ["parallel"]
+sanity-check = []
+
+[[bench]]
+name = "zero_check"
+harness = false
+required-features = ["benchmark"]

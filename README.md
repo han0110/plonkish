@@ -1,4 +1,6 @@
-# Plonkish Backend
+# Plonkish
+
+Plonkish toolbox.
 
 ## Benchmark
 
@@ -26,9 +28,11 @@ cargo bench --bench proof_system -- \
 
 Then the proving time (in millisecond) will be written to `target/bench/{hyperplonk,halo2,espresso_hyperplonk}` respectively.
 
-To further see cost breakdown of proving time, run the same bench commanad with an extra cargo flag `--features timer`, then pipe the output to plotter `cargo run plotter -- -`, and the result will be rendered in `target/bench`. For example:
+To further see cost breakdown of proving time without witness collecting time, run the same bench commanad with an extra cargo flag `--features timer`, then pipe the output to plotter `cargo run plotter -- -`, and the result will be rendered in `target/bench`. For example:
 
 ```sh
 cargo bench --bench proof_system --features timer -- ... \
   | cargo run plotter -- -
 ```
+
+Note that `plotter` requires `gnuplot` installed already.

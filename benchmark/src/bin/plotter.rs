@@ -137,50 +137,163 @@ impl System {
     fn cost_breakdown(&self, log: &Log) -> Vec<(&'static str, Duration)> {
         let costs = match self {
             System::HyperPlonk => vec![
-                ("all", vec![vec![1], vec![5], vec![6], vec![7]], None),
-                ("multiexp", vec![vec![1]], None),
-                ("sum check", vec![vec![5]], None),
-                ("pcs multiexp", vec![vec![7, 4]], None),
-                ("pcs sum check", vec![vec![7, 1]], None),
+                (
+                    "all",
+                    vec![
+                        vec!["variable_base_msm"],
+                        vec!["sum_check_prove"],
+                        vec!["evals"],
+                        vec!["pcs_batch_open"],
+                    ],
+                    None,
+                ),
+                ("multiexp", vec![vec!["variable_base_msm"]], None),
+                ("sum check", vec![vec!["sum_check_prove"]], None),
+                (
+                    "pcs multiexp",
+                    vec![vec!["pcs_batch_open", "variable_base_msm"]],
+                    None,
+                ),
+                (
+                    "pcs sum check",
+                    vec![vec!["pcs_batch_open", "sum_check_prove"]],
+                    None,
+                ),
                 (
                     "pcs rest",
-                    vec![vec![6], vec![7]],
-                    Some(vec![vec![7, 1], vec![7, 4]]),
+                    vec![vec!["evals"], vec!["pcs_batch_open"]],
+                    Some(vec![
+                        vec!["pcs_batch_open", "variable_base_msm"],
+                        vec!["pcs_batch_open", "sum_check_prove"],
+                    ]),
                 ),
             ],
             System::Halo2 => vec![
                 (
                     "all",
-                    vec![vec![0], vec![2], vec![4], vec![5], vec![6], vec![7]],
+                    vec![
+                        vec!["ifft"],
+                        vec!["variable_base_msm"],
+                        vec!["fft"],
+                        vec!["quotient_polys"],
+                        vec!["evals"],
+                        vec!["pcs_batch_open"],
+                    ],
                     None,
                 ),
-                ("fft", vec![vec![0], vec![4]], None),
-                ("multiexp", vec![vec![2]], None),
-                ("pcs multiexp", vec![vec![7, 0]], None),
-                ("pcs rest", vec![vec![6], vec![7]], Some(vec![vec![7, 0]])),
-                ("quotient", vec![vec![5]], None),
+                ("fft", vec![vec!["ifft"], vec!["fft"]], None),
+                ("multiexp", vec![vec!["variable_base_msm"]], None),
+                (
+                    "pcs multiexp",
+                    vec![vec!["pcs_batch_open", "variable_base_msm"]],
+                    None,
+                ),
+                (
+                    "pcs rest",
+                    vec![vec!["evals"], vec!["pcs_batch_open"]],
+                    Some(vec![vec!["pcs_batch_open", "variable_base_msm"]]),
+                ),
+                ("quotient", vec![vec!["quotient_polys"]], None),
             ],
             System::EspressoHyperPlonk => vec![
                 (
                     "all",
                     vec![
-                        vec![0, 0],
-                        vec![0, 2, 0, 1, 2],
-                        vec![0, 1],
-                        vec![0, 2, 0, 1, 3],
-                        vec![0, 3],
-                        vec![0, 4],
+                        vec!["hyperplonk proving", "multiexp"],
+                        vec![
+                            "hyperplonk proving",
+                            "Permutation check on w_i(x)",
+                            "Permutation check prove",
+                            "prod_check prove",
+                            "multiexp",
+                        ],
+                        vec!["hyperplonk proving", "ZeroCheck on f"],
+                        vec![
+                            "hyperplonk proving",
+                            "Permutation check on w_i(x)",
+                            "Permutation check prove",
+                            "prod_check prove",
+                            "zerocheck in product check",
+                        ],
+                        vec!["hyperplonk proving", "opening and evaluations"],
+                        vec!["hyperplonk proving", "deferred batch openings prod(x)"],
                     ],
                     None,
                 ),
-                ("multiexp", vec![vec![0, 0], vec![0, 2, 0, 1, 2]], None),
-                ("sum check", vec![vec![0, 1], vec![0, 2, 0, 1, 3]], None),
-                ("pcs multiexp", vec![vec![0, 4, 0, 4, 0, 0, 1]], None),
-                ("pcs sum check", vec![vec![0, 4, 0, 2]], None),
+                (
+                    "multiexp",
+                    vec![
+                        vec!["hyperplonk proving", "multiexp"],
+                        vec![
+                            "hyperplonk proving",
+                            "Permutation check on w_i(x)",
+                            "Permutation check prove",
+                            "prod_check prove",
+                            "multiexp",
+                        ],
+                    ],
+                    None,
+                ),
+                (
+                    "sum check",
+                    vec![
+                        vec!["hyperplonk proving", "ZeroCheck on f"],
+                        vec![
+                            "hyperplonk proving",
+                            "Permutation check on w_i(x)",
+                            "Permutation check prove",
+                            "prod_check prove",
+                            "zerocheck in product check",
+                        ],
+                    ],
+                    None,
+                ),
+                (
+                    "pcs multiexp",
+                    vec![vec![
+                        "hyperplonk proving",
+                        "deferred batch openings prod(x)",
+                        "multi open ",
+                        "pcs open",
+                        "open mle with ",
+                        "rounds",
+                        "multiexp",
+                    ]],
+                    None,
+                ),
+                (
+                    "pcs sum check",
+                    vec![vec![
+                        "hyperplonk proving",
+                        "deferred batch openings prod(x)",
+                        "multi open ",
+                        "sum check prove",
+                    ]],
+                    None,
+                ),
                 (
                     "pcs rest",
-                    vec![vec![0, 3], vec![0, 4]],
-                    Some(vec![vec![0, 4, 0, 4, 0, 0, 1], vec![0, 4, 0, 2]]),
+                    vec![
+                        vec!["hyperplonk proving", "opening and evaluations"],
+                        vec!["hyperplonk proving", "deferred batch openings prod(x)"],
+                    ],
+                    Some(vec![
+                        vec![
+                            "hyperplonk proving",
+                            "deferred batch openings prod(x)",
+                            "multi open ",
+                            "pcs open",
+                            "open mle with ",
+                            "rounds",
+                            "multiexp",
+                        ],
+                        vec![
+                            "hyperplonk proving",
+                            "deferred batch openings prod(x)",
+                            "multi open ",
+                            "sum check prove",
+                        ],
+                    ]),
                 ),
             ],
         }
@@ -348,10 +461,14 @@ impl Log {
         Ok(())
     }
 
-    fn duration(&self, indices: &[usize]) -> Duration {
+    fn duration(&self, names: &[&'static str]) -> Duration {
         let mut log = self;
-        for idx in indices.iter() {
-            log = &log.components[*idx];
+        for name in names.iter() {
+            log = log
+                .components
+                .iter()
+                .find(|log| log.name.starts_with(name))
+                .unwrap();
         }
         log.duration
     }
@@ -526,7 +643,8 @@ fn plot_comparison(cost_breakdowns_by_system: &[BTreeMap<usize, Vec<(&str, Durat
         .set_x_grid(true)
         .set_y_grid(true)
         .set_x_ticks(Some((AutoOption::Fix(1.0), 0)), &[], &[])
-        .set_x_range(AutoOption::Fix(10.0), AutoOption::Fix(25.0))
+        .set_y_ticks(Some((AutoOption::Fix(0.5), 0)), &[], &[])
+        .set_x_range(AutoOption::Fix(10.0), AutoOption::Fix(24.0))
         .set_y_range(AutoOption::Fix(0.0), AutoOption::Fix(5.0));
     for (name, values) in lines {
         axes.lines_points(x.clone(), values, &[PlotOption::Caption(&name)]);

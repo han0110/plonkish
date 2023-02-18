@@ -2,7 +2,7 @@ use crate::{
     backend::hyperplonk::verifier::{pcs_query, point_offset, points},
     pcs::Evaluation,
     piop::sum_check::{
-        vanilla::{EvaluationsProver, VanillaSumCheck},
+        classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
     poly::multilinear::MultilinearPolynomial,
@@ -434,7 +434,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
-    let (x, evals) = VanillaSumCheck::<EvaluationsProver<_, true>>::prove(
+    let (x, evals) = ClassicSumCheck::<EvaluationsProver<_, true>>::prove(
         &(),
         num_vars,
         virtual_poly,

@@ -1,5 +1,5 @@
 use crate::{
-    piop::sum_check::vanilla::{ProverState, VanillaSumCheckProver, VanillaSumCheckRoundMessage},
+    piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
     poly::multilinear::zip_self,
     util::{
         arithmetic::{div_ceil, horner, PrimeField},
@@ -16,7 +16,7 @@ use std::{fmt::Debug, iter, ops::AddAssign};
 #[derive(Debug)]
 pub struct Coefficients<F>(Vec<F>);
 
-impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Coefficients<F> {
+impl<F: PrimeField> ClassicSumCheckRoundMessage<F> for Coefficients<F> {
     type Auxiliary = ();
 
     fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
@@ -68,7 +68,7 @@ impl_index!(Coefficients, 0);
 #[derive(Clone, Debug)]
 pub struct CoefficientsProver<F: PrimeField>(F, Vec<(F, Vec<Expression<F>>)>);
 
-impl<F> VanillaSumCheckProver<F> for CoefficientsProver<F>
+impl<F> ClassicSumCheckProver<F> for CoefficientsProver<F>
 where
     F: PrimeField,
 {

@@ -1,9 +1,8 @@
 use crate::{
     pcs::Evaluation,
     piop::sum_check::{
-        evaluate, lagrange_eval,
-        vanilla::{EvaluationsProver, VanillaSumCheck},
-        SumCheck,
+        classic::{ClassicSumCheck, EvaluationsProver},
+        evaluate, lagrange_eval, SumCheck,
     },
     poly::multilinear::{rotation_eval, rotation_eval_points},
     util::{
@@ -25,7 +24,7 @@ pub(super) fn verify_zero_check<F: PrimeField>(
     y: &[F],
     transcript: &mut impl FieldTranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
-    let (x_eval, x) = VanillaSumCheck::<EvaluationsProver<_, true>>::verify(
+    let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_, true>>::verify(
         &(),
         num_vars,
         expression.degree(),

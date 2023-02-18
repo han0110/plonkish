@@ -3,7 +3,7 @@ use halo2_curves::bn256::Fr;
 use plonkish_backend::{
     backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
     piop::sum_check::{
-        vanilla::{EvaluationsProver, VanillaSumCheck},
+        classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
     util::{
@@ -13,7 +13,7 @@ use plonkish_backend::{
 };
 use pprof::criterion::{Output, PProfProfiler};
 
-type ZeroCheck = VanillaSumCheck<EvaluationsProver<Fr, true>>;
+type ZeroCheck = ClassicSumCheck<EvaluationsProver<Fr, true>>;
 
 fn run(num_vars: usize, virtual_poly: VirtualPolynomial<Fr>) {
     let mut transcript = Keccak256Transcript::new(Vec::new());

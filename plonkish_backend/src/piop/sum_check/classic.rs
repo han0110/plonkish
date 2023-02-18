@@ -165,15 +165,15 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
     }
 }
 
-pub trait VanillaSumCheckProver<F: Field>: Clone + Debug {
-    type RoundMessage: VanillaSumCheckRoundMessage<F>;
+pub trait ClassicSumCheckProver<F: Field>: Clone + Debug {
+    type RoundMessage: ClassicSumCheckRoundMessage<F>;
 
     fn new(state: &ProverState<F>) -> Self;
 
     fn prove_round(&self, state: &ProverState<F>) -> Self::RoundMessage;
 }
 
-pub trait VanillaSumCheckRoundMessage<F: Field>: Sized + Debug {
+pub trait ClassicSumCheckRoundMessage<F: Field>: Sized + Debug {
     type Auxiliary: Default;
 
     fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error>;
@@ -211,12 +211,12 @@ pub trait VanillaSumCheckRoundMessage<F: Field>: Sized + Debug {
 }
 
 #[derive(Clone, Debug)]
-pub struct VanillaSumCheck<P>(PhantomData<P>);
+pub struct ClassicSumCheck<P>(PhantomData<P>);
 
-impl<F, P> SumCheck<F> for VanillaSumCheck<P>
+impl<F, P> SumCheck<F> for ClassicSumCheck<P>
 where
     F: PrimeField,
-    P: VanillaSumCheckProver<F>,
+    P: ClassicSumCheckProver<F>,
 {
     type ProverParam = ();
     type VerifierParam = ();

@@ -1,5 +1,5 @@
 use crate::{
-    piop::sum_check::vanilla::{ProverState, VanillaSumCheckProver, VanillaSumCheckRoundMessage},
+    piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
     util::{
         arithmetic::{
             barycentric_interpolate, barycentric_weights, div_ceil, steps, BooleanHypercube,
@@ -33,7 +33,7 @@ impl<F: PrimeField> Evaluations<F> {
     }
 }
 
-impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Evaluations<F> {
+impl<F: PrimeField> ClassicSumCheckRoundMessage<F> for Evaluations<F> {
     type Auxiliary = (Vec<F>, Vec<F>);
 
     fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
@@ -77,7 +77,7 @@ pub struct EvaluationsProver<F: PrimeField, const IS_ZERO_CHECK: bool>(
     Vec<GraphEvaluator<F, IS_ZERO_CHECK>>,
 );
 
-impl<F, const IS_ZERO_CHECK: bool> VanillaSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
+impl<F, const IS_ZERO_CHECK: bool> ClassicSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
 where
     F: PrimeField,
 {
@@ -715,9 +715,9 @@ use zip_for_each;
 #[cfg(test)]
 mod test {
     use crate::piop::sum_check::{
+        classic::{ClassicSumCheck, EvaluationsProver},
         test::tests,
-        vanilla::{EvaluationsProver, VanillaSumCheck},
     };
 
-    tests!(VanillaSumCheck<EvaluationsProver<Fr, true>>);
+    tests!(ClassicSumCheck<EvaluationsProver<Fr, true>>);
 }

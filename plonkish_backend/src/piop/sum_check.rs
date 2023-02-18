@@ -10,7 +10,7 @@ use crate::{
 };
 use std::{collections::HashMap, fmt::Debug};
 
-pub mod vanilla;
+pub mod classic;
 
 #[derive(Clone, Debug)]
 pub struct VirtualPolynomial<'a, F> {

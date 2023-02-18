@@ -1,9 +1,8 @@
 use crate::{
     pcs::{Evaluation, PolynomialCommitmentScheme},
     piop::sum_check::{
-        eq_xy_eval,
-        vanilla::{CoefficientsProver, VanillaSumCheck},
-        SumCheck, VirtualPolynomial,
+        classic::{ClassicSumCheck, CoefficientsProver},
+        eq_xy_eval, SumCheck, VirtualPolynomial,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
@@ -318,7 +317,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             })
             .sum();
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
-        let (challenges, _) = VanillaSumCheck::<CoefficientsProver<_>>::prove(
+        let (challenges, _) = ClassicSumCheck::<CoefficientsProver<_>>::prove(
             &(),
             pp.num_vars(),
             VirtualPolynomial::new(
@@ -400,7 +399,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
 
         let desc_powers_of_t = descending_powers(t, evals.len());
         let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
-        let (g_prime_eval, challenges) = VanillaSumCheck::<CoefficientsProver<_>>::verify(
+        let (g_prime_eval, challenges) = ClassicSumCheck::<CoefficientsProver<_>>::verify(
             &(),
             vp.num_vars(),
             2,

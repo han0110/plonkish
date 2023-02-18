@@ -7,8 +7,8 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            descending_powers, div_ceil, fixed_base_msm, inner_product, variable_base_msm,
-            window_size, window_table, Curve, Field, MultiMillerLoop, PrimeCurveAffine,
+            div_ceil, fixed_base_msm, inner_product, variable_base_msm, window_size, window_table,
+            Curve, Field, MultiMillerLoop, PrimeCurveAffine,
         },
         end_timer,
         expression::{Expression, Query, Rotation},
@@ -285,22 +285,23 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let polys = polys.into_iter().collect_vec();
         validate_input("batch open", pp.num_vars(), polys.iter().copied(), points)?;
 
-        let t = transcript.squeeze_challenge();
+        let ell = evals.len().next_power_of_two().ilog2() as usize;
+        let t = transcript.squeeze_n_challenges(ell);
 
         let timer = start_timer(|| "merged_polys");
-        let desc_powers_of_t = descending_powers(t, evals.len());
-        let merged_polys = evals.iter().zip(desc_powers_of_t.iter()).fold(
+        let eq_xt = MultilinearPolynomial::eq_xy(&t);
+        let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
             vec![(M::Scalar::one(), Cow::<MultilinearPolynomial<_>>::default()); points.len()],
-            |mut merged_polys, (eval, power_of_t)| {
+            |mut merged_polys, (eval, eq_xt_i)| {
                 if merged_polys[eval.point()].1.is_zero() {
-                    merged_polys[eval.point()] = (*power_of_t, Cow::Borrowed(polys[eval.poly()]));
+                    merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
                 } else {
                     let coeff = merged_polys[eval.point()].0;
                     if coeff != M::Scalar::one() {
                         merged_polys[eval.point()].0 = M::Scalar::one();
                         *merged_polys[eval.point()].1.to_mut() *= &coeff;
                     }
-                    *merged_polys[eval.point()].1.to_mut() += (power_of_t, polys[eval.poly()]);
+                    *merged_polys[eval.point()].1.to_mut() += (eq_xt_i, polys[eval.poly()]);
                 }
                 merged_polys
             },
@@ -316,7 +317,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                     * scalar
             })
             .sum();
-        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
+        let tilde_gs_sum =
+            inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
         let (challenges, _) = ClassicSumCheck::<CoefficientsProver<_>>::prove(
             &(),
             pp.num_vars(),
@@ -395,10 +397,12 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     ) -> Result<(), Error> {
         validate_input("batch verify", vp.num_vars(), [], points)?;
 
-        let t = transcript.squeeze_challenge();
+        let ell = evals.len().next_power_of_two().ilog2() as usize;
+        let t = transcript.squeeze_n_challenges(ell);
 
-        let desc_powers_of_t = descending_powers(t, evals.len());
-        let tilde_gs_sum = inner_product(evals.iter().map(Evaluation::value), &desc_powers_of_t);
+        let eq_xt = MultilinearPolynomial::eq_xy(&t);
+        let tilde_gs_sum =
+            inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
         let (g_prime_eval, challenges) = ClassicSumCheck::<CoefficientsProver<_>>::verify(
             &(),
             vp.num_vars(),
@@ -413,8 +417,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let g_prime = variable_base_msm(
             &evals
                 .iter()
-                .zip(desc_powers_of_t)
-                .map(|(eval, power_of_t)| power_of_t * &eq_xy_evals[eval.point()])
+                .zip(eq_xt.evals())
+                .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
                 .collect_vec(),
             &evals.iter().map(|eval| comms[eval.poly()]).collect_vec(),
         )

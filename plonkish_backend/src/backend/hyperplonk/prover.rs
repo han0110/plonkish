@@ -7,9 +7,7 @@ use crate::{
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{
-            descending_powers, div_ceil, steps_by, BatchInvert, BooleanHypercube, PrimeField,
-        },
+        arithmetic::{div_ceil, powers, steps_by, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,
         expression::{CommonPolynomial, Expression, Rotation},
         parallel::{par_map_collect, par_sort_unstable, parallelize},
@@ -114,10 +112,11 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
 ) -> Result<([MultilinearPolynomial<F>; 2], [MultilinearPolynomial<F>; 2]), Error> {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
-    let desc_powers_of_theta = descending_powers(*theta, lookup.len());
+    let powers_of_theta = powers(*theta).take(lookup.len()).collect_vec();
     let compress = |expressions: &[&Expression<F>]| {
-        desc_powers_of_theta
+        powers_of_theta
             .iter()
+            .rev()
             .copied()
             .zip(expressions.iter().map(|expression| {
                 let mut compressed = vec![F::zero(); 1 << num_vars];

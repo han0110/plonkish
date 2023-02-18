@@ -17,8 +17,8 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type VerifierParam: Debug;
     type Polynomial: Debug;
     type Point: Debug;
-    type Commitment: Debug;
-    type BatchCommitment: Debug;
+    type Commitment: Clone + Debug + Default;
+    type CommitmentWithAux: Debug + AsRef<Self::Commitment>;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error>;
 
@@ -27,12 +27,15 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error>;
 
-    fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error>;
+    fn commit(
+        pp: &Self::ProverParam,
+        poly: &Self::Polynomial,
+    ) -> Result<Self::CommitmentWithAux, Error>;
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-    ) -> Result<Self::BatchCommitment, Error>
+    ) -> Result<Vec<Self::CommitmentWithAux>, Error>
     where
         Self::Polynomial: 'a;
 
@@ -41,7 +44,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         poly: &Self::Polynomial,
         point: &Self::Point,
         eval: &F,
-        transcript: &mut impl TranscriptWrite<F, Commitment = Self::Commitment>,
+        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error>;
 
     fn batch_open<'a>(
@@ -49,7 +52,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         points: &[Self::Point],
         evals: &[Evaluation<F>],
-        transcript: &mut impl TranscriptWrite<F, Commitment = Self::Commitment>,
+        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error>
     where
         Self::Polynomial: 'a;
@@ -59,15 +62,15 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         comm: &Self::Commitment,
         point: &Self::Point,
         eval: &F,
-        transcript: &mut impl TranscriptRead<F, Commitment = Self::Commitment>,
+        transcript: &mut impl TranscriptRead<Self::Commitment, F>,
     ) -> Result<(), Error>;
 
     fn batch_verify(
         vp: &Self::VerifierParam,
-        batch_comm: &Self::BatchCommitment,
+        comms: &[Self::Commitment],
         points: &[Self::Point],
         evals: &[Evaluation<F>],
-        transcript: &mut impl TranscriptRead<F, Commitment = Self::Commitment>,
+        transcript: &mut impl TranscriptRead<Self::Commitment, F>,
     ) -> Result<(), Error>;
 }
 

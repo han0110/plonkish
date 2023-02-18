@@ -6,7 +6,7 @@ use crate::{
         expression::{CommonPolynomial, Expression, Rotation},
         impl_index,
         parallel::{num_threads, parallelize_iter},
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         Itertools,
     },
     Error,
@@ -19,15 +19,15 @@ pub struct Coefficients<F>(Vec<F>);
 impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Coefficients<F> {
     type Auxiliary = ();
 
-    fn write(&self, transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error> {
-        for eval in self.0.iter().copied() {
-            transcript.write_scalar(eval)?;
+    fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
+        for eval in self.0.iter() {
+            transcript.write_field_element(eval)?;
         }
         Ok(())
     }
 
-    fn read(degree: usize, transcript: &mut impl TranscriptRead<F>) -> Result<Self, Error> {
-        transcript.read_n_scalars(degree + 1).map(Self)
+    fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error> {
+        transcript.read_n_field_elements(degree + 1).map(Self)
     }
 
     fn sum(&self) -> F {

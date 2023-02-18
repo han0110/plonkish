@@ -6,7 +6,7 @@ use crate::{
         expression::{Expression, Rotation},
         parallel::par_map_collect,
         start_timer,
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         Itertools,
     },
     Error,
@@ -176,9 +176,9 @@ pub trait VanillaSumCheckProver<F: Field>: Clone + Debug {
 pub trait VanillaSumCheckRoundMessage<F: Field>: Sized + Debug {
     type Auxiliary: Default;
 
-    fn write(&self, transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error>;
+    fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error>;
 
-    fn read(degree: usize, transcript: &mut impl TranscriptRead<F>) -> Result<Self, Error>;
+    fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error>;
 
     fn sum(&self) -> F;
 
@@ -226,7 +226,7 @@ where
         num_vars: usize,
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
-        transcript: &mut impl TranscriptWrite<F>,
+        transcript: &mut impl FieldTranscriptWrite<F>,
     ) -> Result<(Vec<F>, Vec<F>), Error> {
         let _timer = start_timer(|| {
             let degree = virtual_poly.expression.degree();
@@ -256,7 +256,7 @@ where
         num_vars: usize,
         degree: usize,
         sum: F,
-        transcript: &mut impl TranscriptRead<F>,
+        transcript: &mut impl FieldTranscriptRead<F>,
     ) -> Result<(F, Vec<F>), Error> {
         let (msgs, challenges) = {
             let mut msgs = Vec::with_capacity(num_vars);

@@ -14,7 +14,7 @@ use crate::{
         expression::{CommonPolynomial, Expression, Rotation},
         parallel::{par_map_collect, par_sort_unstable, parallelize},
         start_timer,
-        transcript::TranscriptWrite,
+        transcript::FieldTranscriptWrite,
         Itertools,
     },
     Error,
@@ -429,7 +429,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     polys: &[&MultilinearPolynomial<F>],
     challenges: Vec<F>,
     y: Vec<F>,
-    transcript: &mut impl TranscriptWrite<F>,
+    transcript: &mut impl FieldTranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let num_vars = polys[0].num_vars();
     let ys = [y];
@@ -461,7 +461,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     end_timer(timer);
 
     for eval in evals.iter() {
-        transcript.write_scalar(*eval.value())?;
+        transcript.write_field_element(eval.value())?;
     }
 
     Ok((points(&pcs_query, &x), evals))

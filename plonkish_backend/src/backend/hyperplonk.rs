@@ -72,17 +72,10 @@ where
     permutation_comms: Vec<(usize, Pcs::Commitment)>,
 }
 
-impl<F, C, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
+impl<F, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
 where
     F: PrimeField + Ord + Hash,
-    C: Clone + Debug,
-    Pcs: PolynomialCommitmentScheme<
-        F,
-        Polynomial = MultilinearPolynomial<F>,
-        Point = Vec<F>,
-        Commitment = C,
-        BatchCommitment = Vec<C>,
-    >,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>, Point = Vec<F>>,
 {
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
     type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
@@ -105,7 +98,7 @@ where
         let preprocess_comms = circuit_info
             .preprocess_polys
             .iter()
-            .map(|poly| Pcs::commit(&pcs_pp, poly))
+            .map(|poly| Pcs::commit(&pcs_pp, poly).map(|comm| comm.as_ref().clone()))
             .try_collect()?;
 
         // Compute permutation polys and comms
@@ -116,7 +109,7 @@ where
         );
         let permutation_comms = permutation_polys
             .iter()
-            .map(|(idx, poly)| Ok((*idx, Pcs::commit(&pcs_pp, poly)?)))
+            .map(|(idx, poly)| Ok((*idx, Pcs::commit(&pcs_pp, poly)?.as_ref().clone())))
             .try_collect::<_, Vec<_>, _>()?;
 
         // Compose `VirtualPolynomialInfo`
@@ -152,13 +145,13 @@ where
         pp: &Self::ProverParam,
         instances: &[&[F]],
         witness_collector: &impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
-        transcript: &mut impl TranscriptWrite<F, Commitment = Pcs::Commitment>,
+        transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
         for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
             assert_eq!(instances.len(), *num_instances);
             for instance in instances.iter() {
-                transcript.common_scalar(instance)?;
+                transcript.common_field_element(instance)?;
             }
         }
         let instances_polys = instances_polys(pp.num_vars, instances.iter().cloned());
@@ -183,7 +176,7 @@ where
                 end_timer(timer);
 
                 for comm in Pcs::batch_commit(&pp.pcs, &witness_polys)? {
-                    transcript.write_commitment(comm)?;
+                    transcript.write_commitment(comm.as_ref())?;
                 }
                 witness_polys
             });
@@ -206,7 +199,7 @@ where
 
         if !lookup_permuted_polys.is_empty() {
             for comm in Pcs::batch_commit(&pp.pcs, lookup_permuted_polys.iter().flatten())? {
-                transcript.write_commitment(comm)?;
+                transcript.write_commitment(comm.as_ref())?;
             }
         }
 
@@ -233,7 +226,7 @@ where
         if !(lookup_z_polys.is_empty() && permutation_z_polys.is_empty()) {
             for z in Pcs::batch_commit(&pp.pcs, lookup_z_polys.iter().chain(&permutation_z_polys))?
             {
-                transcript.write_commitment(z)?;
+                transcript.write_commitment(z.as_ref())?;
             }
         }
 
@@ -271,13 +264,13 @@ where
     fn verify(
         vp: &Self::VerifierParam,
         instances: &[&[F]],
-        transcript: &mut impl TranscriptRead<F, Commitment = Pcs::Commitment>,
+        transcript: &mut impl TranscriptRead<Pcs::Commitment, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
         for (num_instances, instances) in vp.num_instances.iter().zip_eq(instances) {
             assert_eq!(instances.len(), *num_instances);
             for instance in instances.iter() {
-                transcript.common_scalar(instance)?;
+                transcript.common_field_element(instance)?;
             }
         }
 
@@ -317,7 +310,7 @@ where
         let y = transcript.squeeze_n_challenges(vp.num_vars);
 
         let comms = iter::empty()
-            .chain(iter::repeat(witness_comms[0].clone()).take(vp.num_instances.len()))
+            .chain(iter::repeat_with(Pcs::Commitment::default).take(vp.num_instances.len()))
             .chain(vp.preprocess_comms.iter().cloned())
             .chain(witness_comms)
             .chain(vp.permutation_comms.iter().map(|(_, comm)| comm.clone()))

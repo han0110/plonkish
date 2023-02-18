@@ -8,7 +8,7 @@ use crate::{
         expression::{CommonPolynomial, Expression, Query, Rotation},
         impl_index,
         parallel::{num_threads, parallelize_iter},
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
     },
     Error,
 };
@@ -36,15 +36,15 @@ impl<F: PrimeField> Evaluations<F> {
 impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Evaluations<F> {
     type Auxiliary = (Vec<F>, Vec<F>);
 
-    fn write(&self, transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error> {
-        for eval in self.0.iter().copied() {
-            transcript.write_scalar(eval)?;
+    fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
+        for eval in self.0.iter() {
+            transcript.write_field_element(eval)?;
         }
         Ok(())
     }
 
-    fn read(degree: usize, transcript: &mut impl TranscriptRead<F>) -> Result<Self, Error> {
-        transcript.read_n_scalars(degree + 1).map(Self)
+    fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error> {
+        transcript.read_n_field_elements(degree + 1).map(Self)
     }
 
     fn sum(&self) -> F {

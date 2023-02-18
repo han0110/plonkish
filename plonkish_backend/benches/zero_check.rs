@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use halo2_curves::bn256::{Fr, G1Affine};
+use halo2_curves::bn256::Fr;
 use plonkish_backend::{
     backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
     piop::sum_check::{
@@ -16,7 +16,7 @@ use pprof::criterion::{Output, PProfProfiler};
 type ZeroCheck = VanillaSumCheck<EvaluationsProver<Fr, true>>;
 
 fn run(num_vars: usize, virtual_poly: VirtualPolynomial<Fr>) {
-    let mut transcript = Keccak256Transcript::<_, G1Affine>::new(Vec::new());
+    let mut transcript = Keccak256Transcript::new(Vec::new());
     ZeroCheck::prove(&(), num_vars, virtual_poly, Fr::zero(), &mut transcript).unwrap();
 }
 

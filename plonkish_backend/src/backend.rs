@@ -33,14 +33,14 @@ where
         pp: &Self::ProverParam,
         instances: &[&[F]],
         witness_collector: &impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
-        transcript: &mut impl TranscriptWrite<F, Commitment = Pcs::Commitment>,
+        transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 
     fn verify(
         vp: &Self::VerifierParam,
         instances: &[&[F]],
-        transcript: &mut impl TranscriptRead<F, Commitment = Pcs::Commitment>,
+        transcript: &mut impl TranscriptRead<Pcs::Commitment, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 }

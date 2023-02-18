@@ -1,5 +1,6 @@
 pub mod arithmetic;
 pub mod expression;
+pub mod hash;
 pub mod parallel;
 mod timer;
 pub mod transcript;

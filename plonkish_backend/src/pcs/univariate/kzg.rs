@@ -51,15 +51,6 @@ pub struct UnivariateKzgVerifierParam<M: MultiMillerLoop> {
     pub s_g2: M::G2Affine,
 }
 
-#[derive(Clone, Debug)]
-pub struct UnivariateKzgCommitment<M: MultiMillerLoop>(M::G1Affine);
-
-impl<M: MultiMillerLoop> AsRef<M::G1Affine> for UnivariateKzgCommitment<M> {
-    fn as_ref(&self) -> &M::G1Affine {
-        &self.0
-    }
-}
-
 impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg<M> {
     type Param = UnivariateKzgParam<M>;
     type ProverParam = UnivariateKzgProverParam<M>;
@@ -67,7 +58,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type Polynomial = UnivariatePolynomial<M::Scalar>;
     type Point = M::Scalar;
     type Commitment = M::G1Affine;
-    type CommitmentWithAux = UnivariateKzgCommitment<M>;
+    type CommitmentWithAux = M::G1Affine;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         let s = M::Scalar::random(rng);
@@ -127,6 +118,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn commit(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
+        transcript: &mut impl TranscriptWrite<Self::Commitment, M::Scalar>,
     ) -> Result<Self::CommitmentWithAux, Error> {
         if pp.degree() < poly.degree() {
             return Err(Error::InvalidPcsParam(format!(
@@ -136,23 +128,26 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             )));
         }
 
-        Ok(variable_base_msm(&poly[..], &pp.powers_of_s[..=poly.degree()]).into())
-            .map(UnivariateKzgCommitment)
+        let comm = variable_base_msm(&poly[..], &pp.powers_of_s[..=poly.degree()]).into();
+        transcript.write_commitment(&comm)?;
+        Ok(comm)
     }
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        transcript: &mut impl TranscriptWrite<Self::Commitment, M::Scalar>,
     ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
         polys
             .into_iter()
-            .map(|poly| Self::commit(pp, poly))
+            .map(|poly| Self::commit(pp, poly, transcript))
             .collect()
     }
 
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
+        _: &Self::CommitmentWithAux,
         point: &Self::Point,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
@@ -183,15 +178,18 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
         points: &[Self::Point],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
         let polys = polys.into_iter().collect_vec();
+        let comms = comms.into_iter().collect_vec();
         for eval in evals {
             Self::open(
                 pp,
                 polys[eval.poly()],
+                comms[eval.poly()],
                 &points[eval.point()],
                 eval.value(),
                 transcript,
@@ -222,8 +220,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
-        let quotients = transcript.read_n_commitments(evals.len())?;
-        let seps = transcript.squeeze_n_challenges(evals.len());
+        let quotients = transcript.read_commitments(evals.len())?;
+        let seps = transcript.squeeze_challenges(evals.len());
         let sep_points = seps
             .iter()
             .zip(evals.iter())
@@ -248,11 +246,11 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::{univariate_kzg::UnivariateKzg, Evaluation, PolynomialCommitmentScheme},
+        pcs::{univariate::kzg::UnivariateKzg, Evaluation, PolynomialCommitmentScheme},
         util::{
             transcript::{
-                FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, Keccak256Transcript,
-                TranscriptRead, TranscriptWrite,
+                FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscriptRead,
+                InMemoryTranscriptWrite, Keccak256Transcript, TranscriptRead,
             },
             Itertools,
         },
@@ -275,20 +273,18 @@ mod test {
         };
         // Commit and open
         let proof = {
-            let mut transcript = Keccak256Transcript::new(Vec::new());
+            let mut transcript = Keccak256Transcript::default();
             let poly = Polynomial::rand(pp.degree(), OsRng);
-            transcript
-                .write_commitment(Pcs::commit(&pp, &poly).unwrap().as_ref())
-                .unwrap();
+            let comm = Pcs::commit(&pp, &poly, &mut transcript).unwrap();
             let point = transcript.squeeze_challenge();
             let eval = poly.evaluate(&point);
             transcript.write_field_element(&eval).unwrap();
-            Pcs::open(&pp, &poly, &point, &eval, &mut transcript).unwrap();
-            transcript.finalize()
+            Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
+            transcript.into_proof()
         };
         // Verify
-        let accept = {
-            let mut transcript = Keccak256Transcript::new(proof.as_slice());
+        let result = {
+            let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
             Pcs::verify(
                 &vp,
                 &transcript.read_commitment().unwrap(),
@@ -296,9 +292,8 @@ mod test {
                 &transcript.read_field_element().unwrap(),
                 &mut transcript,
             )
-            .is_ok()
         };
-        assert!(accept);
+        assert_eq!(result, Ok(()));
     }
 
     #[test]
@@ -313,35 +308,33 @@ mod test {
         // Batch commit and open
         let batch_size = 4;
         let proof = {
-            let mut transcript = Keccak256Transcript::new(Vec::new());
+            let mut transcript = Keccak256Transcript::default();
             let polys = iter::repeat_with(|| Polynomial::rand(pp.degree(), OsRng))
                 .take(batch_size)
                 .collect_vec();
-            for comm in Pcs::batch_commit(&pp, &polys).unwrap() {
-                transcript.write_commitment(comm.as_ref()).unwrap();
-            }
-            let points = transcript.squeeze_n_challenges(batch_size);
+            let comms = Pcs::batch_commit(&pp, &polys, &mut transcript).unwrap();
+            let points = transcript.squeeze_challenges(batch_size);
             let evals = polys
                 .iter()
                 .zip(points.iter())
                 .enumerate()
                 .map(|(idx, (poly, point))| Evaluation::new(idx, idx, poly.evaluate(point)))
                 .collect_vec();
-            for eval in evals.iter() {
-                transcript.write_field_element(eval.value()).unwrap();
-            }
-            Pcs::batch_open(&pp, &polys, &points, &evals, &mut transcript).unwrap();
-            transcript.finalize()
+            transcript
+                .write_field_elements(evals.iter().map(Evaluation::value))
+                .unwrap();
+            Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript).unwrap();
+            transcript.into_proof()
         };
         // Batch verify
-        let accept = {
-            let mut transcript = Keccak256Transcript::new(proof.as_slice());
+        let result = {
+            let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
             Pcs::batch_verify(
                 &vp,
-                &transcript.read_n_commitments(batch_size).unwrap(),
-                &transcript.squeeze_n_challenges(batch_size),
+                &transcript.read_commitments(batch_size).unwrap(),
+                &transcript.squeeze_challenges(batch_size),
                 &transcript
-                    .read_n_field_elements(batch_size)
+                    .read_field_elements(batch_size)
                     .unwrap()
                     .into_iter()
                     .enumerate()
@@ -349,8 +342,7 @@ mod test {
                     .collect_vec(),
                 &mut transcript,
             )
-            .is_ok()
         };
-        assert!(accept);
+        assert_eq!(result, Ok(()));
     }
 }

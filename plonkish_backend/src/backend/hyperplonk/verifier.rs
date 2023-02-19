@@ -37,7 +37,7 @@ pub(super) fn verify_zero_check<F: PrimeField>(
         .iter()
         .map(|query| {
             let evals_for_rotation =
-                transcript.read_n_field_elements(1 << query.rotation().distance())?;
+                transcript.read_field_elements(1 << query.rotation().distance())?;
             let eval = rotation_eval(&x, query.rotation(), &evals_for_rotation);
             Ok((evals_for_rotation, (*query, eval)))
         })

@@ -7,9 +7,10 @@ use crate::{
         test::run_hyperplonk,
         util::plonk_circuit_info,
     },
-    util::Itertools,
+    pcs::multilinear::MultilinearKzg,
+    util::{transcript::Keccak256Transcript, Itertools},
 };
-use halo2_curves::bn256::Fr;
+use halo2_curves::bn256::{Bn256, Fr};
 use rand::rngs::OsRng;
 use std::ops::Range;
 
@@ -39,7 +40,7 @@ fn e2e_plonk() {
         .iter()
         .map(|instances| instances.iter().map(Vec::as_slice).collect_vec())
         .collect_vec();
-    run_hyperplonk(RANGE, |num_vars| {
+    run_hyperplonk::<_, MultilinearKzg<Bn256>, Keccak256Transcript<_>, _>(RANGE, |num_vars| {
         let idx = num_vars - RANGE.start;
         (
             circuit_info(num_vars, &circuits[idx], vec![instances[idx][0].len()]).unwrap(),

@@ -37,14 +37,11 @@ impl<F: PrimeField> ClassicSumCheckRoundMessage<F> for Evaluations<F> {
     type Auxiliary = (Vec<F>, Vec<F>);
 
     fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
-        for eval in self.0.iter() {
-            transcript.write_field_element(eval)?;
-        }
-        Ok(())
+        transcript.write_field_elements(&self.0)
     }
 
     fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error> {
-        transcript.read_n_field_elements(degree + 1).map(Self)
+        transcript.read_field_elements(degree + 1).map(Self)
     }
 
     fn sum(&self) -> F {

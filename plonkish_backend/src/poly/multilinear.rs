@@ -54,6 +54,10 @@ impl<F> MultilinearPolynomial<F> {
         self.evals.as_slice()
     }
 
+    pub fn into_evals(self) -> Vec<F> {
+        self.evals
+    }
+
     pub fn num_vars(&self) -> usize {
         self.num_vars
     }
@@ -65,7 +69,9 @@ impl<F> MultilinearPolynomial<F> {
 
 impl<F: Field> MultilinearPolynomial<F> {
     pub fn eq_xy(y: &[F]) -> Self {
-        assert!(!y.is_empty());
+        if y.is_empty() {
+            return Self::zero();
+        }
 
         let expand_serial = |next_evals: &mut [F], evals: &[F], y_i: &F| {
             for (next_evals, eval) in next_evals.chunks_mut(2).zip(evals.iter()) {

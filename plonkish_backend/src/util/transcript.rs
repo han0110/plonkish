@@ -9,12 +9,15 @@ use halo2_curves::{
     bn256::G1Affine,
     pasta::{EpAffine, EqAffine},
 };
-use std::io;
+use std::{
+    io::{self, Cursor},
+    marker::PhantomData,
+};
 
 pub trait FieldTranscript<F> {
     fn squeeze_challenge(&mut self) -> F;
 
-    fn squeeze_n_challenges(&mut self, n: usize) -> Vec<F> {
+    fn squeeze_challenges(&mut self, n: usize) -> Vec<F> {
         (0..n).map(|_| self.squeeze_challenge()).collect()
     }
 
@@ -24,13 +27,26 @@ pub trait FieldTranscript<F> {
 pub trait FieldTranscriptRead<F>: FieldTranscript<F> {
     fn read_field_element(&mut self) -> Result<F, Error>;
 
-    fn read_n_field_elements(&mut self, n: usize) -> Result<Vec<F>, Error> {
+    fn read_field_elements(&mut self, n: usize) -> Result<Vec<F>, Error> {
         (0..n).map(|_| self.read_field_element()).collect()
     }
 }
 
 pub trait FieldTranscriptWrite<F>: FieldTranscript<F> {
     fn write_field_element(&mut self, fe: &F) -> Result<(), Error>;
+
+    fn write_field_elements<'a>(
+        &mut self,
+        fes: impl IntoIterator<Item = &'a F>,
+    ) -> Result<(), Error>
+    where
+        F: 'a,
+    {
+        for fe in fes.into_iter() {
+            self.write_field_element(fe)?;
+        }
+        Ok(())
+    }
 }
 
 pub trait Transcript<C, F>: FieldTranscript<F> {
@@ -40,35 +56,84 @@ pub trait Transcript<C, F>: FieldTranscript<F> {
 pub trait TranscriptRead<C, F>: Transcript<C, F> + FieldTranscriptRead<F> {
     fn read_commitment(&mut self) -> Result<C, Error>;
 
-    fn read_n_commitments(&mut self, n: usize) -> Result<Vec<C>, Error> {
+    fn read_commitments(&mut self, n: usize) -> Result<Vec<C>, Error> {
         (0..n).map(|_| self.read_commitment()).collect()
     }
 }
 
 pub trait TranscriptWrite<C, F>: Transcript<C, F> + FieldTranscriptWrite<F> {
     fn write_commitment(&mut self, comm: &C) -> Result<(), Error>;
+
+    fn write_commitments<'a>(&mut self, comms: impl IntoIterator<Item = &'a C>) -> Result<(), Error>
+    where
+        C: 'a,
+    {
+        for comm in comms.into_iter() {
+            self.write_commitment(comm)?;
+        }
+        Ok(())
+    }
+}
+
+pub trait InMemoryTranscriptWrite: Default {
+    fn into_proof(self) -> Vec<u8>;
+}
+
+pub trait InMemoryTranscriptRead {
+    fn from_proof(proof: &[u8]) -> Self;
+}
+
+#[derive(Default)]
+pub struct NoOpTranscript<T>(PhantomData<T>);
+
+impl<F> FieldTranscript<F> for NoOpTranscript<F> {
+    fn squeeze_challenge(&mut self) -> F {
+        unimplemented!()
+    }
+
+    fn common_field_element(&mut self, _: &F) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<F> FieldTranscriptWrite<F> for NoOpTranscript<F> {
+    fn write_field_element(&mut self, _: &F) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<C, F> Transcript<C, F> for NoOpTranscript<F> {
+    fn common_commitment(&mut self, _: &C) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<C, F> TranscriptWrite<C, F> for NoOpTranscript<F> {
+    fn write_commitment(&mut self, _: &C) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub type Keccak256Transcript<S> = FiatShamirTranscript<Keccak256, S>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FiatShamirTranscript<H, S> {
     state: H,
     stream: S,
 }
 
-impl<H: Hash, S> FiatShamirTranscript<H, S> {
-    pub fn new(stream: S) -> Self {
-        Self {
-            state: H::default(),
-            stream,
-        }
+impl<H: Hash> InMemoryTranscriptWrite for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+    fn into_proof(self) -> Vec<u8> {
+        self.stream.into_inner()
     }
 }
 
-impl<H: Hash> FiatShamirTranscript<H, Vec<u8>> {
-    pub fn finalize(self) -> Vec<u8> {
-        self.stream
+impl<H: Hash> InMemoryTranscriptRead for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+    fn from_proof(proof: &[u8]) -> Self {
+        Self {
+            state: H::default(),
+            stream: Cursor::new(proof.to_vec()),
+        }
     }
 }
 

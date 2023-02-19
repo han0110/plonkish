@@ -21,8 +21,12 @@ use plonkish_backend::{
         PlonkishBackend,
     },
     halo2_curves::bn256::{Bn256, Fr},
-    pcs::multilinear_kzg,
-    util::{end_timer, start_timer, test::std_rng, transcript::Keccak256Transcript},
+    pcs::multilinear,
+    util::{
+        end_timer, start_timer,
+        test::std_rng,
+        transcript::{InMemoryTranscriptRead, InMemoryTranscriptWrite, Keccak256Transcript},
+    },
 };
 use std::{
     env::args,
@@ -44,7 +48,7 @@ fn main() {
 }
 
 fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
-    type MultilinearKzg = multilinear_kzg::MultilinearKzg<Bn256>;
+    type MultilinearKzg = multilinear::MultilinearKzg<Bn256>;
     type HyperPlonk = backend::hyperplonk::HyperPlonk<MultilinearKzg>;
 
     let circuit = C::rand(k, std_rng());
@@ -63,14 +67,14 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
 
     let proof = sample(System::HyperPlonk, k, || {
         let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
-        let mut transcript = Keccak256Transcript::new(Vec::new());
+        let mut transcript = Keccak256Transcript::default();
         HyperPlonk::prove(&pp, &instances, &witness, &mut transcript, std_rng()).unwrap();
-        transcript.finalize()
+        transcript.into_proof()
     });
 
     let _timer = start_timer(|| format!("hyperplonk_verify-{k}"));
     let accept = {
-        let mut transcript = Keccak256Transcript::new(proof.as_slice());
+        let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
         HyperPlonk::verify(&vp, &instances, &mut transcript, std_rng()).is_ok()
     };
     assert!(accept);

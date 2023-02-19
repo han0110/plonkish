@@ -1,12 +1,15 @@
 use crate::util::arithmetic::PrimeField;
 use sha3::digest::{Digest, HashMarker};
+use std::fmt::Debug;
 
 pub use sha3::{
     digest::{FixedOutputReset, Output, Update},
     Keccak256,
 };
 
-pub trait Hash: FixedOutputReset + Default + Update + HashMarker {
+pub trait Hash:
+    'static + Sized + Clone + Debug + FixedOutputReset + Default + Update + HashMarker
+{
     fn new() -> Self {
         Self::default()
     }
@@ -16,4 +19,7 @@ pub trait Hash: FixedOutputReset + Default + Update + HashMarker {
     }
 }
 
-impl<T: FixedOutputReset + Default + Update + HashMarker> Hash for T {}
+impl<T: 'static + Sized + Clone + Debug + FixedOutputReset + Default + Update + HashMarker> Hash
+    for T
+{
+}

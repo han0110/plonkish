@@ -8,8 +8,8 @@ use crate::{
 use rand::RngCore;
 use std::fmt::Debug;
 
-pub mod multilinear_kzg;
-pub mod univariate_kzg;
+pub mod multilinear;
+pub mod univariate;
 
 pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type Param: Debug;
@@ -17,8 +17,8 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type VerifierParam: Debug;
     type Polynomial: Debug;
     type Point: Debug;
-    type Commitment: Clone + Debug + Default;
-    type CommitmentWithAux: Debug + AsRef<Self::Commitment>;
+    type Commitment: Clone + Debug + Default + From<Self::CommitmentWithAux>;
+    type CommitmentWithAux: Clone + Debug + Default;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error>;
 
@@ -30,11 +30,13 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     fn commit(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
+        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<Self::CommitmentWithAux, Error>;
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<Vec<Self::CommitmentWithAux>, Error>
     where
         Self::Polynomial: 'a;
@@ -42,6 +44,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
+        comm: &Self::CommitmentWithAux,
         point: &Self::Point,
         eval: &F,
         transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
@@ -50,12 +53,14 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
         points: &[Self::Point],
         evals: &[Evaluation<F>],
         transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error>
     where
-        Self::Polynomial: 'a;
+        Self::Polynomial: 'a,
+        Self::CommitmentWithAux: 'a;
 
     fn verify(
         vp: &Self::VerifierParam,

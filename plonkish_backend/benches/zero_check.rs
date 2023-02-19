@@ -16,7 +16,7 @@ use pprof::criterion::{Output, PProfProfiler};
 type ZeroCheck = ClassicSumCheck<EvaluationsProver<Fr, true>>;
 
 fn run(num_vars: usize, virtual_poly: VirtualPolynomial<Fr>) {
-    let mut transcript = Keccak256Transcript::new(Vec::new());
+    let mut transcript = Keccak256Transcript::<Vec<u8>>::default();
     ZeroCheck::prove(&(), num_vars, virtual_poly, Fr::zero(), &mut transcript).unwrap();
 }
 

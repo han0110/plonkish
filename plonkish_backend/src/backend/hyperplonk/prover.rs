@@ -459,9 +459,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
         .collect_vec();
     end_timer(timer);
 
-    for eval in evals.iter() {
-        transcript.write_field_element(eval.value())?;
-    }
+    transcript.write_field_elements(evals.iter().map(Evaluation::value))?;
 
     Ok((points(&pcs_query, &x), evals))
 }

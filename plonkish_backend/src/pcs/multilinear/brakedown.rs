@@ -60,9 +60,9 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     type CommitmentWithAux = MultilinearBrakedownCommitment<F, H>;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
-        let num_vars = size.next_power_of_two().ilog2() as usize;
-        let n_0 = 20.min((1 << num_vars) - 1);
-        let brakedown = Brakedown::new_multilinear::<S>(num_vars, n_0, rng);
+        assert!(size.is_power_of_two());
+        let num_vars = size.ilog2() as usize;
+        let brakedown = Brakedown::new_multilinear::<S>(num_vars, 20.min((1 << num_vars) - 1), rng);
         Ok(MultilinearBrakedownParams {
             num_vars,
             num_rows: (1 << num_vars) / brakedown.row_len(),
@@ -74,11 +74,12 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         param: &Self::Param,
         size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
+        assert!(size.is_power_of_two());
         if size == 1 << param.num_vars {
             Ok((param.clone(), param.clone()))
         } else {
             Err(Error::InvalidPcsParam(
-                "Can't trim Brakedown param into different size".to_string(),
+                "Can't trim MultilinearBrakedownParams into different size".to_string(),
             ))
         }
     }

@@ -91,7 +91,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type CommitmentWithAux = M::G1Affine;
 
     fn setup(size: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
-        let num_vars = size.next_power_of_two().ilog2() as usize;
+        assert!(size.is_power_of_two());
+        let num_vars = size.ilog2() as usize;
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
             .take(num_vars)
             .collect_vec();
@@ -167,7 +168,8 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         param: &Self::Param,
         size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        let num_vars = size.next_power_of_two().ilog2() as usize;
+        assert!(size.is_power_of_two());
+        let num_vars = size.ilog2() as usize;
         if param.num_vars() < num_vars {
             return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }

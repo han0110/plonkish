@@ -1,12 +1,12 @@
 use crate::{
-    piop::sum_check::vanilla::{ProverState, VanillaSumCheckProver, VanillaSumCheckRoundMessage},
+    piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
     poly::multilinear::zip_self,
     util::{
         arithmetic::{div_ceil, horner, PrimeField},
         expression::{CommonPolynomial, Expression, Rotation},
         impl_index,
         parallel::{num_threads, parallelize_iter},
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         Itertools,
     },
     Error,
@@ -16,18 +16,15 @@ use std::{fmt::Debug, iter, ops::AddAssign};
 #[derive(Debug)]
 pub struct Coefficients<F>(Vec<F>);
 
-impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Coefficients<F> {
+impl<F: PrimeField> ClassicSumCheckRoundMessage<F> for Coefficients<F> {
     type Auxiliary = ();
 
-    fn write(&self, transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error> {
-        for eval in self.0.iter().copied() {
-            transcript.write_scalar(eval)?;
-        }
-        Ok(())
+    fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
+        transcript.write_field_elements(&self.0)
     }
 
-    fn read(degree: usize, transcript: &mut impl TranscriptRead<F>) -> Result<Self, Error> {
-        transcript.read_n_scalars(degree + 1).map(Self)
+    fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error> {
+        transcript.read_field_elements(degree + 1).map(Self)
     }
 
     fn sum(&self) -> F {
@@ -68,7 +65,7 @@ impl_index!(Coefficients, 0);
 #[derive(Clone, Debug)]
 pub struct CoefficientsProver<F: PrimeField>(F, Vec<(F, Vec<Expression<F>>)>);
 
-impl<F> VanillaSumCheckProver<F> for CoefficientsProver<F>
+impl<F> ClassicSumCheckProver<F> for CoefficientsProver<F>
 where
     F: PrimeField,
 {

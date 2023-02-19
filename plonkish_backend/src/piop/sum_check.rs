@@ -3,14 +3,14 @@ use crate::{
     util::{
         arithmetic::{inner_product, product, BooleanHypercube, Field, PrimeField},
         expression::{CommonPolynomial, Expression, Query},
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         BitIndex, Itertools,
     },
     Error,
 };
 use std::{collections::HashMap, fmt::Debug};
 
-pub mod vanilla;
+pub mod classic;
 
 #[derive(Clone, Debug)]
 pub struct VirtualPolynomial<'a, F> {
@@ -45,7 +45,7 @@ pub trait SumCheck<F: Field>: Clone + Debug {
         num_vars: usize,
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
-        transcript: &mut impl TranscriptWrite<F>,
+        transcript: &mut impl FieldTranscriptWrite<F>,
     ) -> Result<(Vec<F>, Vec<F>), Error>;
 
     fn verify(
@@ -53,7 +53,7 @@ pub trait SumCheck<F: Field>: Clone + Debug {
         num_vars: usize,
         degree: usize,
         sum: F,
-        transcript: &mut impl TranscriptRead<F>,
+        transcript: &mut impl FieldTranscriptRead<F>,
     ) -> Result<(F, Vec<F>), Error>;
 }
 
@@ -125,13 +125,16 @@ fn identity_eval<F: PrimeField>(x: &[F]) -> F {
 }
 
 #[cfg(test)]
-pub(crate) mod test {
+pub(super) mod test {
     use crate::{
         piop::sum_check::{evaluate, SumCheck, VirtualPolynomial},
         poly::multilinear::{rotation_eval, MultilinearPolynomial},
-        util::{expression::Expression, transcript::Keccak256Transcript},
+        util::{
+            expression::Expression,
+            transcript::{InMemoryTranscriptRead, InMemoryTranscriptWrite, Keccak256Transcript},
+        },
     };
-    use halo2_curves::bn256::{Fr, G1Affine};
+    use halo2_curves::bn256::Fr;
     use std::ops::Range;
 
     pub fn run_sum_check<S: SumCheck<Fr>>(
@@ -149,12 +152,12 @@ pub(crate) mod test {
             let ys = [y];
             let proof = {
                 let virtual_poly = VirtualPolynomial::new(&expression, &polys, &challenges, &ys);
-                let mut transcript = Keccak256Transcript::<_, G1Affine>::new(Vec::new());
+                let mut transcript = Keccak256Transcript::default();
                 S::prove(&pp, num_vars, virtual_poly, sum, &mut transcript).unwrap();
-                transcript.finalize()
+                transcript.into_proof()
             };
             let accept = {
-                let mut transcript = Keccak256Transcript::<_, G1Affine>::new(proof.as_slice());
+                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
                 let (x_eval, x) =
                     S::verify(&vp, num_vars, degree, Fr::zero(), &mut transcript).unwrap();
                 let evals = expression
@@ -342,5 +345,5 @@ pub(crate) mod test {
         };
     }
 
-    pub(crate) use tests;
+    pub(super) use tests;
 }

@@ -1,5 +1,5 @@
 use crate::{
-    piop::sum_check::vanilla::{ProverState, VanillaSumCheckProver, VanillaSumCheckRoundMessage},
+    piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
     util::{
         arithmetic::{
             barycentric_interpolate, barycentric_weights, div_ceil, steps, BooleanHypercube,
@@ -8,7 +8,7 @@ use crate::{
         expression::{CommonPolynomial, Expression, Query, Rotation},
         impl_index,
         parallel::{num_threads, parallelize_iter},
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
     },
     Error,
 };
@@ -33,18 +33,15 @@ impl<F: PrimeField> Evaluations<F> {
     }
 }
 
-impl<F: PrimeField> VanillaSumCheckRoundMessage<F> for Evaluations<F> {
+impl<F: PrimeField> ClassicSumCheckRoundMessage<F> for Evaluations<F> {
     type Auxiliary = (Vec<F>, Vec<F>);
 
-    fn write(&self, transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error> {
-        for eval in self.0.iter().copied() {
-            transcript.write_scalar(eval)?;
-        }
-        Ok(())
+    fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error> {
+        transcript.write_field_elements(&self.0)
     }
 
-    fn read(degree: usize, transcript: &mut impl TranscriptRead<F>) -> Result<Self, Error> {
-        transcript.read_n_scalars(degree + 1).map(Self)
+    fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error> {
+        transcript.read_field_elements(degree + 1).map(Self)
     }
 
     fn sum(&self) -> F {
@@ -77,7 +74,7 @@ pub struct EvaluationsProver<F: PrimeField, const IS_ZERO_CHECK: bool>(
     Vec<GraphEvaluator<F, IS_ZERO_CHECK>>,
 );
 
-impl<F, const IS_ZERO_CHECK: bool> VanillaSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
+impl<F, const IS_ZERO_CHECK: bool> ClassicSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
 where
     F: PrimeField,
 {
@@ -715,9 +712,9 @@ use zip_for_each;
 #[cfg(test)]
 mod test {
     use crate::piop::sum_check::{
+        classic::{ClassicSumCheck, EvaluationsProver},
         test::tests,
-        vanilla::{EvaluationsProver, VanillaSumCheck},
     };
 
-    tests!(VanillaSumCheck<EvaluationsProver<Fr, true>>);
+    tests!(ClassicSumCheck<EvaluationsProver<Fr, true>>);
 }

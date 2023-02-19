@@ -1,15 +1,14 @@
 use crate::{
     pcs::Evaluation,
     piop::sum_check::{
-        evaluate, lagrange_eval,
-        vanilla::{EvaluationsProver, VanillaSumCheck},
-        SumCheck,
+        classic::{ClassicSumCheck, EvaluationsProver},
+        evaluate, lagrange_eval, SumCheck,
     },
     poly::multilinear::{rotation_eval, rotation_eval_points},
     util::{
         arithmetic::{inner_product, BooleanHypercube, PrimeField},
         expression::{Expression, Query, Rotation},
-        transcript::TranscriptRead,
+        transcript::FieldTranscriptRead,
         Itertools,
     },
     Error,
@@ -23,9 +22,9 @@ pub(super) fn verify_zero_check<F: PrimeField>(
     instances: &[&[F]],
     challenges: &[F],
     y: &[F],
-    transcript: &mut impl TranscriptRead<F>,
+    transcript: &mut impl FieldTranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
-    let (x_eval, x) = VanillaSumCheck::<EvaluationsProver<_, true>>::verify(
+    let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_, true>>::verify(
         &(),
         num_vars,
         expression.degree(),
@@ -37,7 +36,8 @@ pub(super) fn verify_zero_check<F: PrimeField>(
     let (evals_for_rotation, evals) = pcs_query
         .iter()
         .map(|query| {
-            let evals_for_rotation = transcript.read_n_scalars(1 << query.rotation().distance())?;
+            let evals_for_rotation =
+                transcript.read_field_elements(1 << query.rotation().distance())?;
             let eval = rotation_eval(&x, query.rotation(), &evals_for_rotation);
             Ok((evals_for_rotation, (*query, eval)))
         })

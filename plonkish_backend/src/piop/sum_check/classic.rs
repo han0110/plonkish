@@ -6,7 +6,7 @@ use crate::{
         expression::{Expression, Rotation},
         parallel::par_map_collect,
         start_timer,
-        transcript::{TranscriptRead, TranscriptWrite},
+        transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         Itertools,
     },
     Error,
@@ -165,20 +165,20 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
     }
 }
 
-pub trait VanillaSumCheckProver<F: Field>: Clone + Debug {
-    type RoundMessage: VanillaSumCheckRoundMessage<F>;
+pub trait ClassicSumCheckProver<F: Field>: Clone + Debug {
+    type RoundMessage: ClassicSumCheckRoundMessage<F>;
 
     fn new(state: &ProverState<F>) -> Self;
 
     fn prove_round(&self, state: &ProverState<F>) -> Self::RoundMessage;
 }
 
-pub trait VanillaSumCheckRoundMessage<F: Field>: Sized + Debug {
+pub trait ClassicSumCheckRoundMessage<F: Field>: Sized + Debug {
     type Auxiliary: Default;
 
-    fn write(&self, transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error>;
+    fn write(&self, transcript: &mut impl FieldTranscriptWrite<F>) -> Result<(), Error>;
 
-    fn read(degree: usize, transcript: &mut impl TranscriptRead<F>) -> Result<Self, Error>;
+    fn read(degree: usize, transcript: &mut impl FieldTranscriptRead<F>) -> Result<Self, Error>;
 
     fn sum(&self) -> F;
 
@@ -211,12 +211,12 @@ pub trait VanillaSumCheckRoundMessage<F: Field>: Sized + Debug {
 }
 
 #[derive(Clone, Debug)]
-pub struct VanillaSumCheck<P>(PhantomData<P>);
+pub struct ClassicSumCheck<P>(PhantomData<P>);
 
-impl<F, P> SumCheck<F> for VanillaSumCheck<P>
+impl<F, P> SumCheck<F> for ClassicSumCheck<P>
 where
     F: PrimeField,
-    P: VanillaSumCheckProver<F>,
+    P: ClassicSumCheckProver<F>,
 {
     type ProverParam = ();
     type VerifierParam = ();
@@ -226,7 +226,7 @@ where
         num_vars: usize,
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
-        transcript: &mut impl TranscriptWrite<F>,
+        transcript: &mut impl FieldTranscriptWrite<F>,
     ) -> Result<(Vec<F>, Vec<F>), Error> {
         let _timer = start_timer(|| {
             let degree = virtual_poly.expression.degree();
@@ -256,7 +256,7 @@ where
         num_vars: usize,
         degree: usize,
         sum: F,
-        transcript: &mut impl TranscriptRead<F>,
+        transcript: &mut impl FieldTranscriptRead<F>,
     ) -> Result<(F, Vec<F>), Error> {
         let (msgs, challenges) = {
             let mut msgs = Vec::with_capacity(num_vars);

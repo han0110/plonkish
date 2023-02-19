@@ -1,5 +1,7 @@
 pub mod arithmetic;
+pub mod code;
 pub mod expression;
+pub mod hash;
 pub mod parallel;
 mod timer;
 pub mod transcript;
@@ -56,11 +58,18 @@ pub(crate) use impl_index;
 #[cfg(any(test, feature = "benchmark"))]
 pub mod test {
     use crate::util::arithmetic::Field;
-    use rand::{rngs::StdRng, CryptoRng, RngCore, SeedableRng};
+    use rand::{
+        rngs::{OsRng, StdRng},
+        CryptoRng, RngCore, SeedableRng,
+    };
     use std::{array, iter, ops::Range};
 
     pub fn std_rng() -> impl RngCore + CryptoRng {
         StdRng::from_seed(Default::default())
+    }
+
+    pub fn seeded_std_rng() -> impl RngCore + CryptoRng {
+        StdRng::seed_from_u64(OsRng.next_u64())
     }
 
     pub fn rand_idx(range: Range<usize>, mut rng: impl RngCore) -> usize {

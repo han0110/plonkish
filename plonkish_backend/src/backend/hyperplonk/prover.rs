@@ -2,19 +2,17 @@ use crate::{
     backend::hyperplonk::verifier::{pcs_query, point_offset, points},
     pcs::Evaluation,
     piop::sum_check::{
-        vanilla::{EvaluationsProver, VanillaSumCheck},
+        classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{
-            descending_powers, div_ceil, steps_by, BatchInvert, BooleanHypercube, PrimeField,
-        },
+        arithmetic::{div_ceil, powers, steps_by, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,
         expression::{CommonPolynomial, Expression, Rotation},
         parallel::{par_map_collect, par_sort_unstable, parallelize},
         start_timer,
-        transcript::TranscriptWrite,
+        transcript::FieldTranscriptWrite,
         Itertools,
     },
     Error,
@@ -114,10 +112,11 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
 ) -> Result<([MultilinearPolynomial<F>; 2], [MultilinearPolynomial<F>; 2]), Error> {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
-    let desc_powers_of_theta = descending_powers(*theta, lookup.len());
+    let powers_of_theta = powers(*theta).take(lookup.len()).collect_vec();
     let compress = |expressions: &[&Expression<F>]| {
-        desc_powers_of_theta
+        powers_of_theta
             .iter()
+            .rev()
             .copied()
             .zip(expressions.iter().map(|expression| {
                 let mut compressed = vec![F::zero(); 1 << num_vars];
@@ -429,12 +428,12 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     polys: &[&MultilinearPolynomial<F>],
     challenges: Vec<F>,
     y: Vec<F>,
-    transcript: &mut impl TranscriptWrite<F>,
+    transcript: &mut impl FieldTranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
-    let (x, evals) = VanillaSumCheck::<EvaluationsProver<_, true>>::prove(
+    let (x, evals) = ClassicSumCheck::<EvaluationsProver<_, true>>::prove(
         &(),
         num_vars,
         virtual_poly,
@@ -460,9 +459,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
         .collect_vec();
     end_timer(timer);
 
-    for eval in evals.iter() {
-        transcript.write_scalar(*eval.value())?;
-    }
+    transcript.write_field_elements(evals.iter().map(Evaluation::value))?;
 
     Ok((points(&pcs_query, &x), evals))
 }

@@ -1,168 +1,273 @@
 use crate::{
     util::{
         arithmetic::{fe_from_bytes_le, Coordinates, CurveAffine, PrimeField},
-        Itertools,
+        hash::{Hash, Keccak256, Output, Update},
     },
     Error,
 };
-use sha3::{Digest, Keccak256};
-use std::{io, marker::PhantomData};
+use halo2_curves::{
+    bn256::G1Affine,
+    pasta::{EpAffine, EqAffine},
+};
+use std::{
+    io::{self, Cursor},
+    marker::PhantomData,
+};
 
-pub trait Transcript<F> {
-    type Commitment;
-
+pub trait FieldTranscript<F> {
     fn squeeze_challenge(&mut self) -> F;
 
-    fn squeeze_n_challenges(&mut self, n: usize) -> Vec<F> {
+    fn squeeze_challenges(&mut self, n: usize) -> Vec<F> {
         (0..n).map(|_| self.squeeze_challenge()).collect()
     }
 
-    fn common_commitment(&mut self, comm: &Self::Commitment) -> Result<(), Error>;
-
-    fn common_scalar(&mut self, scalar: &F) -> Result<(), Error>;
+    fn common_field_element(&mut self, fe: &F) -> Result<(), Error>;
 }
 
-pub trait TranscriptRead<F>: Transcript<F> {
-    fn read_commitment(&mut self) -> Result<Self::Commitment, Error>;
+pub trait FieldTranscriptRead<F>: FieldTranscript<F> {
+    fn read_field_element(&mut self) -> Result<F, Error>;
 
-    fn read_n_commitments(&mut self, n: usize) -> Result<Vec<Self::Commitment>, Error> {
+    fn read_field_elements(&mut self, n: usize) -> Result<Vec<F>, Error> {
+        (0..n).map(|_| self.read_field_element()).collect()
+    }
+}
+
+pub trait FieldTranscriptWrite<F>: FieldTranscript<F> {
+    fn write_field_element(&mut self, fe: &F) -> Result<(), Error>;
+
+    fn write_field_elements<'a>(
+        &mut self,
+        fes: impl IntoIterator<Item = &'a F>,
+    ) -> Result<(), Error>
+    where
+        F: 'a,
+    {
+        for fe in fes.into_iter() {
+            self.write_field_element(fe)?;
+        }
+        Ok(())
+    }
+}
+
+pub trait Transcript<C, F>: FieldTranscript<F> {
+    fn common_commitment(&mut self, comm: &C) -> Result<(), Error>;
+}
+
+pub trait TranscriptRead<C, F>: Transcript<C, F> + FieldTranscriptRead<F> {
+    fn read_commitment(&mut self) -> Result<C, Error>;
+
+    fn read_commitments(&mut self, n: usize) -> Result<Vec<C>, Error> {
         (0..n).map(|_| self.read_commitment()).collect()
     }
+}
 
-    fn read_scalar(&mut self) -> Result<F, Error>;
+pub trait TranscriptWrite<C, F>: Transcript<C, F> + FieldTranscriptWrite<F> {
+    fn write_commitment(&mut self, comm: &C) -> Result<(), Error>;
 
-    fn read_n_scalars(&mut self, n: usize) -> Result<Vec<F>, Error> {
-        (0..n).map(|_| self.read_scalar()).collect()
+    fn write_commitments<'a>(&mut self, comms: impl IntoIterator<Item = &'a C>) -> Result<(), Error>
+    where
+        C: 'a,
+    {
+        for comm in comms.into_iter() {
+            self.write_commitment(comm)?;
+        }
+        Ok(())
     }
 }
 
-pub trait TranscriptWrite<F>: Transcript<F> {
-    fn write_commitment(&mut self, comm: Self::Commitment) -> Result<(), Error>;
-
-    fn write_scalar(&mut self, scalar: F) -> Result<(), Error>;
+pub trait InMemoryTranscriptWrite: Default {
+    fn into_proof(self) -> Vec<u8>;
 }
 
-#[derive(Debug)]
-pub struct Keccak256Transcript<S, T> {
-    buf: Vec<u8>,
+pub trait InMemoryTranscriptRead {
+    fn from_proof(proof: &[u8]) -> Self;
+}
+
+#[derive(Default)]
+pub struct NoOpTranscript<T>(PhantomData<T>);
+
+impl<F> FieldTranscript<F> for NoOpTranscript<F> {
+    fn squeeze_challenge(&mut self) -> F {
+        unimplemented!()
+    }
+
+    fn common_field_element(&mut self, _: &F) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<F> FieldTranscriptWrite<F> for NoOpTranscript<F> {
+    fn write_field_element(&mut self, _: &F) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<C, F> Transcript<C, F> for NoOpTranscript<F> {
+    fn common_commitment(&mut self, _: &C) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<C, F> TranscriptWrite<C, F> for NoOpTranscript<F> {
+    fn write_commitment(&mut self, _: &C) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+pub type Keccak256Transcript<S> = FiatShamirTranscript<Keccak256, S>;
+
+#[derive(Debug, Default)]
+pub struct FiatShamirTranscript<H, S> {
+    state: H,
     stream: S,
-    _marker: PhantomData<T>,
 }
 
-impl<S, T> Keccak256Transcript<S, T> {
-    pub fn new(stream: S) -> Self {
+impl<H: Hash> InMemoryTranscriptWrite for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+    fn into_proof(self) -> Vec<u8> {
+        self.stream.into_inner()
+    }
+}
+
+impl<H: Hash> InMemoryTranscriptRead for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+    fn from_proof(proof: &[u8]) -> Self {
         Self {
-            buf: Vec::new(),
-            stream,
-            _marker: PhantomData,
+            state: H::default(),
+            stream: Cursor::new(proof.to_vec()),
         }
     }
 }
 
-impl<T> Keccak256Transcript<Vec<u8>, T> {
-    pub fn finalize(self) -> Vec<u8> {
-        self.stream
-    }
-}
-
-impl<C: CurveAffine, S> Transcript<C::Scalar> for Keccak256Transcript<S, C> {
-    type Commitment = C;
-
-    fn squeeze_challenge(&mut self) -> C::Scalar {
-        let empty_buf = self.buf.len() <= 0x20;
-        let data = self
-            .buf
-            .drain(..)
-            .chain(empty_buf.then_some(1))
-            .collect_vec();
-        self.buf = Keccak256::digest(data).to_vec();
-        fe_from_bytes_le(&self.buf)
+impl<H: Hash, F: PrimeField, S> FieldTranscript<F> for FiatShamirTranscript<H, S> {
+    fn squeeze_challenge(&mut self) -> F {
+        let challenge = self.state.finalize_fixed_reset();
+        self.state.update(&challenge);
+        fe_from_bytes_le(&challenge)
     }
 
-    fn common_commitment(&mut self, comm: &Self::Commitment) -> Result<(), Error> {
-        let coordinates = Option::<Coordinates<_>>::from(comm.coordinates()).ok_or_else(|| {
-            Error::Transcript(
-                io::ErrorKind::Other,
-                "Cannot write points at infinity to the transcript".to_string(),
-            )
-        })?;
-        self.buf.extend(
-            [coordinates.x(), coordinates.y()]
-                .map(PrimeField::to_repr)
-                .iter()
-                .flat_map(|repr| repr.as_ref().iter().rev())
-                .cloned(),
-        );
-        Ok(())
-    }
-
-    fn common_scalar(&mut self, scalar: &C::Scalar) -> Result<(), Error> {
-        self.buf
-            .extend(scalar.to_repr().as_ref().iter().rev().cloned());
+    fn common_field_element(&mut self, fe: &F) -> Result<(), Error> {
+        self.state.update_field_element(fe);
         Ok(())
     }
 }
 
-impl<C: CurveAffine, R: io::Read> TranscriptRead<C::Scalar> for Keccak256Transcript<R, C> {
-    fn read_commitment(&mut self) -> Result<Self::Commitment, Error> {
-        let mut reprs = [<<C as CurveAffine>::Base as PrimeField>::Repr::default(); 2];
-        for repr in &mut reprs {
-            self.stream
-                .read_exact(repr.as_mut())
-                .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
-            repr.as_mut().reverse();
-        }
-        let [x, y] = reprs.map(<<C as CurveAffine>::Base as PrimeField>::from_repr_vartime);
-        let ec_point = x
-            .zip(y)
-            .and_then(|(x, y)| CurveAffine::from_xy(x, y).into())
-            .ok_or_else(|| {
-                Error::Transcript(
-                    io::ErrorKind::Other,
-                    "Invalid elliptic curve point encoding in proof".to_string(),
-                )
-            })?;
-        self.common_commitment(&ec_point)?;
-        Ok(ec_point)
-    }
-
-    fn read_scalar(&mut self) -> Result<C::Scalar, Error> {
-        let mut repr = <C::Scalar as PrimeField>::Repr::default();
+impl<H: Hash, F: PrimeField, R: io::Read> FieldTranscriptRead<F> for FiatShamirTranscript<H, R> {
+    fn read_field_element(&mut self) -> Result<F, Error> {
+        let mut repr = <F as PrimeField>::Repr::default();
         self.stream
             .read_exact(repr.as_mut())
             .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
         repr.as_mut().reverse();
-        let scalar = C::Scalar::from_repr_vartime(repr).ok_or_else(|| {
+        let fe = F::from_repr_vartime(repr).ok_or_else(|| {
             Error::Transcript(
                 io::ErrorKind::Other,
-                "Invalid scalar encoding in proof".to_string(),
+                "Invalid field element encoding in proof".to_string(),
             )
         })?;
-        self.common_scalar(&scalar)?;
-        Ok(scalar)
+        self.common_field_element(&fe)?;
+        Ok(fe)
     }
 }
 
-impl<C: CurveAffine, W: io::Write> TranscriptWrite<C::Scalar> for Keccak256Transcript<W, C> {
-    fn write_commitment(&mut self, ec_point: Self::Commitment) -> Result<(), Error> {
-        self.common_commitment(&ec_point)?;
-        let coordinates = ec_point.coordinates().unwrap();
-        for coordinate in [coordinates.x(), coordinates.y()] {
-            let mut repr = coordinate.to_repr();
-            repr.as_mut().reverse();
-            self.stream
-                .write_all(repr.as_ref())
-                .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
-        }
-        Ok(())
-    }
-
-    fn write_scalar(&mut self, scalar: C::Scalar) -> Result<(), Error> {
-        self.common_scalar(&scalar)?;
-        let mut repr = scalar.to_repr();
+impl<H: Hash, F: PrimeField, W: io::Write> FieldTranscriptWrite<F> for FiatShamirTranscript<H, W> {
+    fn write_field_element(&mut self, fe: &F) -> Result<(), Error> {
+        self.common_field_element(fe)?;
+        let mut repr = fe.to_repr();
         repr.as_mut().reverse();
         self.stream
             .write_all(repr.as_ref())
             .map_err(|err| Error::Transcript(err.kind(), err.to_string()))
+    }
+}
+
+macro_rules! impl_fs_transcript_curve_commitment {
+    ($($curve:ty),*) => {
+        $(
+            impl<H: Hash, S> Transcript<$curve, <$curve as CurveAffine>::ScalarExt> for FiatShamirTranscript<H, S> {
+                fn common_commitment(&mut self, comm: &$curve) -> Result<(), Error> {
+                    let coordinates =
+                        Option::<Coordinates<_>>::from(comm.coordinates()).ok_or_else(|| {
+                            Error::Transcript(
+                                io::ErrorKind::Other,
+                                "Invalid elliptic curve point encoding".to_string(),
+                            )
+                        })?;
+                    self.state.update_field_element(coordinates.x());
+                    self.state.update_field_element(coordinates.y());
+                    Ok(())
+                }
+            }
+
+            impl<H: Hash, R: io::Read> TranscriptRead<$curve, <$curve as CurveAffine>::ScalarExt>
+                for FiatShamirTranscript<H, R>
+            {
+                fn read_commitment(&mut self) -> Result<$curve, Error> {
+                    let mut reprs = [<<$curve as CurveAffine>::Base as PrimeField>::Repr::default(); 2];
+                    for repr in &mut reprs {
+                        self.stream
+                            .read_exact(repr.as_mut())
+                            .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
+                        repr.as_mut().reverse();
+                    }
+                    let [x, y] =
+                        reprs.map(<<$curve as CurveAffine>::Base as PrimeField>::from_repr_vartime);
+                    let ec_point = x
+                        .zip(y)
+                        .and_then(|(x, y)| CurveAffine::from_xy(x, y).into())
+                        .ok_or_else(|| {
+                            Error::Transcript(
+                                io::ErrorKind::Other,
+                                "Invalid elliptic curve point encoding in proof".to_string(),
+                            )
+                        })?;
+                    self.common_commitment(&ec_point)?;
+                    Ok(ec_point)
+                }
+            }
+
+            impl<H: Hash, W: io::Write> TranscriptWrite<$curve, <$curve as CurveAffine>::ScalarExt>
+                for FiatShamirTranscript<H, W>
+            {
+                fn write_commitment(&mut self, ec_point: &$curve) -> Result<(), Error> {
+                    self.common_commitment(ec_point)?;
+                    let coordinates = ec_point.coordinates().unwrap();
+                    for coordinate in [coordinates.x(), coordinates.y()] {
+                        let mut repr = coordinate.to_repr();
+                        repr.as_mut().reverse();
+                        self.stream
+                            .write_all(repr.as_ref())
+                            .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
+                    }
+                    Ok(())
+                }
+            }
+        )*
+    };
+}
+
+impl_fs_transcript_curve_commitment!(G1Affine, EpAffine, EqAffine);
+
+impl<F: PrimeField, S> Transcript<Output<Keccak256>, F> for Keccak256Transcript<S> {
+    fn common_commitment(&mut self, comm: &Output<Keccak256>) -> Result<(), Error> {
+        self.state.update(comm);
+        Ok(())
+    }
+}
+
+impl<F: PrimeField, R: io::Read> TranscriptRead<Output<Keccak256>, F> for Keccak256Transcript<R> {
+    fn read_commitment(&mut self) -> Result<Output<Keccak256>, Error> {
+        let mut hash = Output::<Keccak256>::default();
+        self.stream
+            .read_exact(hash.as_mut())
+            .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
+        Ok(hash)
+    }
+}
+
+impl<F: PrimeField, W: io::Write> TranscriptWrite<Output<Keccak256>, F> for Keccak256Transcript<W> {
+    fn write_commitment(&mut self, hash: &Output<Keccak256>) -> Result<(), Error> {
+        self.stream
+            .write_all(hash)
+            .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
+        Ok(())
     }
 }

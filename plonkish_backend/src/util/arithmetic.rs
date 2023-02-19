@@ -54,16 +54,6 @@ pub fn powers<F: Field>(scalar: F) -> impl Iterator<Item = F> {
     iter::successors(Some(F::one()), move |power| Some(scalar * power))
 }
 
-pub fn descending_powers<F: Field>(scalar: F, n: usize) -> Vec<F> {
-    let mut desc_powers = vec![F::zero(); n];
-    desc_powers
-        .iter_mut()
-        .rev()
-        .zip(powers(scalar))
-        .for_each(|(lhs, rhs)| *lhs = rhs);
-    desc_powers
-}
-
 pub fn product<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F {
     values
         .into_iter()

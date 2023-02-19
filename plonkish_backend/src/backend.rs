@@ -33,14 +33,14 @@ where
         pp: &Self::ProverParam,
         instances: &[&[F]],
         witness_collector: &impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
-        transcript: &mut impl TranscriptWrite<F, Commitment = Pcs::Commitment>,
+        transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 
     fn verify(
         vp: &Self::VerifierParam,
         instances: &[&[F]],
-        transcript: &mut impl TranscriptRead<F, Commitment = Pcs::Commitment>,
+        transcript: &mut impl TranscriptRead<Pcs::Commitment, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 }
@@ -87,6 +87,10 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
             .collect::<BTreeSet<_>>();
         // Same amount of phases
         self.num_witness_polys.len() == self.num_challenges.len()
+            // Every phase has some witness polys
+            && !self.num_witness_polys.iter().any(|n| *n == 0)
+            // Every phase except the last one has some challenges after the witness polys are committed
+            && !self.num_challenges[..self.num_challenges.len() - 1].iter().any(|n| *n == 0)
             // Polynomial indices are in range
             && (polys.is_empty() || *polys.last().unwrap() < num_poly)
             // Challenge indices are in range

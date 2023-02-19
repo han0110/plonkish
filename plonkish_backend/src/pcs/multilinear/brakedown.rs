@@ -1,3 +1,9 @@
+/// Implementation of multilinear polynomial commitment scheme described in
+/// [GLSTW21].
+/// Most part are ported from https://github.com/conroi/lcpc with reorganization
+/// to fit [`PolynomialCommitmentScheme`].
+///
+/// [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
 use crate::{
     pcs::{multilinear::validate_input, Evaluation, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,

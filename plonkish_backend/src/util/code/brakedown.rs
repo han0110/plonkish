@@ -1,3 +1,8 @@
+/// Implementation of linear codes specification described in [GLSTW21].
+/// Most part are ported from https://github.com/conroi/lcpc with naming
+/// modification to follow the notations in paper.
+///
+/// [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
 use crate::util::{
     arithmetic::{horner, steps, Field, PrimeField},
     code::LinearCodes,
@@ -249,7 +254,7 @@ macro_rules! impl_spec_128 {
     };
 }
 
-// https://eprint.iacr.org/2021/1043 Figure 2.
+// Figure 2 in [GLSTW21](https://eprint.iacr.org/2021/1043.pdf).
 impl_spec_128!(
     (BrakedownSpec1, 0.1195, 0.0284, 1.420),
     (BrakedownSpec2, 0.1380, 0.0444, 1.470),

@@ -9,10 +9,7 @@ use halo2_curves::{
     bn256::G1Affine,
     pasta::{EpAffine, EqAffine},
 };
-use std::{
-    io::{self, Cursor},
-    marker::PhantomData,
-};
+use std::io::{self, Cursor};
 
 pub trait FieldTranscript<F> {
     fn squeeze_challenge(&mut self) -> F;
@@ -81,37 +78,6 @@ pub trait InMemoryTranscriptWrite: Default {
 
 pub trait InMemoryTranscriptRead {
     fn from_proof(proof: &[u8]) -> Self;
-}
-
-#[derive(Default)]
-pub struct NoOpTranscript<T>(PhantomData<T>);
-
-impl<F> FieldTranscript<F> for NoOpTranscript<F> {
-    fn squeeze_challenge(&mut self) -> F {
-        unimplemented!()
-    }
-
-    fn common_field_element(&mut self, _: &F) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<F> FieldTranscriptWrite<F> for NoOpTranscript<F> {
-    fn write_field_element(&mut self, _: &F) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<C, F> Transcript<C, F> for NoOpTranscript<F> {
-    fn common_commitment(&mut self, _: &C) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<C, F> TranscriptWrite<C, F> for NoOpTranscript<F> {
-    fn write_commitment(&mut self, _: &C) -> Result<(), Error> {
-        Ok(())
-    }
 }
 
 pub type Keccak256Transcript<S> = FiatShamirTranscript<Keccak256, S>;

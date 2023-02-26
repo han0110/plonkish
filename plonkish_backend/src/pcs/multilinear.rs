@@ -11,7 +11,8 @@ pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
 };
 pub use kzg::{
-    MultilinearKzg, MultilinearKzgParams, MultilinearKzgProverParams, MultilinearKzgVerifierParams,
+    MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,
+    MultilinearKzgVerifierParams,
 };
 
 fn validate_input<'a, F: Field>(
@@ -97,7 +98,7 @@ mod test {
             let proof = {
                 let mut transcript = T::default();
                 let poly = MultilinearPolynomial::rand(num_vars, OsRng);
-                let comm = Pcs::commit(&pp, &poly, &mut transcript).unwrap();
+                let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
                 let point = transcript.squeeze_challenges(num_vars);
                 let eval = poly.evaluate(point.as_slice());
                 transcript.write_field_element(&eval).unwrap();
@@ -143,7 +144,7 @@ mod test {
                 let polys = iter::repeat_with(|| MultilinearPolynomial::rand(num_vars, OsRng))
                     .take(batch_size)
                     .collect_vec();
-                let comms = Pcs::batch_commit(&pp, &polys, &mut transcript).unwrap();
+                let comms = Pcs::batch_commit_and_write(&pp, &polys, &mut transcript).unwrap();
                 let points = iter::repeat_with(|| transcript.squeeze_challenges(num_vars))
                     .take(batch_size * batch_size)
                     .collect_vec();

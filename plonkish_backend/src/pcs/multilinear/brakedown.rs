@@ -1,9 +1,10 @@
-/// Implementation of multilinear polynomial commitment scheme described in
-/// [GLSTW21].
-/// Most part are ported from https://github.com/conroi/lcpc with reorganization
-/// to fit [`PolynomialCommitmentScheme`].
-///
-/// [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
+//! Implementation of multilinear polynomial commitment scheme described in
+//! [GLSTW21].
+//! Most part are ported from https://github.com/conroi/lcpc with reorganization
+//! to fit [`PolynomialCommitmentScheme`].
+//!
+//! [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
+
 use crate::{
     pcs::{multilinear::validate_input, Evaluation, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
@@ -40,6 +41,14 @@ impl<F: PrimeField> MultilinearBrakedownParams<F> {
     pub fn num_vars(&self) -> usize {
         self.num_vars
     }
+
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
+
+    pub fn brakedown(&self) -> &Brakedown<F> {
+        &self.brakedown
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,9 +57,19 @@ pub struct MultilinearBrakedownCommitment<F: PrimeField, H: Hash> {
     hashes: Vec<Output<H>>,
 }
 
-impl<F: PrimeField, H: Hash> From<MultilinearBrakedownCommitment<F, H>> for Output<H> {
-    fn from(mut comm: MultilinearBrakedownCommitment<F, H>) -> Output<H> {
-        comm.hashes.pop().unwrap()
+impl<F: PrimeField, H: Hash> MultilinearBrakedownCommitment<F, H> {
+    pub fn rows(&self) -> &[F] {
+        &self.rows
+    }
+
+    pub fn hashes(&self) -> &[Output<H>] {
+        &self.hashes
+    }
+}
+
+impl<F: PrimeField, H: Hash> AsRef<Output<H>> for MultilinearBrakedownCommitment<F, H> {
+    fn as_ref(&self) -> &Output<H> {
+        self.hashes.last().unwrap()
     }
 }
 
@@ -93,7 +112,6 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     fn commit(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<Self::CommitmentWithAux, Error> {
         validate_input("commit", pp.num_vars(), [poly], None)?;
 
@@ -152,22 +170,19 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
             offset += width;
         }
 
-        transcript.write_commitment(hashes.last().unwrap())?;
-
         Ok(MultilinearBrakedownCommitment { rows, hashes })
     }
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<Vec<Self::CommitmentWithAux>, Error>
     where
         Self::Polynomial: 'a,
     {
         polys
             .into_iter()
-            .map(|poly| Self::commit(pp, poly, transcript))
+            .map(|poly| Self::commit(pp, poly))
             .collect()
     }
 

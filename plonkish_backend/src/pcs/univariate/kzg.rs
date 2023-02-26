@@ -20,35 +20,88 @@ pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
-    pub g1: M::G1Affine,
-    pub powers_of_s: Vec<M::G1Affine>,
-    pub g2: M::G2Affine,
-    pub s_g2: M::G2Affine,
+    g1: M::G1Affine,
+    powers_of_s: Vec<M::G1Affine>,
+    g2: M::G2Affine,
+    s_g2: M::G2Affine,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     pub fn degree(&self) -> usize {
         self.powers_of_s.len() - 1
     }
+
+    pub fn g1(&self) -> M::G1Affine {
+        self.g1
+    }
+
+    pub fn powers_of_s(&self) -> &[M::G1Affine] {
+        &self.powers_of_s
+    }
+
+    pub fn g2(&self) -> M::G2Affine {
+        self.g2
+    }
+
+    pub fn s_g2(&self) -> M::G2Affine {
+        self.s_g2
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct UnivariateKzgProverParam<M: MultiMillerLoop> {
-    pub g1: M::G1Affine,
-    pub powers_of_s: Vec<M::G1Affine>,
+    g1: M::G1Affine,
+    powers_of_s: Vec<M::G1Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
     pub fn degree(&self) -> usize {
         self.powers_of_s.len() - 1
     }
+
+    pub fn g1(&self) -> M::G1Affine {
+        self.g1
+    }
+
+    pub fn powers_of_s(&self) -> &[M::G1Affine] {
+        &self.powers_of_s
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct UnivariateKzgVerifierParam<M: MultiMillerLoop> {
-    pub g1: M::G1Affine,
-    pub g2: M::G2Affine,
-    pub s_g2: M::G2Affine,
+    g1: M::G1Affine,
+    g2: M::G2Affine,
+    s_g2: M::G2Affine,
+}
+
+impl<M: MultiMillerLoop> UnivariateKzgVerifierParam<M> {
+    pub fn g1(&self) -> M::G1Affine {
+        self.g1
+    }
+
+    pub fn g2(&self) -> M::G2Affine {
+        self.g2
+    }
+
+    pub fn s_g2(&self) -> M::G2Affine {
+        self.s_g2
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UnivariateKzgCommitment<M: MultiMillerLoop>(M::G1Affine);
+
+impl<M: MultiMillerLoop> Default for UnivariateKzgCommitment<M> {
+    fn default() -> Self {
+        Self(M::G1Affine::identity())
+    }
+}
+
+impl<M: MultiMillerLoop> AsRef<M::G1Affine> for UnivariateKzgCommitment<M> {
+    fn as_ref(&self) -> &M::G1Affine {
+        &self.0
+    }
 }
 
 impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg<M> {
@@ -58,7 +111,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type Polynomial = UnivariatePolynomial<M::Scalar>;
     type Point = M::Scalar;
     type Commitment = M::G1Affine;
-    type CommitmentWithAux = M::G1Affine;
+    type CommitmentWithAux = UnivariateKzgCommitment<M>;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         let s = M::Scalar::random(rng);
@@ -118,7 +171,6 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn commit(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        transcript: &mut impl TranscriptWrite<Self::Commitment, M::Scalar>,
     ) -> Result<Self::CommitmentWithAux, Error> {
         if pp.degree() < poly.degree() {
             return Err(Error::InvalidPcsParam(format!(
@@ -128,19 +180,17 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             )));
         }
 
-        let comm = variable_base_msm(&poly[..], &pp.powers_of_s[..=poly.degree()]).into();
-        transcript.write_commitment(&comm)?;
-        Ok(comm)
+        Ok(variable_base_msm(&poly[..], &pp.powers_of_s[..=poly.degree()]).into())
+            .map(UnivariateKzgCommitment)
     }
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        transcript: &mut impl TranscriptWrite<Self::Commitment, M::Scalar>,
     ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
         polys
             .into_iter()
-            .map(|poly| Self::commit(pp, poly, transcript))
+            .map(|poly| Self::commit(pp, poly))
             .collect()
     }
 
@@ -275,7 +325,7 @@ mod test {
         let proof = {
             let mut transcript = Keccak256Transcript::default();
             let poly = Polynomial::rand(pp.degree(), OsRng);
-            let comm = Pcs::commit(&pp, &poly, &mut transcript).unwrap();
+            let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
             let point = transcript.squeeze_challenge();
             let eval = poly.evaluate(&point);
             transcript.write_field_element(&eval).unwrap();
@@ -312,7 +362,7 @@ mod test {
             let polys = iter::repeat_with(|| Polynomial::rand(pp.degree(), OsRng))
                 .take(batch_size)
                 .collect_vec();
-            let comms = Pcs::batch_commit(&pp, &polys, &mut transcript).unwrap();
+            let comms = Pcs::batch_commit_and_write(&pp, &polys, &mut transcript).unwrap();
             let points = transcript.squeeze_challenges(batch_size);
             let evals = polys
                 .iter()

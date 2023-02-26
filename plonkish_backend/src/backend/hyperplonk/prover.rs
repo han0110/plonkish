@@ -38,7 +38,7 @@ pub(super) fn instances_polys<'a, F: PrimeField>(
             poly
         })
         .map(MultilinearPolynomial::new)
-        .collect_vec()
+        .collect()
 }
 
 #[allow(clippy::type_complexity)]

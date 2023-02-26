@@ -17,7 +17,7 @@ use crate::{
         end_timer,
         expression::Expression,
         start_timer,
-        transcript::{NoOpTranscript, TranscriptRead, TranscriptWrite},
+        transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
     },
     Error,
@@ -97,12 +97,13 @@ where
         let (pcs_pp, pcs_vp) = Pcs::trim(param, size)?;
 
         // Compute preprocesses comms
-        let mut transcript = NoOpTranscript::default();
-        let preprocess_comms = circuit_info
+        let preprocess_polys = circuit_info
             .preprocess_polys
             .iter()
-            .map(|poly| Pcs::commit(&pcs_pp, poly, &mut transcript))
-            .try_collect::<_, Vec<_>, _>()?;
+            .cloned()
+            .map(MultilinearPolynomial::new)
+            .collect_vec();
+        let preprocess_comms = Pcs::batch_commit(&pcs_pp, &preprocess_polys)?;
 
         // Compute permutation polys and comms
         let permutation_polys = permutation_polys(
@@ -110,10 +111,7 @@ where
             &circuit_info.permutation_polys(),
             &circuit_info.permutations,
         );
-        let permutation_comms = permutation_polys
-            .iter()
-            .map(|(idx, poly)| Ok((*idx, Pcs::commit(&pcs_pp, poly, &mut transcript)?)))
-            .try_collect::<_, Vec<_>, _>()?;
+        let permutation_comms = Pcs::batch_commit(&pcs_pp, &permutation_polys)?;
 
         // Compose `VirtualPolynomialInfo`
         let (max_degree, expression) = compose(&circuit_info);
@@ -128,11 +126,12 @@ where
             expression: expression.clone(),
             preprocess_comms: preprocess_comms
                 .iter()
-                .map(|comm| comm.clone().into())
+                .map(|comm| comm.as_ref().clone())
                 .collect(),
-            permutation_comms: permutation_comms
-                .iter()
-                .map(|(idx, comm)| (*idx, comm.clone().into()))
+            permutation_comms: circuit_info
+                .permutation_polys()
+                .into_iter()
+                .zip(permutation_comms.iter().map(|comm| comm.as_ref().clone()))
                 .collect(),
         };
         let pp = HyperPlonkProverParam {
@@ -144,13 +143,14 @@ where
             max_degree,
             num_vars,
             expression,
-            preprocess_polys: circuit_info.preprocess_polys,
+            preprocess_polys,
             preprocess_comms,
-            permutation_polys,
-            permutation_comms: permutation_comms
+            permutation_polys: circuit_info
+                .permutation_polys()
                 .into_iter()
-                .map(|(_, comm)| comm)
+                .zip(permutation_polys)
                 .collect(),
+            permutation_comms,
         };
         Ok((pp, vp))
     }
@@ -189,7 +189,7 @@ where
             assert_eq!(polys.len(), *num_witness_polys);
             end_timer(timer);
 
-            witness_comms.extend(Pcs::batch_commit(&pp.pcs, &polys, transcript)?);
+            witness_comms.extend(Pcs::batch_commit_and_write(&pp.pcs, &polys, transcript)?);
             witness_polys.extend(polys);
             challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
@@ -208,10 +208,10 @@ where
             lookup_permuted_polys(&pp.lookups, &polys, &challenges, &theta)?;
         end_timer(timer);
 
-        let lookup_permuted_comms = (!lookup_permuted_polys.is_empty())
-            .then(|| Pcs::batch_commit(&pp.pcs, lookup_permuted_polys.iter().flatten(), transcript))
-            .transpose()?
-            .unwrap_or_default();
+        let lookup_permuted_comms = {
+            let polys = lookup_permuted_polys.iter().flatten();
+            Pcs::batch_commit_and_write(&pp.pcs, polys, transcript)?
+        };
 
         // Phase n+1
 
@@ -234,10 +234,7 @@ where
         end_timer(timer);
 
         let z_polys = lookup_z_polys.iter().chain(&permutation_z_polys);
-        let z_comms = (!(lookup_z_polys.is_empty() && permutation_z_polys.is_empty()))
-            .then(|| Pcs::batch_commit(&pp.pcs, z_polys, transcript))
-            .transpose()?
-            .unwrap_or_default();
+        let z_comms = Pcs::batch_commit_and_write(&pp.pcs, z_polys, transcript)?;
 
         // Phase n+2
 

@@ -12,7 +12,7 @@ rand = "0.8"
 sha3 = "0.10.6"
 
 # timer
-ark-std = { version = "^0.3.0", default-features = false, optional = true }
+ark-std = { version = "^0.4.0", default-features = false, optional = true }
 
 # parallel
 rayon = { version = "1.5.3", optional = true }

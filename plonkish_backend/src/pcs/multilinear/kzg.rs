@@ -36,27 +36,51 @@ pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzgParams<M: MultiMillerLoop> {
-    pub g1: M::G1Affine,
-    pub eqs: Vec<Vec<M::G1Affine>>,
-    pub g2: M::G2Affine,
-    pub ss: Vec<M::G2Affine>,
+    g1: M::G1Affine,
+    eqs: Vec<Vec<M::G1Affine>>,
+    g2: M::G2Affine,
+    ss: Vec<M::G2Affine>,
 }
 
 impl<M: MultiMillerLoop> MultilinearKzgParams<M> {
     pub fn num_vars(&self) -> usize {
         self.eqs.len()
     }
+
+    pub fn g1(&self) -> M::G1Affine {
+        self.g1
+    }
+
+    pub fn eqs(&self) -> &[Vec<M::G1Affine>] {
+        &self.eqs
+    }
+
+    pub fn g2(&self) -> M::G2Affine {
+        self.g2
+    }
+
+    pub fn ss(&self) -> &[M::G2Affine] {
+        &self.ss
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzgProverParams<M: MultiMillerLoop> {
-    pub g1: M::G1Affine,
-    pub eqs: Vec<Vec<M::G1Affine>>,
+    g1: M::G1Affine,
+    eqs: Vec<Vec<M::G1Affine>>,
 }
 
 impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
     pub fn num_vars(&self) -> usize {
         self.eqs.len()
+    }
+
+    pub fn g1(&self) -> M::G1Affine {
+        self.g1
+    }
+
+    pub fn eqs(&self) -> &[Vec<M::G1Affine>] {
+        &self.eqs
     }
 
     pub fn eq(&self, num_vars: usize) -> &[M::G1Affine] {
@@ -66,9 +90,9 @@ impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzgVerifierParams<M: MultiMillerLoop> {
-    pub g1: M::G1Affine,
-    pub g2: M::G2Affine,
-    pub ss: Vec<M::G2Affine>,
+    g1: M::G1Affine,
+    g2: M::G2Affine,
+    ss: Vec<M::G2Affine>,
 }
 
 impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
@@ -76,8 +100,31 @@ impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
         self.ss.len()
     }
 
+    pub fn g1(&self) -> M::G1Affine {
+        self.g1
+    }
+
+    pub fn g2(&self) -> M::G2Affine {
+        self.g2
+    }
+
     pub fn ss(&self, num_vars: usize) -> &[M::G2Affine] {
         &self.ss[self.num_vars() - num_vars..]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MultilinearKzgCommitment<M: MultiMillerLoop>(pub M::G1Affine);
+
+impl<M: MultiMillerLoop> Default for MultilinearKzgCommitment<M> {
+    fn default() -> Self {
+        Self(M::G1Affine::identity())
+    }
+}
+
+impl<M: MultiMillerLoop> AsRef<M::G1Affine> for MultilinearKzgCommitment<M> {
+    fn as_ref(&self) -> &M::G1Affine {
+        &self.0
     }
 }
 
@@ -88,7 +135,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type Polynomial = MultilinearPolynomial<M::Scalar>;
     type Point = Vec<M::Scalar>;
     type Commitment = M::G1Affine;
-    type CommitmentWithAux = M::G1Affine;
+    type CommitmentWithAux = MultilinearKzgCommitment<M>;
 
     fn setup(size: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(size.is_power_of_two());
@@ -188,29 +235,28 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     fn commit(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<Self::CommitmentWithAux, Error> {
         validate_input("commit", pp.num_vars(), [poly], None)?;
 
-        let comm = variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into();
-        transcript.write_commitment(&comm)?;
-        Ok(comm)
+        Ok(variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into())
+            .map(MultilinearKzgCommitment)
     }
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
         let polys = polys.into_iter().collect_vec();
+        if polys.is_empty() {
+            return Ok(Vec::new());
+        }
         validate_input("batch commit", pp.num_vars(), polys.iter().copied(), None)?;
 
-        let comms = polys
+        Ok(polys
             .iter()
             .map(|poly| variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into())
-            .collect_vec();
-        transcript.write_commitments(&comms)?;
-        Ok(comms)
+            .map(MultilinearKzgCommitment)
+            .collect())
     }
 
     fn open(
@@ -353,7 +399,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         Self::open(
             pp,
             &g_prime,
-            &M::G1Affine::identity(),
+            &MultilinearKzgCommitment::default(),
             &challenges,
             &g_prime_eval,
             transcript,

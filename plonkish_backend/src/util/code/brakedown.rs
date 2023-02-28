@@ -1,8 +1,9 @@
-/// Implementation of linear codes specification described in [GLSTW21].
-/// Most part are ported from https://github.com/conroi/lcpc with naming
-/// modification to follow the notations in paper.
-///
-/// [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
+//! Implementation of linear codes specification described in [GLSTW21].
+//! Most part are ported from https://github.com/conroi/lcpc with naming
+//! modification to follow the notations in paper.
+//!
+//! [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
+
 use crate::util::{
     arithmetic::{horner, steps, Field, PrimeField},
     code::LinearCodes,
@@ -188,15 +189,9 @@ pub trait BrakedownSpec: Debug {
         assert!(n > n_0);
 
         let a = iter::successors(Some(n), |n| Some(ceil(*n as f64 * Self::ALPHA)))
-            .take_while(|n| *n > n_0)
-            .map(Some)
-            .chain(Some(None))
             .tuple_windows()
-            .map(|(n, m)| {
-                let n = n.unwrap();
-                let m = m.unwrap_or_else(|| ceil(n as f64 * Self::ALPHA));
-                SparseMatrixDimension::new(n, m, min(Self::c_n(n), m))
-            })
+            .map(|(n, m)| SparseMatrixDimension::new(n, m, min(Self::c_n(n), m)))
+            .take_while(|a| a.n > n_0)
             .collect_vec();
         let b = a
             .iter()
@@ -352,19 +347,45 @@ mod test {
         BrakedownSpec5, BrakedownSpec6,
     };
 
-    #[test]
-    fn spec() {
-        fn assert_spec_correct<S: BrakedownSpec>(delta: f64, c_n: usize, d_n: usize) {
-            assert!(S::delta() - delta < 1e-3);
-            assert_eq!(S::c_n(1 << 30), c_n);
-            assert_eq!(S::d_n(127, 1 << 30), d_n);
-        }
+    fn assert_spec_correct<S: BrakedownSpec>(
+        log2_q: usize,
+        delta: f64,
+        c_n: usize,
+        d_n: usize,
+        num_column_opening: usize,
+        num_proximity_testing: usize,
+    ) {
+        let n = 1 << 30;
+        let n_0 = 30;
+        assert!(S::delta() - delta < 1e-3);
+        assert_eq!(S::c_n(n), c_n);
+        assert_eq!(S::d_n(log2_q, n), d_n);
+        assert_eq!(S::num_column_opening(), num_column_opening);
+        assert_eq!(
+            S::num_proximity_testing(log2_q, n, n_0),
+            num_proximity_testing
+        );
+    }
 
-        assert_spec_correct::<BrakedownSpec1>(0.02, 6, 33);
-        assert_spec_correct::<BrakedownSpec2>(0.03, 7, 26);
-        assert_spec_correct::<BrakedownSpec3>(0.04, 7, 22);
-        assert_spec_correct::<BrakedownSpec4>(0.05, 8, 19);
-        assert_spec_correct::<BrakedownSpec5>(0.06, 9, 21);
-        assert_spec_correct::<BrakedownSpec6>(0.07, 10, 20);
+    #[rustfmt::skip]
+    #[test]
+    fn spec_127_bit_field() {
+        assert_spec_correct::<BrakedownSpec1>(127, 0.02,  6, 33, 13265, 2);
+        assert_spec_correct::<BrakedownSpec2>(127, 0.03,  7, 26,  8768, 2);
+        assert_spec_correct::<BrakedownSpec3>(127, 0.04,  7, 22,  6593, 2);
+        assert_spec_correct::<BrakedownSpec4>(127, 0.05,  8, 19,  5279, 2);
+        assert_spec_correct::<BrakedownSpec5>(127, 0.06,  9, 21,  4390, 2);
+        assert_spec_correct::<BrakedownSpec6>(127, 0.07, 10, 20,  3755, 2);
+    }
+
+    #[rustfmt::skip]
+    #[test]
+    fn spec_254_bit_field() {
+        assert_spec_correct::<BrakedownSpec1>(254, 0.02,  6, 33, 13265, 1);
+        assert_spec_correct::<BrakedownSpec2>(254, 0.03,  7, 26,  8768, 1);
+        assert_spec_correct::<BrakedownSpec3>(254, 0.04,  7, 22,  6593, 1);
+        assert_spec_correct::<BrakedownSpec4>(254, 0.05,  8, 19,  5279, 1);
+        assert_spec_correct::<BrakedownSpec5>(254, 0.06,  9, 21,  4390, 1);
+        assert_spec_correct::<BrakedownSpec6>(254, 0.07, 10, 20,  3755, 1);
     }
 }

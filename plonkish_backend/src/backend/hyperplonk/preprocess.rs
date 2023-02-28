@@ -129,7 +129,7 @@ pub(super) fn permutation_polys<F: PrimeField>(
     num_vars: usize,
     permutation_polys: &[usize],
     cycles: &[Vec<(usize, usize)>],
-) -> Vec<(usize, MultilinearPolynomial<F>)> {
+) -> Vec<MultilinearPolynomial<F>> {
     let poly_index = {
         let mut poly_index = vec![0; permutation_polys.last().map(|poly| 1 + poly).unwrap_or(0)];
         for (idx, poly) in permutation_polys.iter().enumerate() {
@@ -152,10 +152,9 @@ pub(super) fn permutation_polys<F: PrimeField>(
             mem::swap(&mut permutations[poly_index[i]][j], &mut last);
         }
     }
-    permutation_polys
-        .iter()
-        .cloned()
-        .zip(permutations.into_iter().map(MultilinearPolynomial::new))
+    permutations
+        .into_iter()
+        .map(MultilinearPolynomial::new)
         .collect()
 }
 

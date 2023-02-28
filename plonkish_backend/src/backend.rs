@@ -1,6 +1,5 @@
 use crate::{
     pcs::PolynomialCommitmentScheme,
-    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::Field,
         expression::Expression,
@@ -53,7 +52,7 @@ pub struct PlonkishCircuitInfo<F> {
     pub num_instances: Vec<usize>,
     /// Preprocessed polynomials, which has index starts with offset
     /// `num_instances.len()`.
-    pub preprocess_polys: Vec<MultilinearPolynomial<F>>,
+    pub preprocess_polys: Vec<Vec<F>>,
     /// Number of witness polynoimal in each phase.
     /// Witness polynomial index starts with offset `num_instances.len()` +
     /// `preprocess_polys.len()`.

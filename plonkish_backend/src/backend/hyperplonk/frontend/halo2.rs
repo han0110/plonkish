@@ -1,6 +1,5 @@
 use crate::{
     backend::hyperplonk::PlonkishCircuitInfo,
-    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{BatchInvert, BooleanHypercube, Field},
         expression::{Expression, Query, Rotation},
@@ -103,7 +102,6 @@ where
                 .map(|selector| selector.then(F::one).unwrap_or_else(F::zero))
                 .collect()
         }))
-        .map(MultilinearPolynomial::new)
         .collect();
     let permutations = preprocess_collector.permutation.into_cycles();
 

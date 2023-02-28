@@ -27,7 +27,7 @@ use std::{
 pub fn plonk_circuit_info<F: PrimeField>(
     num_vars: usize,
     num_instances: usize,
-    preprocess_polys: [MultilinearPolynomial<F>; 5],
+    preprocess_polys: [Vec<F>; 5],
     permutations: Vec<Vec<(usize, usize)>>,
 ) -> PlonkishCircuitInfo<F> {
     let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] =
@@ -60,7 +60,7 @@ pub fn plonk_expression<F: PrimeField>() -> Expression<F> {
 pub fn plonk_with_lookup_circuit_info<F: PrimeField>(
     num_vars: usize,
     num_instances: usize,
-    preprocess_polys: [MultilinearPolynomial<F>; 9],
+    preprocess_polys: [Vec<F>; 9],
     permutations: Vec<Vec<(usize, usize)>>,
 ) -> PlonkishCircuitInfo<F> {
     let [pi, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o] =
@@ -152,7 +152,7 @@ pub fn rand_plonk_circuit<F: PrimeField>(
     let circuit_info = plonk_circuit_info(
         num_vars,
         instances.len(),
-        [q_l, q_r, q_m, q_o, q_c].map(MultilinearPolynomial::new),
+        [q_l, q_r, q_m, q_o, q_c],
         permutation.into_cycles(),
     );
     (circuit_info, vec![instances], move |_| {
@@ -169,8 +169,12 @@ pub fn rand_plonk_assignment<F: PrimeField>(
         let witness = witness(&[]).unwrap();
         let polys = iter::empty()
             .chain(instances_polys(num_vars, &instances))
-            .chain(circuit_info.preprocess_polys)
-            .chain(witness.into_iter().map(MultilinearPolynomial::new))
+            .chain(
+                iter::empty()
+                    .chain(circuit_info.preprocess_polys)
+                    .chain(witness)
+                    .map(MultilinearPolynomial::new),
+            )
             .collect_vec();
         (polys, circuit_info.permutations)
     };
@@ -180,7 +184,10 @@ pub fn rand_plonk_assignment<F: PrimeField>(
     let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &permutations);
     let permutation_z_polys = permutation_z_polys(
         4,
-        &permutation_polys,
+        &[6, 7, 8]
+            .into_iter()
+            .zip(permutation_polys.iter().cloned())
+            .collect_vec(),
         &polys.iter().collect_vec(),
         &beta,
         &gamma,
@@ -189,7 +196,7 @@ pub fn rand_plonk_assignment<F: PrimeField>(
     (
         iter::empty()
             .chain(polys)
-            .chain(permutation_polys.into_iter().map(|(_, poly)| poly))
+            .chain(permutation_polys)
             .chain(permutation_z_polys)
             .collect_vec(),
         challenges.to_vec(),
@@ -286,7 +293,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
     let circuit_info = plonk_with_lookup_circuit_info(
         num_vars,
         instances.len(),
-        [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o].map(MultilinearPolynomial::new),
+        [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o],
         permutation.into_cycles(),
     );
     (circuit_info, vec![instances], move |_| {
@@ -303,8 +310,12 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
         let witness = witness(&[]).unwrap();
         let polys = iter::empty()
             .chain(instances_polys(num_vars, &instances))
-            .chain(circuit_info.preprocess_polys)
-            .chain(witness.into_iter().map(MultilinearPolynomial::new))
+            .chain(
+                iter::empty()
+                    .chain(circuit_info.preprocess_polys)
+                    .chain(witness)
+                    .map(MultilinearPolynomial::new),
+            )
             .collect_vec();
         (polys, circuit_info.permutations)
     };
@@ -326,7 +337,10 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
     let permutation_polys = permutation_polys(num_vars, &[10, 11, 12], &permutations);
     let permutation_z_polys = permutation_z_polys(
         4,
-        &permutation_polys,
+        &[10, 11, 12]
+            .into_iter()
+            .zip(permutation_polys.iter().cloned())
+            .collect_vec(),
         &polys.iter().collect_vec(),
         &beta,
         &gamma,
@@ -335,7 +349,7 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
     (
         iter::empty()
             .chain(polys)
-            .chain(permutation_polys.into_iter().map(|(_, poly)| poly))
+            .chain(permutation_polys)
             .chain(lookup_permuted_polys.into_iter().flatten())
             .chain(lookup_z_polys)
             .chain(permutation_z_polys)

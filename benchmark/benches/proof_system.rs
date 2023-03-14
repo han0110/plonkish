@@ -16,7 +16,7 @@ use plonkish_backend::{
         self,
         hyperplonk::frontend::halo2::{
             circuit::{CircuitExt, StandardPlonk},
-            circuit_info, witness_collector,
+            circuit_info, Halo2Circuit,
         },
         PlonkishBackend,
     },
@@ -52,23 +52,22 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     type HyperPlonk = backend::hyperplonk::HyperPlonk<MultilinearKzg>;
 
     let circuit = C::rand(k, std_rng());
+    let circuit = Halo2Circuit::new(k, circuit.instances(), circuit);
     let instances = circuit.instances();
-    let instances = instances.iter().map(Vec::as_slice).collect_vec();
-    let witness = witness_collector(k, &circuit, &instances);
 
     let timer = start_timer(|| format!("hyperplonk_setup-{k}"));
     let param = HyperPlonk::setup(1 << k, std_rng()).unwrap();
     end_timer(timer);
 
     let timer = start_timer(|| format!("hyperplonk_preprocess-{k}"));
-    let circuit_info = circuit_info(k, &circuit, C::num_instances()).unwrap();
+    let circuit_info = circuit_info(k, circuit.as_ref(), C::num_instances()).unwrap();
     let (pp, vp) = HyperPlonk::preprocess(&param, circuit_info).unwrap();
     end_timer(timer);
 
     let proof = sample(System::HyperPlonk, k, || {
         let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let mut transcript = Keccak256Transcript::default();
-        HyperPlonk::prove(&pp, &instances, &witness, &mut transcript, std_rng()).unwrap();
+        HyperPlonk::prove(&pp, &instances, &circuit, &mut transcript, std_rng()).unwrap();
         transcript.into_proof()
     });
 

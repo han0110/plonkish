@@ -2,17 +2,16 @@ use crate::{
     backend::hyperplonk::{
         frontend::halo2::{
             circuit::{CircuitExt, StandardPlonk},
-            circuit_info, witness_collector,
+            circuit_info, Halo2Circuit,
         },
         test::run_hyperplonk,
         util::plonk_circuit_info,
     },
     pcs::multilinear::MultilinearKzg,
-    util::{transcript::Keccak256Transcript, Itertools},
+    util::transcript::Keccak256Transcript,
 };
 use halo2_curves::bn256::{Bn256, Fr};
 use rand::rngs::OsRng;
-use std::ops::Range;
 
 #[test]
 fn circuit_info_plonk() {
@@ -33,19 +32,13 @@ fn circuit_info_plonk() {
 
 #[test]
 fn e2e_plonk() {
-    const RANGE: Range<usize> = 3..16;
-    let circuits = RANGE.map(|k| StandardPlonk::rand(k, OsRng)).collect_vec();
-    let instances = circuits.iter().map(CircuitExt::instances).collect_vec();
-    let instances = instances
-        .iter()
-        .map(|instances| instances.iter().map(Vec::as_slice).collect_vec())
-        .collect_vec();
-    run_hyperplonk::<_, MultilinearKzg<Bn256>, Keccak256Transcript<_>, _>(RANGE, |num_vars| {
-        let idx = num_vars - RANGE.start;
+    run_hyperplonk::<_, MultilinearKzg<Bn256>, Keccak256Transcript<_>, _>(3..16, |num_vars| {
+        let circuit = StandardPlonk::rand(num_vars, OsRng);
+        let instances = circuit.instances();
         (
-            circuit_info(num_vars, &circuits[idx], vec![instances[idx][0].len()]).unwrap(),
-            circuits[idx].instances(),
-            witness_collector(num_vars, &circuits[idx], &instances[idx]),
+            circuit_info(num_vars, &circuit, vec![instances[0].len()]).unwrap(),
+            circuit.instances(),
+            Halo2Circuit::new(num_vars, instances.clone(), circuit.clone()),
         )
     });
 }

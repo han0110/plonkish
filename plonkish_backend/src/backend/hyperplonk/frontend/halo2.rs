@@ -1,5 +1,5 @@
 use crate::{
-    backend::hyperplonk::PlonkishCircuitInfo,
+    backend::{PlonkishCircuit, PlonkishCircuitInfo},
     util::{
         arithmetic::{BatchInvert, BooleanHypercube, Field},
         expression::{Expression, Query, Rotation},
@@ -118,46 +118,74 @@ where
     })
 }
 
-pub fn witness_collector<'a, F, C>(
-    k: usize,
-    circuit: &'a C,
-    instances: &'a [&[F]],
-) -> impl Fn(&[F]) -> Result<Vec<Vec<F>>, crate::Error> + 'a
-where
-    F: Field,
-    C: Circuit<F>,
-{
-    let (cs, config) = {
-        let mut cs = ConstraintSystem::default();
-        let config = C::configure(&mut cs);
-        (cs, config)
-    };
+pub struct Halo2Circuit<F: Field, C: Circuit<F>> {
+    k: u32,
+    instances: Vec<Vec<F>>,
+    circuit: C,
+    config: C::Config,
+    constants: Vec<Column<Fixed>>,
+    num_witness_polys: Vec<usize>,
+    advice_idx_in_phase: Vec<usize>,
+    challenge_idx: Vec<usize>,
+    row_map: Vec<usize>,
+}
 
-    let phase_map =
-        HashMap::<_, _>::from_iter(phase_offsets(&cs.challenge_phase()).into_iter().zip(0..));
-    let num_witness_polys = num_by_phase(&cs.advice_column_phase());
-    let advice_idx_in_phase = idx_in_phase(&cs.advice_column_phase());
-    let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
-    let row_map = row_map(k);
+impl<F: Field, C: Circuit<F>> Halo2Circuit<F, C> {
+    pub fn new(k: usize, instances: Vec<Vec<F>>, circuit: C) -> Self {
+        let (cs, config) = {
+            let mut cs = ConstraintSystem::default();
+            let config = C::configure(&mut cs);
+            (cs, config)
+        };
 
-    move |challenges| {
-        let phase = phase_map[&challenges.len()];
-        let mut witness_collector = WitnessCollector {
+        let num_witness_polys = num_by_phase(&cs.advice_column_phase());
+        let advice_idx_in_phase = idx_in_phase(&cs.advice_column_phase());
+        let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
+        let row_map = row_map(k);
+
+        Self {
             k: k as u32,
-            phase,
-            advice_idx_in_phase: &advice_idx_in_phase,
-            challenge_idx: &challenge_idx,
             instances,
-            advices: vec![vec![F::zero().into(); 1 << k]; num_witness_polys[phase as usize]],
+            circuit,
+            config,
+            constants: cs.constants().clone(),
+            num_witness_polys,
+            advice_idx_in_phase,
+            challenge_idx,
+            row_map,
+        }
+    }
+
+    pub fn instances(&self) -> Vec<&[F]> {
+        self.instances.iter().map(Vec::as_slice).collect()
+    }
+}
+
+impl<F: Field, C: Circuit<F>> AsRef<C> for Halo2Circuit<F, C> {
+    fn as_ref(&self) -> &C {
+        &self.circuit
+    }
+}
+
+impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
+    fn synthesize(&self, phase: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, crate::Error> {
+        let instances = self.instances.iter().map(Vec::as_slice).collect_vec();
+        let mut witness_collector = WitnessCollector {
+            k: self.k,
+            phase: phase as u8,
+            advice_idx_in_phase: &self.advice_idx_in_phase,
+            challenge_idx: &self.challenge_idx,
+            instances: instances.as_slice(),
+            advices: vec![vec![F::zero().into(); 1 << self.k]; self.num_witness_polys[phase]],
             challenges,
-            row_map: &row_map,
+            row_map: &self.row_map,
         };
 
         C::FloorPlanner::synthesize(
             &mut witness_collector,
-            circuit,
-            config.clone(),
-            cs.constants().clone(),
+            &self.circuit,
+            self.config.clone(),
+            self.constants.clone(),
         )
         .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
 

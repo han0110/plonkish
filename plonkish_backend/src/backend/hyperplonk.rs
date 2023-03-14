@@ -8,7 +8,7 @@ use crate::{
             },
             verifier::verify_zero_check,
         },
-        PlonkishBackend, PlonkishCircuitInfo,
+        PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
     },
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
@@ -158,7 +158,7 @@ where
     fn prove(
         pp: &Self::ProverParam,
         instances: &[&[F]],
-        witness_collector: &impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
+        circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
@@ -170,19 +170,20 @@ where
         }
         let instances_polys = instances_polys(pp.num_vars, instances.iter().cloned());
 
-        // Phase 0..n
+        // Round 0..n
 
         let mut witness_polys = Vec::with_capacity(pp.num_witness_polys.iter().sum());
         let mut witness_comms = Vec::with_capacity(witness_polys.len());
         let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>() + 4);
-        for (phase, (num_witness_polys, num_challenges)) in pp
+        for (round, (num_witness_polys, num_challenges)) in pp
             .num_witness_polys
             .iter()
             .zip_eq(pp.num_challenges.iter())
             .enumerate()
         {
-            let timer = start_timer(|| format!("witness_collector-{phase}"));
-            let polys = witness_collector(&challenges)?
+            let timer = start_timer(|| format!("witness_collector-{round}"));
+            let polys = circuit
+                .synthesize(round, &challenges)?
                 .into_iter()
                 .map(MultilinearPolynomial::new)
                 .collect_vec();
@@ -199,7 +200,7 @@ where
             .chain(witness_polys.iter())
             .collect_vec();
 
-        // Phase n
+        // Round n
 
         let theta = transcript.squeeze_challenge();
 
@@ -213,7 +214,7 @@ where
             Pcs::batch_commit_and_write(&pp.pcs, polys, transcript)?
         };
 
-        // Phase n+1
+        // Round n+1
 
         let beta = transcript.squeeze_challenge();
         let gamma = transcript.squeeze_challenge();
@@ -236,7 +237,7 @@ where
         let z_polys = lookup_z_polys.iter().chain(&permutation_z_polys);
         let z_comms = Pcs::batch_commit_and_write(&pp.pcs, z_polys, transcript)?;
 
-        // Phase n+2
+        // Round n+2
 
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_challenges(pp.num_vars);
@@ -289,7 +290,7 @@ where
             }
         }
 
-        // Phase 0..n
+        // Round 0..n
 
         let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
         let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 4);
@@ -300,7 +301,7 @@ where
             challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
 
-        // Phase n
+        // Round n
 
         let theta = transcript.squeeze_challenge();
 
@@ -310,7 +311,7 @@ where
         .take(vp.num_lookup)
         .try_collect::<_, Vec<_>, _>()?;
 
-        // Phase n+1
+        // Round n+1
 
         let beta = transcript.squeeze_challenge();
         let gamma = transcript.squeeze_challenge();
@@ -319,7 +320,7 @@ where
         let permutation_z_comms =
             transcript.read_commitments(div_ceil(vp.permutation_comms.len(), vp.max_degree - 1))?;
 
-        // Phase n+2
+        // Round n+2
 
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_challenges(vp.num_vars);
@@ -363,7 +364,7 @@ pub(crate) mod test {
                 util::{rand_plonk_circuit, rand_plonk_with_lookup_circuit},
                 HyperPlonk,
             },
-            PlonkishBackend, PlonkishCircuitInfo,
+            PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
         },
         pcs::{
             multilinear::{MultilinearBrakedown, MultilinearKzg},
@@ -382,15 +383,14 @@ pub(crate) mod test {
             },
             Itertools,
         },
-        Error,
     };
     use halo2_curves::bn256::{Bn256, Fr};
     use rand::rngs::OsRng;
     use std::{hash::Hash, ops::Range};
 
-    pub(crate) fn run_hyperplonk<F, Pcs, T, W>(
+    pub(crate) fn run_hyperplonk<F, Pcs, T, C>(
         num_vars_range: Range<usize>,
-        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, W),
+        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, C),
     ) where
         F: PrimeField + Ord + Hash,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>, Point = Vec<F>>,
@@ -398,10 +398,10 @@ pub(crate) mod test {
             + TranscriptWrite<Pcs::Commitment, F>
             + InMemoryTranscriptRead
             + InMemoryTranscriptWrite,
-        W: Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
+        C: PlonkishCircuit<F>,
     {
         for num_vars in num_vars_range {
-            let (circuit_info, instances, witness) = circuit_fn(num_vars);
+            let (circuit_info, instances, circuit) = circuit_fn(num_vars);
             let instances = instances.iter().map(Vec::as_slice).collect_vec();
 
             let timer = start_timer(|| format!("setup-{num_vars}"));
@@ -415,7 +415,7 @@ pub(crate) mod test {
             let timer = start_timer(|| format!("prove-{num_vars}"));
             let proof = {
                 let mut transcript = T::default();
-                HyperPlonk::<Pcs>::prove(&pp, &instances, &witness, &mut transcript, OsRng)
+                HyperPlonk::<Pcs>::prove(&pp, &instances, &circuit, &mut transcript, OsRng)
                     .unwrap();
                 transcript.into_proof()
             };

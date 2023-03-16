@@ -1,7 +1,7 @@
 use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{inner_product, product, BooleanHypercube, Field, PrimeField},
+        arithmetic::{inner_product, powers, product, BooleanHypercube, Field, PrimeField},
         expression::{CommonPolynomial, Expression, Query},
         transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         BitIndex, Itertools,
@@ -121,7 +121,7 @@ pub fn eq_xy_eval<F: PrimeField>(x: &[F], y: &[F]) -> F {
 }
 
 fn identity_eval<F: PrimeField>(x: &[F]) -> F {
-    inner_product(x, &(0..x.len()).map(|idx| F::from(1 << idx)).collect_vec())
+    inner_product(x, &powers(F::from(2)).take(x.len()).collect_vec())
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ where
     fn prove(
         pp: &Self::ProverParam,
         instances: &[&[F]],
-        witness_collector: &impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
+        circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
@@ -127,5 +127,21 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
                 .iter()
                 .flat_map(|lookup| lookup.iter().flat_map(|(input, table)| [input, table])),
         )
+    }
+}
+
+pub trait PlonkishCircuit<F> {
+    fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error>;
+}
+
+#[cfg(any(test, feature = "benchmark"))]
+mod test {
+    use crate::{backend::PlonkishCircuit, Error};
+
+    impl<F: Clone> PlonkishCircuit<F> for Vec<Vec<F>> {
+        fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error> {
+            assert!(round == 0 && challenges.is_empty());
+            Ok(self.to_vec())
+        }
     }
 }

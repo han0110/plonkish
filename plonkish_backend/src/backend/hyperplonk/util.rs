@@ -4,7 +4,7 @@ use crate::{
             preprocess::{compose, permutation_polys},
             prover::{instances_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
         },
-        PlonkishCircuitInfo,
+        PlonkishCircuit, PlonkishCircuitInfo,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
@@ -13,7 +13,6 @@ use crate::{
         test::{rand_array, rand_idx, rand_vec},
         Itertools,
     },
-    Error,
 };
 use num_integer::Integer;
 use rand::RngCore;
@@ -97,11 +96,7 @@ pub fn plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
 pub fn rand_plonk_circuit<F: PrimeField>(
     num_vars: usize,
     mut rng: impl RngCore,
-) -> (
-    PlonkishCircuitInfo<F>,
-    Vec<Vec<F>>,
-    impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
-) {
+) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, impl PlonkishCircuit<F>) {
     let size = 1 << num_vars;
     let mut polys = [(); 9].map(|_| vec![F::zero(); size]);
 
@@ -155,9 +150,7 @@ pub fn rand_plonk_circuit<F: PrimeField>(
         [q_l, q_r, q_m, q_o, q_c],
         permutation.into_cycles(),
     );
-    (circuit_info, vec![instances], move |_| {
-        Ok(vec![w_l.clone(), w_r.clone(), w_o.clone()])
-    })
+    (circuit_info, vec![instances], vec![w_l, w_r, w_o])
 }
 
 pub fn rand_plonk_assignment<F: PrimeField>(
@@ -165,8 +158,8 @@ pub fn rand_plonk_assignment<F: PrimeField>(
     mut rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, witness) = rand_plonk_circuit(num_vars, &mut rng);
-        let witness = witness(&[]).unwrap();
+        let (circuit_info, instances, circuit) = rand_plonk_circuit(num_vars, &mut rng);
+        let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
             .chain(instances_polys(num_vars, &instances))
             .chain(
@@ -206,11 +199,7 @@ pub fn rand_plonk_assignment<F: PrimeField>(
 pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
     num_vars: usize,
     mut rng: impl RngCore,
-) -> (
-    PlonkishCircuitInfo<F>,
-    Vec<Vec<F>>,
-    impl Fn(&[F]) -> Result<Vec<Vec<F>>, Error>,
-) {
+) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, impl PlonkishCircuit<F>) {
     let size = 1 << num_vars;
     let mut polys = [(); 13].map(|_| vec![F::zero(); size]);
 
@@ -296,9 +285,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
         [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o],
         permutation.into_cycles(),
     );
-    (circuit_info, vec![instances], move |_| {
-        Ok(vec![w_l.clone(), w_r.clone(), w_o.clone()])
-    })
+    (circuit_info, vec![instances], vec![w_l, w_r, w_o])
 }
 
 pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
@@ -306,8 +293,8 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
     mut rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, witness) = rand_plonk_with_lookup_circuit(num_vars, &mut rng);
-        let witness = witness(&[]).unwrap();
+        let (circuit_info, instances, circuit) = rand_plonk_with_lookup_circuit(num_vars, &mut rng);
+        let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
             .chain(instances_polys(num_vars, &instances))
             .chain(
@@ -359,13 +346,13 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
 }
 
 #[derive(Default)]
-struct Permutation {
+pub struct Permutation {
     cycles: Vec<HashSet<(usize, usize)>>,
     cycle_idx: HashMap<(usize, usize), usize>,
 }
 
 impl Permutation {
-    fn copy(&mut self, lhs: (usize, usize), rhs: (usize, usize)) {
+    pub fn copy(&mut self, lhs: (usize, usize), rhs: (usize, usize)) {
         match self.cycle_idx.get(&lhs).copied() {
             Some(cycle_idx) => {
                 self.cycles[cycle_idx].insert(rhs);
@@ -381,7 +368,7 @@ impl Permutation {
         };
     }
 
-    fn into_cycles(self) -> Vec<Vec<(usize, usize)>> {
+    pub fn into_cycles(self) -> Vec<Vec<(usize, usize)>> {
         self.cycles
             .into_iter()
             .map(|cycle| cycle.into_iter().sorted().collect_vec())

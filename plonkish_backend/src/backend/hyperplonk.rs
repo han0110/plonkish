@@ -29,6 +29,8 @@ mod preprocessor;
 mod prover;
 mod verifier;
 
+pub mod folding;
+
 #[cfg(any(test, feature = "benchmark"))]
 pub mod util;
 
@@ -81,6 +83,7 @@ where
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
     type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
     type ProverState = ();
+    type VerifierState = ();
 
     fn setup(
         circuit_info: &PlonkishCircuitInfo<F>,
@@ -291,6 +294,7 @@ where
 
     fn verify(
         vp: &Self::VerifierParam,
+        _: impl BorrowMut<Self::VerifierState>,
         instances: &[&[F]],
         transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
@@ -447,7 +451,7 @@ pub(crate) mod test {
             let timer = start_timer(|| format!("verify-{num_vars}"));
             let result = {
                 let mut transcript = T::from_proof(proof.as_slice());
-                HyperPlonk::<Pcs>::verify(&vp, &instances, &mut transcript, seeded_std_rng())
+                HyperPlonk::<Pcs>::verify(&vp, (), &instances, &mut transcript, seeded_std_rng())
             };
             assert_eq!(result, Ok(()));
             end_timer(timer);

@@ -7,6 +7,8 @@ use std::{
     ops::{Add, Mul, Neg, Sub},
 };
 
+pub mod relaxed;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rotation(pub i32);
 

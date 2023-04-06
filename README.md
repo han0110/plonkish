@@ -1,6 +1,6 @@
 # Plonkish
 
-Plonkish toolbox.
+Research focused repository on plonkish arithmetization.
 
 ## Benchmark
 
@@ -41,5 +41,6 @@ Note that `plotter` requires `gnuplot` installed already.
 
 ## Acknowledgements
 
+- Types for plonkish circuit structure are ported from https://github.com/zcash/halo2.
 - Most part of [HyperPlonk](https://eprint.iacr.org/2022/1355.pdf) and multilinear KZG PCS implementation are ported from https://github.com/EspressoSystems/hyperplonk with reorganization and extension to support `halo2` constraint system.
 - Most part of [Brakedown](https://eprint.iacr.org/2021/1043.pdf) specification and multilinear PCS implementation are ported from https://github.com/conroi/lcpc.

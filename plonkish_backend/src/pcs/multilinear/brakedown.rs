@@ -252,8 +252,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         Ok(())
     }
 
-    // TODO: Could we do the proximity test (and merkle tree opening)
-    // using the same random tensors (and path) for all queries?
+    // TODO: Apply 2022/1355
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,

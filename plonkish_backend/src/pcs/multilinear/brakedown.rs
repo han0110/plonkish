@@ -6,7 +6,7 @@
 //! [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
 
 use crate::{
-    pcs::{multilinear::validate_input, Evaluation, PolynomialCommitmentScheme},
+    pcs::{multilinear::validate_input, Evaluation, Point, Polynomial, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, inner_product, PrimeField},
@@ -80,7 +80,6 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     type ProverParam = MultilinearBrakedownParams<F>;
     type VerifierParam = MultilinearBrakedownParams<F>;
     type Polynomial = MultilinearPolynomial<F>;
-    type Point = Vec<F>;
     type Commitment = Output<H>;
     type CommitmentWithAux = MultilinearBrakedownCommitment<F, H>;
 
@@ -190,7 +189,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         comm: &Self::CommitmentWithAux,
-        point: &Self::Point,
+        point: &Point<F, Self::Polynomial>,
         eval: &F,
         transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error> {
@@ -257,7 +256,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
-        points: &[Self::Point],
+        points: &[Point<F, Self::Polynomial>],
         evals: &[Evaluation<F>],
         transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error> {
@@ -279,7 +278,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
-        point: &Self::Point,
+        point: &Point<F, Self::Polynomial>,
         eval: &F,
         transcript: &mut impl TranscriptRead<Self::Commitment, F>,
     ) -> Result<(), Error> {
@@ -362,7 +361,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     fn batch_verify(
         vp: &Self::VerifierParam,
         comms: &[Self::Commitment],
-        points: &[Self::Point],
+        points: &[Point<F, Self::Polynomial>],
         evals: &[Evaluation<F>],
         transcript: &mut impl TranscriptRead<Self::Commitment, F>,
     ) -> Result<(), Error> {

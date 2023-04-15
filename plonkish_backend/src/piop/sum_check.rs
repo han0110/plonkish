@@ -196,14 +196,13 @@ pub(super) mod test {
             #[test]
             fn sum_check_lagrange() {
                 use halo2_curves::bn256::Fr;
-                use rand::rngs::OsRng;
                 use $crate::{
                     piop::sum_check::test::run_zero_check,
                     poly::multilinear::MultilinearPolynomial,
                     util::{
                         arithmetic::{BooleanHypercube, Field},
                         expression::{CommonPolynomial, Expression, Query, Rotation},
-                        test::rand_vec,
+                        test::{rand_vec, seeded_std_rng},
                         Itertools,
                     },
                 };
@@ -239,8 +238,8 @@ pub(super) mod test {
                                 polys
                             })
                             .collect_vec();
-                        let alpha = Fr::random(OsRng);
-                        (polys, vec![alpha], rand_vec(num_vars, OsRng))
+                        let alpha = Fr::random(seeded_std_rng());
+                        (polys, vec![alpha], rand_vec(num_vars, seeded_std_rng()))
                     },
                 );
             }
@@ -248,7 +247,6 @@ pub(super) mod test {
             #[test]
             fn sum_check_rotation() {
                 use halo2_curves::bn256::Fr;
-                use rand::rngs::OsRng;
                 use std::iter;
                 use $crate::{
                     piop::sum_check::test::run_zero_check,
@@ -256,7 +254,7 @@ pub(super) mod test {
                     util::{
                         arithmetic::{BooleanHypercube, Field},
                         expression::{Expression, Query, Rotation},
-                        test::rand_vec,
+                        test::{rand_vec, seeded_std_rng},
                         Itertools,
                     },
                 };
@@ -287,13 +285,13 @@ pub(super) mod test {
                                 .map(|idx| f[bh.rotate(idx, Rotation::next())])
                                 .collect_vec()
                         };
-                        let poly = rand_vec(1 << num_vars, OsRng);
+                        let poly = rand_vec(1 << num_vars, seeded_std_rng());
                         let polys = iter::successors(Some(poly), |poly| Some(rotate(poly)))
                             .map(MultilinearPolynomial::new)
                             .take(2 * num_vars - 1)
                             .collect_vec();
-                        let alpha = Fr::random(OsRng);
-                        (polys, vec![alpha], rand_vec(num_vars, OsRng))
+                        let alpha = Fr::random(seeded_std_rng());
+                        (polys, vec![alpha], rand_vec(num_vars, seeded_std_rng()))
                     },
                 );
             }
@@ -301,11 +299,10 @@ pub(super) mod test {
             #[test]
             fn sum_check_plonk() {
                 use halo2_curves::bn256::Fr;
-                use rand::rngs::OsRng;
                 use $crate::{
                     backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
                     piop::sum_check::test::run_zero_check,
-                    util::test::rand_vec,
+                    util::test::{rand_vec, seeded_std_rng},
                 };
 
                 run_zero_check::<$impl>(
@@ -313,8 +310,9 @@ pub(super) mod test {
                     |_| plonk_expression(),
                     |_| ((), ()),
                     |num_vars| {
-                        let (polys, challenges) = rand_plonk_assignment(num_vars, OsRng);
-                        (polys, challenges, rand_vec(num_vars, OsRng))
+                        let (polys, challenges) =
+                            rand_plonk_assignment(num_vars, seeded_std_rng(), seeded_std_rng());
+                        (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
                     },
                 );
             }
@@ -322,13 +320,12 @@ pub(super) mod test {
             #[test]
             fn sum_check_plonk_with_lookup() {
                 use halo2_curves::bn256::Fr;
-                use rand::rngs::OsRng;
                 use $crate::{
                     backend::hyperplonk::util::{
                         plonk_with_lookup_expression, rand_plonk_with_lookup_assignment,
                     },
                     piop::sum_check::test::run_zero_check,
-                    util::test::rand_vec,
+                    util::test::{rand_vec, seeded_std_rng},
                 };
 
                 run_zero_check::<$impl>(
@@ -336,9 +333,12 @@ pub(super) mod test {
                     |_| plonk_with_lookup_expression(),
                     |_| ((), ()),
                     |num_vars| {
-                        let (polys, challenges) =
-                            rand_plonk_with_lookup_assignment(num_vars, OsRng);
-                        (polys, challenges, rand_vec(num_vars, OsRng))
+                        let (polys, challenges) = rand_plonk_with_lookup_assignment(
+                            num_vars,
+                            seeded_std_rng(),
+                            seeded_std_rng(),
+                        );
+                        (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
                     },
                 );
             }

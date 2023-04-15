@@ -80,7 +80,7 @@ mod test {
     pub(super) fn run_commit_open_verify<F, Pcs, T>()
     where
         F: PrimeField,
-        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>, Point = Vec<F>>,
+        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::Commitment, F>
             + TranscriptWrite<Pcs::Commitment, F>
             + InMemoryTranscriptRead
@@ -123,7 +123,7 @@ mod test {
     pub(super) fn run_batch_commit_open_verify<F, Pcs, T>()
     where
         F: PrimeField,
-        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>, Point = Vec<F>>,
+        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::Commitment, F>
             + TranscriptWrite<Pcs::Commitment, F>
             + InMemoryTranscriptRead

@@ -2,13 +2,14 @@ use crate::{
     backend::{
         hyperplonk::{
             preprocess::{compose, permutation_polys},
-            prover::{instances_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
+            prover::{instance_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
         },
         PlonkishCircuit, PlonkishCircuitInfo,
     },
+    pcs::Polynomial,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::PrimeField,
+        arithmetic::{BooleanHypercube, PrimeField},
         expression::{Expression, Query, Rotation},
         test::{rand_array, rand_idx, rand_vec},
         Itertools,
@@ -19,7 +20,6 @@ use rand::RngCore;
 use std::{
     array,
     collections::{HashMap, HashSet},
-    hash::Hash,
     iter,
 };
 
@@ -51,8 +51,8 @@ pub fn plonk_expression<F: PrimeField>() -> Expression<F> {
         Default::default(),
         vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
     );
-    let (max_degree, expression) = compose(&circuit_info);
-    assert_eq!(max_degree, 4);
+    let (num_permutation_z_polys, expression) = compose(&circuit_info);
+    assert_eq!(num_permutation_z_polys, 1);
     expression
 }
 
@@ -88,37 +88,45 @@ pub fn plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
         Default::default(),
         vec![vec![(10, 1)], vec![(11, 1)], vec![(12, 1)]],
     );
-    let (max_degree, expression) = compose(&circuit_info);
-    assert_eq!(max_degree, 4);
+    let (num_permutation_z_polys, expression) = compose(&circuit_info);
+    assert_eq!(num_permutation_z_polys, 1);
     expression
 }
 
 pub fn rand_plonk_circuit<F: PrimeField>(
     num_vars: usize,
-    mut rng: impl RngCore,
+    mut preprocess_rng: impl RngCore,
+    mut witness_rng: impl RngCore,
 ) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, impl PlonkishCircuit<F>) {
     let size = 1 << num_vars;
     let mut polys = [(); 9].map(|_| vec![F::zero(); size]);
 
-    let instances = rand_vec(num_vars, &mut rng);
-    polys[0] = instances_polys(num_vars, [&instances])[0].evals().to_vec();
+    let instances = rand_vec(num_vars, &mut witness_rng);
+    polys[0] = instance_polys(num_vars, [&instances])[0].evals().to_vec();
 
     let mut permutation = Permutation::default();
+    for poly in [6, 7, 8] {
+        permutation.copy((poly, 1), (poly, 1));
+    }
     for idx in 0..size {
-        let [w_l, w_r, q_c] = if rng.next_u32().is_even() && idx > 1 {
-            let [l_copy_idx, r_copy_idx] =
-                [(); 2].map(|_| (rand_idx(6..9, &mut rng), rand_idx(1..idx, &mut rng)));
+        let [w_l, w_r] = if preprocess_rng.next_u32().is_even() && idx > 1 {
+            let [l_copy_idx, r_copy_idx] = [(); 2].map(|_| {
+                (
+                    rand_idx(6..9, &mut preprocess_rng),
+                    rand_idx(1..idx, &mut preprocess_rng),
+                )
+            });
             permutation.copy(l_copy_idx, (6, idx));
             permutation.copy(r_copy_idx, (7, idx));
             [
                 polys[l_copy_idx.0][l_copy_idx.1],
                 polys[r_copy_idx.0][r_copy_idx.1],
-                F::zero(),
             ]
         } else {
-            rand_array(&mut rng)
+            rand_array(&mut witness_rng)
         };
-        let values = if rng.next_u32().is_even() {
+        let q_c = F::random(&mut preprocess_rng);
+        let values = if preprocess_rng.next_u32().is_even() {
             vec![
                 (1, F::one()),
                 (2, F::one()),
@@ -155,13 +163,15 @@ pub fn rand_plonk_circuit<F: PrimeField>(
 
 pub fn rand_plonk_assignment<F: PrimeField>(
     num_vars: usize,
-    mut rng: impl RngCore,
+    mut preprocess_rng: impl RngCore,
+    mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, circuit) = rand_plonk_circuit(num_vars, &mut rng);
+        let (circuit_info, instances, circuit) =
+            rand_plonk_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
-            .chain(instances_polys(num_vars, &instances))
+            .chain(instance_polys(num_vars, &instances))
             .chain(
                 iter::empty()
                     .chain(circuit_info.preprocess_polys)
@@ -171,12 +181,12 @@ pub fn rand_plonk_assignment<F: PrimeField>(
             .collect_vec();
         (polys, circuit_info.permutations)
     };
-    let challenges: [_; 4] = rand_array(&mut rng);
+    let challenges: [_; 4] = rand_array(&mut witness_rng);
     let [_, beta, gamma, _] = challenges;
 
     let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &permutations);
     let permutation_z_polys = permutation_z_polys(
-        4,
+        1,
         &[6, 7, 8]
             .into_iter()
             .zip(permutation_polys.iter().cloned())
@@ -198,49 +208,56 @@ pub fn rand_plonk_assignment<F: PrimeField>(
 
 pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
     num_vars: usize,
-    mut rng: impl RngCore,
+    mut preprocess_rng: impl RngCore,
+    mut witness_rng: impl RngCore,
 ) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, impl PlonkishCircuit<F>) {
     let size = 1 << num_vars;
     let mut polys = [(); 13].map(|_| vec![F::zero(); size]);
 
-    let (t_l, t_r, t_o) = {
-        let max = 1u64 << ((num_vars >> 1) - num_vars.is_even() as usize);
-        iter::once((F::zero(), F::zero(), F::zero()))
-            .chain(
-                (0..max)
-                    .cartesian_product(0..max)
-                    .map(|(lhs, rhs)| (F::from(lhs), F::from(rhs), F::from(lhs ^ rhs))),
-            )
-            .chain(iter::repeat_with(|| (F::zero(), F::zero(), F::zero())))
+    let [t_l, t_r, t_o] = [(); 3].map(|_| {
+        iter::empty()
+            .chain([F::zero(), F::zero()])
+            .chain(iter::repeat_with(|| F::random(&mut preprocess_rng)))
             .take(size)
-            .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>()
-    };
+            .collect_vec()
+    });
     polys[7] = t_l;
     polys[8] = t_r;
     polys[9] = t_o;
 
-    let instances = rand_vec(num_vars, &mut rng);
-    polys[0] = instances_polys(num_vars, [&instances])[0].evals().to_vec();
+    let instances = rand_vec(num_vars, &mut witness_rng);
+    polys[0] = instance_polys(num_vars, [&instances])[0].evals().to_vec();
+    let instance_rows = BooleanHypercube::new(num_vars)
+        .iter()
+        .take(num_vars + 1)
+        .collect::<HashSet<_>>();
 
     let mut permutation = Permutation::default();
+    for poly in [10, 11, 12] {
+        permutation.copy((poly, 1), (poly, 1));
+    }
     for idx in 0..size {
-        let use_copy = rng.next_u32().is_even() && idx > 1;
-        let [w_l, w_r, q_c] = if use_copy {
-            let [l_copy_idx, r_copy_idx] =
-                [(); 2].map(|_| (rand_idx(10..13, &mut rng), rand_idx(1..idx, &mut rng)));
+        let use_copy = preprocess_rng.next_u32().is_even() && idx > 1;
+        let [w_l, w_r] = if use_copy {
+            let [l_copy_idx, r_copy_idx] = [(); 2].map(|_| {
+                (
+                    rand_idx(10..13, &mut preprocess_rng),
+                    rand_idx(1..idx, &mut preprocess_rng),
+                )
+            });
             permutation.copy(l_copy_idx, (10, idx));
             permutation.copy(r_copy_idx, (11, idx));
             [
                 polys[l_copy_idx.0][l_copy_idx.1],
                 polys[r_copy_idx.0][r_copy_idx.1],
-                F::zero(),
             ]
         } else {
-            rand_array(&mut rng)
+            rand_array(&mut witness_rng)
         };
+        let q_c = F::random(&mut preprocess_rng);
         let values = match (
-            use_copy || !polys[0][idx].is_zero_vartime(),
-            rng.next_u32().is_even(),
+            use_copy || instance_rows.contains(&idx),
+            preprocess_rng.next_u32().is_even(),
         ) {
             (true, true) => {
                 vec![
@@ -264,7 +281,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
                 ]
             }
             (false, _) => {
-                let idx = rand_idx(1..size, &mut rng);
+                let idx = rand_idx(1..size, &mut witness_rng);
                 vec![
                     (6, F::one()),
                     (10, polys[7][idx]),
@@ -288,15 +305,17 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
     (circuit_info, vec![instances], vec![w_l, w_r, w_o])
 }
 
-pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
+pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord>(
     num_vars: usize,
-    mut rng: impl RngCore,
+    mut preprocess_rng: impl RngCore,
+    mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, circuit) = rand_plonk_with_lookup_circuit(num_vars, &mut rng);
+        let (circuit_info, instances, circuit) =
+            rand_plonk_with_lookup_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
-            .chain(instances_polys(num_vars, &instances))
+            .chain(instance_polys(num_vars, &instances))
             .chain(
                 iter::empty()
                     .chain(circuit_info.preprocess_polys)
@@ -306,7 +325,7 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
             .collect_vec();
         (polys, circuit_info.permutations)
     };
-    let challenges: [_; 4] = rand_array(&mut rng);
+    let challenges: [_; 4] = rand_array(&mut witness_rng);
     let [theta, beta, gamma, _] = challenges;
 
     let (lookup_compressed_polys, lookup_permuted_polys) = {
@@ -323,7 +342,7 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord + Hash>(
 
     let permutation_polys = permutation_polys(num_vars, &[10, 11, 12], &permutations);
     let permutation_z_polys = permutation_z_polys(
-        4,
+        1,
         &[10, 11, 12]
             .into_iter()
             .zip(permutation_polys.iter().cloned())

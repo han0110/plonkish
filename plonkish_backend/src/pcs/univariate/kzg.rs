@@ -1,5 +1,5 @@
 use crate::{
-    pcs::{Evaluation, PolynomialCommitmentScheme},
+    pcs::{Evaluation, Point, PolynomialCommitmentScheme},
     poly::univariate::UnivariatePolynomial,
     util::{
         arithmetic::{
@@ -109,7 +109,6 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
     type Polynomial = UnivariatePolynomial<M::Scalar>;
-    type Point = M::Scalar;
     type Commitment = M::G1Affine;
     type CommitmentWithAux = UnivariateKzgCommitment<M>;
 
@@ -198,7 +197,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         _: &Self::CommitmentWithAux,
-        point: &Self::Point,
+        point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
@@ -229,7 +228,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
-        points: &[Self::Point],
+        points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
@@ -251,7 +250,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
-        point: &Self::Point,
+        point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
@@ -266,7 +265,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn batch_verify(
         vp: &Self::VerifierParam,
         comms: &[Self::Commitment],
-        points: &[Self::Point],
+        points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {

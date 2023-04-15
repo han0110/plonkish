@@ -118,8 +118,10 @@ pub fn fe_from_bytes_le<F: PrimeField>(bytes: impl AsRef<[u8]>) -> F {
     F::from_repr(repr).unwrap()
 }
 
-pub fn usize_from_bits_be(bits: impl Iterator<Item = bool>) -> usize {
-    bits.fold(0, |int, bit| (int << 1) + (bit as usize))
+pub fn usize_from_bits_le(bits: &[bool]) -> usize {
+    bits.iter()
+        .rev()
+        .fold(0, |int, bit| (int << 1) + (*bit as usize))
 }
 
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {

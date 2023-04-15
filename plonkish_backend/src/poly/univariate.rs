@@ -1,8 +1,11 @@
-use crate::util::{
-    arithmetic::{div_ceil, horner, powers, Field},
-    impl_index,
-    parallel::{num_threads, parallelize, parallelize_iter},
-    Itertools,
+use crate::{
+    pcs::Polynomial,
+    util::{
+        arithmetic::{div_ceil, horner, powers, Field},
+        impl_index,
+        parallel::{num_threads, parallelize, parallelize_iter},
+        Itertools,
+    },
 };
 use rand::RngCore;
 use std::{
@@ -39,6 +42,26 @@ impl<F> UnivariatePolynomial<F> {
 
     pub fn iter(&self) -> impl Iterator<Item = &F> {
         self.0.iter()
+    }
+}
+
+impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
+    type Point = F;
+
+    fn from_evals(_: Vec<F>) -> Self {
+        unimplemented!()
+    }
+
+    fn into_evals(self) -> Vec<F> {
+        unimplemented!()
+    }
+
+    fn evals(&self) -> &[F] {
+        unimplemented!()
+    }
+
+    fn evaluate(&self, point: &Self::Point) -> F {
+        UnivariatePolynomial::evaluate(self, point)
     }
 }
 

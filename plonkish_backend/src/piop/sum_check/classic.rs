@@ -3,6 +3,7 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{BooleanHypercube, Field, PrimeField},
+        end_timer,
         expression::{Expression, Rotation},
         parallel::par_map_collect,
         start_timer,
@@ -113,7 +114,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             .for_each(|constant| *constant += F::from(1 << self.round) * challenge);
         self.eq_xys
             .iter_mut()
-            .for_each(|eq_xy| eq_xy.fix_variable(challenge, &mut self.buf));
+            .for_each(|eq_xy| eq_xy.fix_var_in_place(challenge, &mut self.buf));
         if self.round == 0 {
             let rotation_maps = self
                 .expression
@@ -131,23 +132,20 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                         &rotation_maps[&query.rotation()],
                         |b| poly[*b],
                     ));
-                    rotated.fix_variable(challenge, &mut self.buf);
+                    rotated.fix_var_in_place(challenge, &mut self.buf);
                     self.polys[query.poly()]
                         [(query.rotation().0 + self.num_vars as i32) as usize] =
                         Cow::Owned(rotated);
                 }
             }
-            let size = self.size();
             self.polys.iter_mut().for_each(|polys| {
-                let mut output = MultilinearPolynomial::new(vec![F::zero(); size]);
-                polys[self.num_vars].fix_variable_into(&mut output, challenge);
-                polys[self.num_vars] = Cow::Owned(output);
+                polys[self.num_vars] = Cow::Owned(polys[self.num_vars].fix_var(challenge));
             });
         } else {
             self.polys.iter_mut().for_each(|polys| {
                 polys.iter_mut().for_each(|poly| {
                     if !poly.is_zero() {
-                        poly.to_mut().fix_variable(challenge, &mut self.buf);
+                        poly.to_mut().fix_var_in_place(challenge, &mut self.buf);
                     }
                 });
             });
@@ -160,7 +158,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
         debug_assert_eq!(self.round, self.num_vars);
         self.polys
             .iter()
-            .map(|polys| polys[self.num_vars].evals()[0])
+            .map(|polys| polys[self.num_vars][0])
             .collect()
     }
 }
@@ -238,14 +236,18 @@ where
         let prover = P::new(&state);
         let aux = P::RoundMessage::auxiliary(state.degree);
 
-        for _ in 0..num_vars {
+        for round in 0..num_vars {
+            let timer = start_timer(|| format!("sum_check_prove_round-{round}"));
             let msg = prover.prove_round(&state);
+            end_timer(timer);
             msg.write(transcript)?;
 
             let challenge = transcript.squeeze_challenge();
             challenges.push(challenge);
 
+            let timer = start_timer(|| format!("sum_check_next_round-{round}"));
             state.next_round(msg.evaluate(&aux, &challenge), &challenge);
+            end_timer(timer);
         }
 
         Ok((challenges, state.into_evals()))

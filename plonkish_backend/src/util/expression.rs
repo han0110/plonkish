@@ -1,4 +1,4 @@
-use crate::util::Itertools;
+use crate::util::{arithmetic::Field, Itertools};
 use std::{
     collections::BTreeSet,
     fmt::Debug,
@@ -318,6 +318,70 @@ impl<F: Clone> From<CommonPolynomial> for Expression<F> {
     }
 }
 
+impl<F: Field> Expression<F> {
+    pub fn zero() -> Self {
+        Expression::Constant(F::zero())
+    }
+
+    pub fn one() -> Self {
+        Expression::Constant(F::one())
+    }
+
+    pub fn simplified(&self, challenges: Option<&[F]>) -> Option<Expression<F>> {
+        let combine = |(scalar, expression): (F, Option<Expression<F>>)| {
+            if scalar == F::zero() {
+                None
+            } else if let Some(expression) = expression {
+                if scalar == F::one() {
+                    Some(expression)
+                } else if scalar == -F::one() {
+                    Some(-expression)
+                } else {
+                    Some(expression * scalar)
+                }
+            } else {
+                Some(Expression::Constant(scalar))
+            }
+        };
+        let output = self.evaluate(
+            &|constant| (constant, None),
+            &|poly| (F::one(), Some(poly.into())),
+            &|query| (F::one(), Some(query.into())),
+            &|challenge| {
+                challenges
+                    .map(|challenges| (challenges[challenge], None))
+                    .unwrap_or_else(|| (F::one(), Some(Expression::Challenge(challenge))))
+            },
+            &|(scalar, expression)| match expression {
+                Some(expression) if scalar == F::one() => (F::one(), Some(-expression)),
+                _ => (-scalar, expression),
+            },
+            &|lhs, rhs| match (lhs, rhs) {
+                ((lhs, None), (rhs, None)) => (lhs + rhs, None),
+                (lhs, rhs) => {
+                    let output = match (combine(lhs), combine(rhs)) {
+                        (Some(lhs), Some(rhs)) => Some(lhs + rhs),
+                        (Some(expression), None) | (None, Some(expression)) => Some(expression),
+                        (None, None) => None,
+                    };
+                    let scalar = output.is_some().then(F::one).unwrap_or_else(F::zero);
+                    (scalar, output)
+                }
+            },
+            &|(lhs_scalar, lhs_expression), (rhs_scalar, rhs_expression)| {
+                let output = match (lhs_expression, rhs_expression) {
+                    (Some(lhs), Some(rhs)) => Some(lhs * rhs),
+                    (Some(expression), None) | (None, Some(expression)) => Some(expression),
+                    (None, None) => None,
+                };
+                (lhs_scalar * rhs_scalar, output)
+            },
+            &|(lhs, expression), rhs| (lhs * rhs, expression),
+        );
+        combine(output)
+    }
+}
+
 macro_rules! impl_expression_ops {
     ($trait:ident, $op:ident, $variant:ident, $rhs:ty, $rhs_expr:expr) => {
         impl<F: Clone> $trait<$rhs> for Expression<F> {
@@ -366,17 +430,29 @@ impl<F: Clone> Neg for &Expression<F> {
     }
 }
 
-impl<F: Clone + Default> Sum for Expression<F> {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.reduce(|acc, item| acc + item)
-            .unwrap_or_else(|| Expression::Constant(F::default()))
+impl<'a, F: Field> Sum<&'a Expression<F>> for Expression<F> {
+    fn sum<I: Iterator<Item = &'a Expression<F>>>(iter: I) -> Self {
+        iter.cloned().sum()
     }
 }
 
-impl<F: Clone + Default> Product for Expression<F> {
+impl<F: Field> Sum for Expression<F> {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, item| acc + item)
+            .unwrap_or_else(Expression::zero)
+    }
+}
+
+impl<'a, F: Field> Product<&'a Expression<F>> for Expression<F> {
+    fn product<I: Iterator<Item = &'a Expression<F>>>(iter: I) -> Self {
+        iter.cloned().product()
+    }
+}
+
+impl<F: Field> Product for Expression<F> {
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.reduce(|acc, item| acc * item)
-            .unwrap_or_else(|| Expression::Constant(F::default()))
+            .unwrap_or_else(Expression::one)
     }
 }
 

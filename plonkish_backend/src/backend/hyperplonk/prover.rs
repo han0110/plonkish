@@ -18,12 +18,11 @@ use crate::{
     Error,
 };
 use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
+    collections::{BTreeMap, HashSet},
     iter,
 };
 
-pub(super) fn instances_polys<'a, F: PrimeField>(
+pub(super) fn instance_polys<'a, F: PrimeField>(
     num_vars: usize,
     instances: impl IntoIterator<Item = impl IntoIterator<Item = &'a F>>,
 ) -> Vec<MultilinearPolynomial<F>> {
@@ -42,7 +41,7 @@ pub(super) fn instances_polys<'a, F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn lookup_permuted_polys<F: PrimeField + Ord + Hash>(
+pub(super) fn lookup_permuted_polys<F: PrimeField + Ord>(
     lookups: &[Vec<(Expression<F>, Expression<F>)>],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
@@ -101,7 +100,7 @@ pub(super) fn lookup_permuted_polys<F: PrimeField + Ord + Hash>(
 }
 
 #[allow(clippy::type_complexity)]
-fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
+fn lookup_permuted_poly<F: PrimeField + Ord>(
     lookup: &[(Expression<F>, Expression<F>)],
     nth_map: &[usize],
     lagranges: &HashSet<(i32, usize)>,
@@ -163,9 +162,9 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
 
     let timer = start_timer(|| "permuted_input_poly");
     let permuted_input_poly = {
-        let mut permuted_input_poly = compressed_input_poly.evals().to_vec();
+        let mut permuted_input_poly = compressed_input_poly.clone();
         par_sort_unstable(&mut permuted_input_poly[1..]);
-        MultilinearPolynomial::new(permuted_input_poly)
+        permuted_input_poly
     };
     end_timer(timer);
 
@@ -173,7 +172,7 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
     let permuted_table_poly = {
         let timer = start_timer(|| "table_count");
         let mut table_count = compressed_table_poly[1..].iter().fold(
-            HashMap::<_, u32>::new(),
+            BTreeMap::<_, u32>::new(),
             |mut table_count, value| {
                 table_count
                     .entry(value)
@@ -295,7 +294,9 @@ fn lookup_z_poly<F: PrimeField>(
         }
     });
 
-    product.iter_mut().batch_invert();
+    parallelize(&mut product, |(product, _)| {
+        product.iter_mut().batch_invert();
+    });
 
     parallelize(&mut product, |(product, start)| {
         for ((product, compressed_input), compressed_table) in product
@@ -328,7 +329,7 @@ fn lookup_z_poly<F: PrimeField>(
 }
 
 pub(super) fn permutation_z_polys<F: PrimeField>(
-    max_degree: usize,
+    num_chunks: usize,
     permutation_polys: &[(usize, MultilinearPolynomial<F>)],
     polys: &[&MultilinearPolynomial<F>],
     beta: &F,
@@ -338,8 +339,7 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
         return Vec::new();
     }
 
-    let chunk_size = max_degree - 1;
-    let num_chunks = div_ceil(permutation_polys.len(), chunk_size);
+    let chunk_size = div_ceil(permutation_polys.len(), num_chunks);
     let num_vars = polys[0].num_vars();
 
     let timer = start_timer(|| "products");
@@ -361,7 +361,9 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
                 });
             }
 
-            product.iter_mut().batch_invert();
+            parallelize(&mut product, |(product, _)| {
+                product.iter_mut().batch_invert();
+            });
 
             for ((poly, _), idx) in permutation_polys.iter().zip(chunk_idx * chunk_size..) {
                 let id_offset = idx << num_vars;

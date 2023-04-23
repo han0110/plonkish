@@ -24,7 +24,7 @@ pub(super) fn verify_zero_check<F: PrimeField>(
     y: &[F],
     transcript: &mut impl FieldTranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
-    let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_, true>>::verify(
+    let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_>>::verify(
         &(),
         num_vars,
         expression.degree(),

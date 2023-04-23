@@ -2,7 +2,10 @@ use crate::{
     backend::{
         hyperplonk::{
             preprocess::{compose, permutation_polys},
-            prover::{instance_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys},
+            prover::{
+                instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
+                permutation_z_polys,
+            },
         },
         PlonkishCircuit, PlonkishCircuitInfo,
     },
@@ -20,6 +23,7 @@ use rand::RngCore;
 use std::{
     array,
     collections::{HashMap, HashSet},
+    hash::Hash,
     iter,
 };
 
@@ -181,8 +185,8 @@ pub fn rand_plonk_assignment<F: PrimeField>(
             .collect_vec();
         (polys, circuit_info.permutations)
     };
-    let challenges: [_; 4] = rand_array(&mut witness_rng);
-    let [_, beta, gamma, _] = challenges;
+    let challenges: [_; 3] = rand_array(&mut witness_rng);
+    let [beta, gamma, _] = challenges;
 
     let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &permutations);
     let permutation_z_polys = permutation_z_polys(
@@ -206,7 +210,7 @@ pub fn rand_plonk_assignment<F: PrimeField>(
     )
 }
 
-pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
+pub fn rand_plonk_with_lookup_circuit<F: PrimeField>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
@@ -305,7 +309,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField + Ord>(
     (circuit_info, vec![instances], vec![w_l, w_r, w_o])
 }
 
-pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord>(
+pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Hash>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
@@ -325,20 +329,18 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord>(
             .collect_vec();
         (polys, circuit_info.permutations)
     };
-    let challenges: [_; 4] = rand_array(&mut witness_rng);
-    let [theta, beta, gamma, _] = challenges;
+    let challenges: [_; 3] = rand_array(&mut witness_rng);
+    let [beta, gamma, _] = challenges;
 
-    let (lookup_compressed_polys, lookup_permuted_polys) = {
+    let (lookup_compressed_polys, lookup_m_polys) = {
         let PlonkishCircuitInfo { lookups, .. } =
             plonk_with_lookup_circuit_info(0, 0, Default::default(), Vec::new());
-        lookup_permuted_polys(&lookups, &polys.iter().collect_vec(), &[], &theta).unwrap()
+        let lookup_compressed_polys =
+            lookup_compressed_polys(&lookups, &polys.iter().collect_vec(), &[], &beta);
+        let lookup_m_polys = lookup_m_polys(&lookup_compressed_polys).unwrap();
+        (lookup_compressed_polys, lookup_m_polys)
     };
-    let lookup_z_polys = lookup_z_polys(
-        &lookup_compressed_polys,
-        &lookup_permuted_polys,
-        &beta,
-        &gamma,
-    );
+    let lookup_h_polys = lookup_h_polys(&lookup_compressed_polys, &lookup_m_polys, &gamma);
 
     let permutation_polys = permutation_polys(num_vars, &[10, 11, 12], &permutations);
     let permutation_z_polys = permutation_z_polys(
@@ -356,8 +358,8 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Ord>(
         iter::empty()
             .chain(polys)
             .chain(permutation_polys)
-            .chain(lookup_permuted_polys.into_iter().flatten())
-            .chain(lookup_z_polys)
+            .chain(lookup_m_polys)
+            .chain(lookup_h_polys)
             .chain(permutation_z_polys)
             .collect_vec(),
         challenges.to_vec(),

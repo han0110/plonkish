@@ -70,11 +70,9 @@ impl<'rhs, F: PrimeField> AddAssign<&'rhs Evaluations<F>> for Evaluations<F> {
 impl_index!(Evaluations, 0);
 
 #[derive(Clone, Debug)]
-pub struct EvaluationsProver<F: PrimeField, const IS_ZERO_CHECK: bool>(
-    Vec<GraphEvaluator<F, IS_ZERO_CHECK>>,
-);
+pub struct EvaluationsProver<F: PrimeField>(Vec<GraphEvaluator<F>>);
 
-impl<F, const IS_ZERO_CHECK: bool> ClassicSumCheckProver<F> for EvaluationsProver<F, IS_ZERO_CHECK>
+impl<F> ClassicSumCheckProver<F> for EvaluationsProver<F>
 where
     F: PrimeField,
 {
@@ -102,7 +100,7 @@ where
     }
 }
 
-impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHECK> {
+impl<F: PrimeField> EvaluationsProver<F> {
     fn evals<const IS_FIRST_ROUND: bool>(&self, state: &ProverState<F>) -> Evaluations<F> {
         let mut evals = Evaluations::new(state.degree);
 
@@ -130,17 +128,13 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> EvaluationsProver<F, IS_ZERO_CHEC
         }
         partials.iter().for_each(|partials| evals += partials);
 
-        if cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND {
-            assert_eq!(evals[1], F::zero());
-        }
-
         evals[0] = state.sum - evals[1];
         evals
     }
 }
 
 #[derive(Clone, Debug, Default)]
-struct GraphEvaluator<F: PrimeField, const IS_ZERO_CHECK: bool> {
+struct GraphEvaluator<F: PrimeField> {
     num_vars: usize,
     constants: Vec<F>,
     lagranges: Vec<i32>,
@@ -154,7 +148,7 @@ struct GraphEvaluator<F: PrimeField, const IS_ZERO_CHECK: bool> {
     sparse: Option<Expression<F>>,
 }
 
-impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> {
+impl<F: PrimeField> GraphEvaluator<F> {
     fn new(
         num_vars: usize,
         challenges: &[F],
@@ -472,10 +466,6 @@ impl<F: PrimeField, const IS_ZERO_CHECK: bool> GraphEvaluator<F, IS_ZERO_CHECK> 
     ) {
         self.evaluate_polys_next::<IS_FIRST_ROUND, IS_FIRST_POINT>(data, state, b);
 
-        if !cfg!(feature = "sanity-check") && IS_ZERO_CHECK && IS_FIRST_ROUND && IS_FIRST_POINT {
-            return;
-        }
-
         for (calculation, idx) in self
             .indexed_calculations
             .iter()
@@ -686,5 +676,5 @@ mod test {
         test::tests,
     };
 
-    tests!(ClassicSumCheck<EvaluationsProver<Fr, true>>);
+    tests!(ClassicSumCheck<EvaluationsProver<Fr>>);
 }

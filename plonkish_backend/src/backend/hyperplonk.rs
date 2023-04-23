@@ -3,8 +3,8 @@ use crate::{
         hyperplonk::{
             preprocess::{compose, permutation_polys},
             prover::{
-                instance_polys, lookup_permuted_polys, lookup_z_polys, permutation_z_polys,
-                prove_zero_check,
+                instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
+                permutation_z_polys, prove_zero_check,
             },
             verifier::verify_zero_check,
         },
@@ -23,7 +23,7 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{borrow::BorrowMut, fmt::Debug, iter, marker::PhantomData};
+use std::{borrow::BorrowMut, fmt::Debug, hash::Hash, iter, marker::PhantomData};
 
 pub mod frontend;
 mod preprocess;
@@ -76,7 +76,7 @@ where
 
 impl<F, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
 where
-    F: PrimeField + Ord,
+    F: PrimeField + Hash,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
@@ -204,31 +204,24 @@ where
 
         // Round n
 
-        let theta = transcript.squeeze_challenge();
-
-        let timer = start_timer(|| format!("lookup_permuted_polys-{}", pp.lookups.len()));
-        let (lookup_compressed_polys, lookup_permuted_polys) =
-            lookup_permuted_polys(&pp.lookups, &polys, &challenges, &theta)?;
-        end_timer(timer);
-
-        let lookup_permuted_comms = {
-            let polys = lookup_permuted_polys.iter().flatten();
-            Pcs::batch_commit_and_write(&pp.pcs, polys, transcript)?
-        };
-
-        // Round n+1
-
         let beta = transcript.squeeze_challenge();
         let gamma = transcript.squeeze_challenge();
 
-        let timer = start_timer(|| format!("lookup_z_polys-{}", pp.lookups.len()));
-        let lookup_z_polys = lookup_z_polys(
-            &lookup_compressed_polys,
-            &lookup_permuted_polys,
-            &beta,
-            &gamma,
-        );
-        drop(lookup_compressed_polys);
+        let timer = start_timer(|| format!("lookup_permuted_polys-{}", pp.lookups.len()));
+        let lookup_compressed_polys =
+            lookup_compressed_polys(&pp.lookups, &polys, &challenges, &beta);
+        end_timer(timer);
+
+        let timer = start_timer(|| format!("lookup_m_polys-{}", pp.lookups.len()));
+        let lookup_m_polys = lookup_m_polys(&lookup_compressed_polys)?;
+        end_timer(timer);
+
+        let lookup_m_comms = Pcs::batch_commit_and_write(&pp.pcs, &lookup_m_polys, transcript)?;
+
+        // Round n+1
+
+        let timer = start_timer(|| format!("lookup_h_polys-{}", pp.lookups.len()));
+        let lookup_h_polys = lookup_h_polys(&lookup_compressed_polys, &lookup_m_polys, &gamma);
         end_timer(timer);
 
         let timer = start_timer(|| format!("permutation_z_polys-{}", pp.permutation_polys.len()));
@@ -241,8 +234,12 @@ where
         );
         end_timer(timer);
 
-        let z_polys = lookup_z_polys.iter().chain(&permutation_z_polys);
-        let z_comms = Pcs::batch_commit_and_write(&pp.pcs, z_polys, transcript)?;
+        let lookup_h_permutation_z_polys = iter::empty()
+            .chain(lookup_h_polys.iter())
+            .chain(permutation_z_polys.iter())
+            .collect_vec();
+        let lookup_h_permutation_z_comms =
+            Pcs::batch_commit_and_write(&pp.pcs, lookup_h_permutation_z_polys.clone(), transcript)?;
 
         // Round n+2
 
@@ -252,11 +249,10 @@ where
         let polys = iter::empty()
             .chain(polys)
             .chain(pp.permutation_polys.iter().map(|(_, poly)| poly))
-            .chain(lookup_permuted_polys.iter().flatten())
-            .chain(lookup_z_polys.iter())
-            .chain(permutation_z_polys.iter())
+            .chain(lookup_m_polys.iter())
+            .chain(lookup_h_permutation_z_polys)
             .collect_vec();
-        challenges.extend([theta, beta, gamma, alpha]);
+        challenges.extend([beta, gamma, alpha]);
         let (points, evals) = prove_zero_check(
             pp.num_instances.len(),
             &pp.expression,
@@ -274,8 +270,8 @@ where
             .chain(pp.preprocess_comms.iter())
             .chain(witness_comms.iter())
             .chain(pp.permutation_comms.iter())
-            .chain(lookup_permuted_comms.iter())
-            .chain(z_comms.iter())
+            .chain(lookup_m_comms.iter())
+            .chain(lookup_h_permutation_z_comms.iter())
             .collect_vec();
         let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
         Pcs::batch_open(&pp.pcs, polys, comms, &points, &evals, transcript)?;
@@ -310,20 +306,16 @@ where
 
         // Round n
 
-        let theta = transcript.squeeze_challenge();
-
-        let permuted_comms = iter::repeat_with(|| {
-            Ok((transcript.read_commitment()?, transcript.read_commitment()?))
-        })
-        .take(vp.num_lookups)
-        .try_collect::<_, Vec<_>, _>()?;
-
-        // Round n+1
-
         let beta = transcript.squeeze_challenge();
         let gamma = transcript.squeeze_challenge();
 
-        let lookup_z_comms = transcript.read_commitments(vp.num_lookups)?;
+        let lookup_m_comms = iter::repeat_with(|| transcript.read_commitment())
+            .take(vp.num_lookups)
+            .try_collect::<_, Vec<_>, _>()?;
+
+        // Round n+1
+
+        let lookup_h_comms = transcript.read_commitments(vp.num_lookups)?;
         let permutation_z_comms = transcript.read_commitments(vp.num_permutation_z_polys)?;
 
         // Round n+2
@@ -331,7 +323,7 @@ where
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_challenges(vp.num_vars);
 
-        challenges.extend([theta, beta, gamma, alpha]);
+        challenges.extend([beta, gamma, alpha]);
         let (points, evals) = verify_zero_check(
             vp.num_vars,
             &vp.expression,
@@ -348,12 +340,8 @@ where
             .chain(vp.preprocess_comms.iter().cloned())
             .chain(witness_comms)
             .chain(vp.permutation_comms.iter().map(|(_, comm)| comm.clone()))
-            .chain(permuted_comms.into_iter().flat_map(
-                |(permuted_input_comm, permuted_table_comm)| {
-                    [permuted_input_comm, permuted_table_comm]
-                },
-            ))
-            .chain(lookup_z_comms)
+            .chain(lookup_m_comms)
+            .chain(lookup_h_comms)
             .chain(permutation_z_comms)
             .collect_vec();
         Pcs::batch_verify(&vp.pcs, &comms, &points, &evals, transcript)?;
@@ -392,13 +380,13 @@ pub(crate) mod test {
         },
     };
     use halo2_curves::bn256::{Bn256, Fr};
-    use std::ops::Range;
+    use std::{hash::Hash, ops::Range};
 
     pub(crate) fn run_hyperplonk<F, Pcs, T, C>(
         num_vars_range: Range<usize>,
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, C),
     ) where
-        F: PrimeField + Ord,
+        F: PrimeField + Hash,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::Commitment, F>
             + TranscriptWrite<Pcs::Commitment, F>

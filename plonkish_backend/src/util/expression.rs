@@ -94,10 +94,12 @@ impl<F: Clone> Expression<F> {
     where
         F: 'a,
     {
-        Expression::DistributePowers(
-            exprs.into_iter().cloned().collect_vec(),
-            base.clone().into(),
-        )
+        let mut exprs = exprs.into_iter().cloned().collect_vec();
+        match exprs.len() {
+            0 => unreachable!(),
+            1 => exprs.pop().unwrap(),
+            _ => Expression::DistributePowers(exprs, base.clone().into()),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

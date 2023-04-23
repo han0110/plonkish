@@ -13,7 +13,7 @@ use plonkish_backend::{
 };
 use pprof::criterion::{Output, PProfProfiler};
 
-type ZeroCheck = ClassicSumCheck<EvaluationsProver<Fr, true>>;
+type ZeroCheck = ClassicSumCheck<EvaluationsProver<Fr>>;
 
 fn run(num_vars: usize, virtual_poly: VirtualPolynomial<Fr>) {
     let mut transcript = Keccak256Transcript::<Vec<u8>>::default();

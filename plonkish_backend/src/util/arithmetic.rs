@@ -60,6 +60,12 @@ pub fn product<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F 
         .fold(F::one(), |acc, value| acc * value.borrow())
 }
 
+pub fn sum<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F {
+    values
+        .into_iter()
+        .fold(F::zero(), |acc, value| acc + value.borrow())
+}
+
 pub fn inner_product<'a, 'b, F: Field>(
     lhs: impl IntoIterator<Item = &'a F>,
     rhs: impl IntoIterator<Item = &'b F>,

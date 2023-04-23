@@ -591,29 +591,18 @@ fn convert_expression<F: Field>(
     expression.evaluate(
         &|constant| Expression::Constant(constant),
         &|selector| {
-            Expression::Polynomial(Query::new(
-                cs.num_instance_columns() + cs.num_fixed_columns() + selector.index(),
-                Rotation::cur(),
-            ))
+            let poly = cs.num_instance_columns() + cs.num_fixed_columns() + selector.index();
+            Query::new(poly, Rotation::cur()).into()
         },
         &|query| {
-            Expression::Polynomial(Query::new(
-                cs.num_instance_columns() + query.column_index(),
-                Rotation(query.rotation().0),
-            ))
+            let poly = cs.num_instance_columns() + query.column_index();
+            Query::new(poly, Rotation(query.rotation().0)).into()
         },
         &|query| {
-            Expression::Polynomial(Query::new(
-                advice_idx[query.column_index()],
-                Rotation(query.rotation().0),
-            ))
+            let poly = advice_idx[query.column_index()];
+            Query::new(poly, Rotation(query.rotation().0)).into()
         },
-        &|query| {
-            Expression::Polynomial(Query::new(
-                query.column_index(),
-                Rotation(query.rotation().0),
-            ))
-        },
+        &|query| Query::new(query.column_index(), Rotation(query.rotation().0)).into(),
         &|challenge| Expression::Challenge(challenge_idx[challenge.index()]),
         &|value| -value,
         &|lhs, rhs| lhs + rhs,

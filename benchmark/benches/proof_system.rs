@@ -67,7 +67,7 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     let proof = sample(System::HyperPlonk, k, || {
         let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let mut transcript = Keccak256Transcript::default();
-        HyperPlonk::prove(&pp, &instances, &circuit, &mut transcript, std_rng()).unwrap();
+        HyperPlonk::prove(&pp, (), &instances, &circuit, &mut transcript, std_rng()).unwrap();
         transcript.into_proof()
     });
 

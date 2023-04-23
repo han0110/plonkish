@@ -11,12 +11,25 @@ use std::fmt::Debug;
 pub mod multilinear;
 pub mod univariate;
 
+pub trait Polynomial<F: Field>: Clone + Debug {
+    type Point: Clone + Debug;
+
+    fn from_evals(evals: Vec<F>) -> Self;
+
+    fn into_evals(self) -> Vec<F>;
+
+    fn evals(&self) -> &[F];
+
+    fn evaluate(&self, point: &Self::Point) -> F;
+}
+
+pub type Point<F, P> = <P as Polynomial<F>>::Point;
+
 pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type Param: Debug;
     type ProverParam: Debug;
     type VerifierParam: Debug;
-    type Polynomial: Debug;
-    type Point: Debug;
+    type Polynomial: Polynomial<F>;
     type Commitment: Clone + Debug + Default;
     type CommitmentWithAux: Debug + Default + AsRef<Self::Commitment>;
 
@@ -68,7 +81,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         comm: &Self::CommitmentWithAux,
-        point: &Self::Point,
+        point: &Point<F, Self::Polynomial>,
         eval: &F,
         transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error>;
@@ -77,7 +90,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
-        points: &[Self::Point],
+        points: &[Point<F, Self::Polynomial>],
         evals: &[Evaluation<F>],
         transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
     ) -> Result<(), Error>
@@ -88,7 +101,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
-        point: &Self::Point,
+        point: &Point<F, Self::Polynomial>,
         eval: &F,
         transcript: &mut impl TranscriptRead<Self::Commitment, F>,
     ) -> Result<(), Error>;
@@ -96,7 +109,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     fn batch_verify(
         vp: &Self::VerifierParam,
         comms: &[Self::Commitment],
-        points: &[Self::Point],
+        points: &[Point<F, Self::Polynomial>],
         evals: &[Evaluation<F>],
         transcript: &mut impl TranscriptRead<Self::Commitment, F>,
     ) -> Result<(), Error>;

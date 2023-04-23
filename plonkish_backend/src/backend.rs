@@ -9,7 +9,7 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{collections::BTreeSet, fmt::Debug, iter};
+use std::{borrow::BorrowMut, collections::BTreeSet, fmt::Debug, iter};
 
 pub mod hyperplonk;
 
@@ -20,6 +20,7 @@ where
 {
     type ProverParam: Debug;
     type VerifierParam: Debug;
+    type ProverState: Debug;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Pcs::Param, Error>;
 
@@ -30,6 +31,7 @@ where
 
     fn prove(
         pp: &Self::ProverParam,
+        state: impl BorrowMut<Self::ProverState>,
         instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,

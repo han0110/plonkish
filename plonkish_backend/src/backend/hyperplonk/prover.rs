@@ -1,16 +1,16 @@
 use crate::{
     backend::hyperplonk::verifier::{pcs_query, point_offset, points},
-    pcs::Evaluation,
+    pcs::{Evaluation, Polynomial},
     piop::sum_check::{
         classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{div_ceil, powers, steps_by, BatchInvert, BooleanHypercube, PrimeField},
+        arithmetic::{div_ceil, powers, steps_by, sum, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,
         expression::{CommonPolynomial, Expression, Rotation},
-        parallel::{par_map_collect, par_sort_unstable, parallelize},
+        parallel::{num_threads, par_map_collect, parallelize, parallelize_iter},
         start_timer,
         transcript::FieldTranscriptWrite,
         Itertools,
@@ -23,7 +23,7 @@ use std::{
     iter,
 };
 
-pub(super) fn instances_polys<'a, F: PrimeField>(
+pub(super) fn instance_polys<'a, F: PrimeField>(
     num_vars: usize,
     instances: impl IntoIterator<Item = impl IntoIterator<Item = &'a F>>,
 ) -> Vec<MultilinearPolynomial<F>> {
@@ -41,25 +41,17 @@ pub(super) fn instances_polys<'a, F: PrimeField>(
         .collect()
 }
 
-#[allow(clippy::type_complexity)]
-pub(super) fn lookup_permuted_polys<F: PrimeField + Ord + Hash>(
+pub(super) fn lookup_compressed_polys<F: PrimeField>(
     lookups: &[Vec<(Expression<F>, Expression<F>)>],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
-    theta: &F,
-) -> Result<
-    (
-        Vec<[MultilinearPolynomial<F>; 2]>,
-        Vec<[MultilinearPolynomial<F>; 2]>,
-    ),
-    Error,
-> {
+    beta: &F,
+) -> Vec<[MultilinearPolynomial<F>; 2]> {
     if lookups.is_empty() {
-        return Ok(Default::default());
+        return Default::default();
     }
 
     let num_vars = polys[0].num_vars();
-    let nth_map = BooleanHypercube::new(num_vars).nth_map();
     let expression = lookups
         .iter()
         .flat_map(|lookup| lookup.iter().map(|(input, table)| (input + table)))
@@ -82,37 +74,25 @@ pub(super) fn lookup_permuted_polys<F: PrimeField + Ord + Hash>(
             .map(|idx| (idx as u64) << num_vars)
             .collect_vec()
     };
-    Ok(lookups
+    lookups
         .iter()
         .map(|lookup| {
-            lookup_permuted_poly(
-                lookup,
-                &nth_map,
-                &lagranges,
-                &identities,
-                polys,
-                challenges,
-                theta,
-            )
+            lookup_compressed_poly(lookup, &lagranges, &identities, polys, challenges, beta)
         })
-        .try_collect::<_, Vec<_>, _>()?
-        .into_iter()
-        .unzip::<_, _, Vec<_>, Vec<_>>())
+        .collect()
 }
 
-#[allow(clippy::type_complexity)]
-fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
+fn lookup_compressed_poly<F: PrimeField>(
     lookup: &[(Expression<F>, Expression<F>)],
-    nth_map: &[usize],
     lagranges: &HashSet<(i32, usize)>,
     identities: &[u64],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
-    theta: &F,
-) -> Result<([MultilinearPolynomial<F>; 2], [MultilinearPolynomial<F>; 2]), Error> {
+    beta: &F,
+) -> [MultilinearPolynomial<F>; 2] {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
-    let powers_of_theta = powers(*theta).take(lookup.len()).collect_vec();
+    let powers_of_theta = powers(*beta).take(lookup.len()).collect_vec();
     let compress = |expressions: &[&Expression<F>]| {
         powers_of_theta
             .iter()
@@ -161,174 +141,124 @@ fn lookup_permuted_poly<F: PrimeField + Ord + Hash>(
     let compressed_table_poly = compress(&tables);
     end_timer(timer);
 
-    let timer = start_timer(|| "permuted_input_poly");
-    let permuted_input_poly = {
-        let mut permuted_input_poly = compressed_input_poly.evals().to_vec();
-        par_sort_unstable(&mut permuted_input_poly[1..]);
-        MultilinearPolynomial::new(permuted_input_poly)
-    };
-    end_timer(timer);
-
-    let timer = start_timer(|| "permuted_table_poly");
-    let permuted_table_poly = {
-        let timer = start_timer(|| "table_count");
-        let mut table_count = compressed_table_poly[1..].iter().fold(
-            HashMap::<_, u32>::new(),
-            |mut table_count, value| {
-                table_count
-                    .entry(value)
-                    .and_modify(|table_count| *table_count += 1)
-                    .or_insert(1);
-                table_count
-            },
-        );
-        end_timer(timer);
-
-        let timer = start_timer(|| "repeated_indices");
-        let mut permuted_table_poly = vec![F::zero(); 1 << num_vars];
-        let mut repeated_indices = permuted_table_poly
-            .iter_mut()
-            .zip(permuted_input_poly.iter())
-            .enumerate()
-            .skip(1)
-            .filter_map(|(idx, (table, input))| {
-                if idx == 1 || *input != permuted_input_poly[idx - 1] {
-                    *table = *input;
-                    if let Some(count) = table_count.get_mut(input) {
-                        assert!(*count > 0);
-                        *count -= 1;
-                        None
-                    } else {
-                        Some(Err(Error::InvalidSnark("Invalid lookup input".to_string())))
-                    }
-                } else {
-                    Some(Ok(idx))
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        for (value, count) in table_count.into_iter() {
-            for _ in 0..count {
-                permuted_table_poly[repeated_indices.pop().unwrap()] = *value;
-            }
-        }
-        end_timer(timer);
-
-        if cfg!(feature = "sanity-check") {
-            assert!(repeated_indices.is_empty());
-        }
-
-        MultilinearPolynomial::new(permuted_table_poly)
-    };
-    end_timer(timer);
-
-    if cfg!(feature = "sanity-check") {
-        let mut last = None;
-        for (input, table) in permuted_input_poly
-            .iter()
-            .zip(permuted_table_poly.iter())
-            .skip(1)
-        {
-            if input != table {
-                assert_eq!(input, last.unwrap());
-            }
-            last = Some(input);
-        }
-    }
-
-    let timer = start_timer(|| "into_bh_order");
-    let [permuted_input_poly, permuted_table_poly] = [&permuted_input_poly, &permuted_table_poly]
-        .map(|poly| MultilinearPolynomial::new(par_map_collect(nth_map, |b| poly[*b])));
-    end_timer(timer);
-
-    Ok((
-        [compressed_input_poly, compressed_table_poly],
-        [permuted_input_poly, permuted_table_poly],
-    ))
+    [compressed_input_poly, compressed_table_poly]
 }
 
-pub(super) fn lookup_z_polys<F: PrimeField>(
+pub(super) fn lookup_m_polys<F: PrimeField + Hash>(
     compressed_polys: &[[MultilinearPolynomial<F>; 2]],
-    permuted_polys: &[[MultilinearPolynomial<F>; 2]],
-    beta: &F,
+) -> Result<Vec<MultilinearPolynomial<F>>, Error> {
+    compressed_polys.iter().map(lookup_m_poly).try_collect()
+}
+
+pub(super) fn lookup_m_poly<F: PrimeField + Hash>(
+    compressed_polys: &[MultilinearPolynomial<F>; 2],
+) -> Result<MultilinearPolynomial<F>, Error> {
+    let [input, table] = compressed_polys;
+
+    let counts = {
+        let indice_map = table.iter().zip(0..).collect::<HashMap<_, usize>>();
+
+        let chunk_size = div_ceil(input.evals().len(), num_threads());
+        let num_chunks = div_ceil(input.evals().len(), chunk_size);
+        let mut counts = vec![HashMap::new(); num_chunks];
+        let mut valids = vec![true; num_chunks];
+        parallelize_iter(
+            counts
+                .iter_mut()
+                .zip(valids.iter_mut())
+                .zip((0..).step_by(chunk_size)),
+            |((count, valid), start)| {
+                for input in input[start..].iter().take(chunk_size) {
+                    if let Some(idx) = indice_map.get(input) {
+                        count
+                            .entry(*idx)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1);
+                    } else {
+                        *valid = false;
+                        break;
+                    }
+                }
+            },
+        );
+        if valids.iter().any(|valid| !valid) {
+            return Err(Error::InvalidSnark("Invalid lookup input".to_string()));
+        }
+        counts
+    };
+
+    let mut m = vec![0; 1 << input.num_vars()];
+    for (idx, count) in counts.into_iter().flatten() {
+        m[idx] += count;
+    }
+    let m = par_map_collect(m, |count| match count {
+        0 => F::zero(),
+        1 => F::one(),
+        count => F::from(count),
+    });
+    Ok(MultilinearPolynomial::new(m))
+}
+
+pub(super) fn lookup_h_polys<F: PrimeField + Hash>(
+    compressed_polys: &[[MultilinearPolynomial<F>; 2]],
+    m_polys: &[MultilinearPolynomial<F>],
     gamma: &F,
 ) -> Vec<MultilinearPolynomial<F>> {
     compressed_polys
         .iter()
-        .zip_eq(permuted_polys.iter())
-        .map(
-            |(
-                [compressed_input_poly, compressed_table_poly],
-                [permuted_input_poly, permuted_table_poly],
-            )| {
-                lookup_z_poly(
-                    compressed_input_poly,
-                    compressed_table_poly,
-                    permuted_input_poly,
-                    permuted_table_poly,
-                    beta,
-                    gamma,
-                )
-            },
-        )
+        .zip(m_polys.iter())
+        .map(|(compressed_polys, m_poly)| lookup_h_poly(compressed_polys, m_poly, gamma))
         .collect()
 }
 
-fn lookup_z_poly<F: PrimeField>(
-    compressed_input_poly: &MultilinearPolynomial<F>,
-    compressed_table_poly: &MultilinearPolynomial<F>,
-    permuted_input_poly: &MultilinearPolynomial<F>,
-    permuted_table_poly: &MultilinearPolynomial<F>,
-    beta: &F,
+pub(super) fn lookup_h_poly<F: PrimeField + Hash>(
+    compressed_polys: &[MultilinearPolynomial<F>; 2],
+    m_poly: &MultilinearPolynomial<F>,
     gamma: &F,
 ) -> MultilinearPolynomial<F> {
-    let num_vars = compressed_input_poly.num_vars();
-    let mut product = vec![F::zero(); 1 << num_vars];
+    let [input, table] = compressed_polys;
+    let mut h_input = vec![F::zero(); 1 << input.num_vars()];
+    let mut h_table = vec![F::zero(); 1 << input.num_vars()];
 
-    let timer = start_timer(|| "product");
-    parallelize(&mut product, |(product, start)| {
-        for ((product, permuted_input), permuted_table) in product
-            .iter_mut()
-            .zip(permuted_input_poly[start..].iter())
-            .zip(permuted_table_poly[start..].iter())
-        {
-            *product = (*beta + permuted_input) * &(*gamma + permuted_table);
+    parallelize(&mut h_input, |(h_input, start)| {
+        for (h_input, input) in h_input.iter_mut().zip(input[start..].iter()) {
+            *h_input = *gamma + input;
+        }
+    });
+    parallelize(&mut h_table, |(h_table, start)| {
+        for (h_table, table) in h_table.iter_mut().zip(table[start..].iter()) {
+            *h_table = *gamma + table;
         }
     });
 
-    product.iter_mut().batch_invert();
+    let chunk_size = div_ceil(2 * h_input.len(), num_threads());
+    parallelize_iter(
+        iter::empty()
+            .chain(h_input.chunks_mut(chunk_size))
+            .chain(h_table.chunks_mut(chunk_size)),
+        |h| {
+            h.iter_mut().batch_invert();
+        },
+    );
 
-    parallelize(&mut product, |(product, start)| {
-        for ((product, compressed_input), compressed_table) in product
+    parallelize(&mut h_input, |(h_input, start)| {
+        for (h_input, (h_table, m)) in h_input
             .iter_mut()
-            .zip(compressed_input_poly[start..].iter())
-            .zip(compressed_table_poly[start..].iter())
+            .zip(h_table[start..].iter().zip(m_poly[start..].iter()))
         {
-            *product *= (*beta + compressed_input) * &(*gamma + compressed_table);
+            *h_input -= *h_table * m;
         }
     });
-    end_timer(timer);
-
-    let _timer = start_timer(|| "z_poly");
-    let mut z_poly = MultilinearPolynomial::new(vec![F::zero(); 1 << num_vars]);
-    z_poly[1] = F::one();
-    for (b, b_next) in BooleanHypercube::new(num_vars)
-        .iter()
-        .skip(1)
-        .tuple_windows()
-    {
-        z_poly[b_next] = z_poly[b] * &product[b];
-    }
 
     if cfg!(feature = "sanity-check") {
-        let b_last = BooleanHypercube::new(num_vars).iter().last().unwrap();
-        assert_eq!(z_poly[b_last] * &product[b_last], F::one());
+        assert_eq!(sum::<F>(&h_input), F::zero());
     }
 
-    z_poly
+    MultilinearPolynomial::new(h_input)
 }
 
 pub(super) fn permutation_z_polys<F: PrimeField>(
-    max_degree: usize,
+    num_chunks: usize,
     permutation_polys: &[(usize, MultilinearPolynomial<F>)],
     polys: &[&MultilinearPolynomial<F>],
     beta: &F,
@@ -338,8 +268,7 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
         return Vec::new();
     }
 
-    let chunk_size = max_degree - 1;
-    let num_chunks = div_ceil(permutation_polys.len(), chunk_size);
+    let chunk_size = div_ceil(permutation_polys.len(), num_chunks);
     let num_vars = polys[0].num_vars();
 
     let timer = start_timer(|| "products");
@@ -361,7 +290,9 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
                 });
             }
 
-            product.iter_mut().batch_invert();
+            parallelize(&mut product, |(product, _)| {
+                product.iter_mut().batch_invert();
+            });
 
             for ((poly, _), idx) in permutation_polys.iter().zip(chunk_idx * chunk_size..) {
                 let id_offset = idx << num_vars;
@@ -433,7 +364,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
-    let (x, evals) = ClassicSumCheck::<EvaluationsProver<_, true>>::prove(
+    let (x, evals) = ClassicSumCheck::<EvaluationsProver<_>>::prove(
         &(),
         num_vars,
         virtual_poly,

@@ -1,7 +1,7 @@
 use crate::{
     pcs::{
         multilinear::{err_too_many_variates, validate_input},
-        Evaluation, PolynomialCommitmentScheme,
+        Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
     },
     piop::sum_check::{
         classic::{ClassicSumCheck, CoefficientsProver},
@@ -133,7 +133,6 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type ProverParam = MultilinearKzgProverParams<M>;
     type VerifierParam = MultilinearKzgVerifierParams<M>;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
-    type Point = Vec<M::Scalar>;
     type Commitment = M::G1Affine;
     type CommitmentWithAux = MultilinearKzgCommitment<M>;
 
@@ -263,7 +262,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
         _: &Self::CommitmentWithAux,
-        point: &Self::Point,
+        point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
@@ -324,7 +323,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
         _: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
-        points: &[Self::Point],
+        points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
@@ -411,7 +410,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
-        point: &Self::Point,
+        point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
@@ -444,7 +443,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     fn batch_verify(
         vp: &Self::VerifierParam,
         comms: &[Self::Commitment],
-        points: &[Self::Point],
+        points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {

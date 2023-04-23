@@ -60,6 +60,12 @@ pub fn product<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F 
         .fold(F::one(), |acc, value| acc * value.borrow())
 }
 
+pub fn sum<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F {
+    values
+        .into_iter()
+        .fold(F::zero(), |acc, value| acc + value.borrow())
+}
+
 pub fn inner_product<'a, 'b, F: Field>(
     lhs: impl IntoIterator<Item = &'a F>,
     rhs: impl IntoIterator<Item = &'b F>,
@@ -118,8 +124,10 @@ pub fn fe_from_bytes_le<F: PrimeField>(bytes: impl AsRef<[u8]>) -> F {
     F::from_repr(repr).unwrap()
 }
 
-pub fn usize_from_bits_be(bits: impl Iterator<Item = bool>) -> usize {
-    bits.fold(0, |int, bit| (int << 1) + (bit as usize))
+pub fn usize_from_bits_le(bits: &[bool]) -> usize {
+    bits.iter()
+        .rev()
+        .fold(0, |int, bit| (int << 1) + (*bit as usize))
 }
 
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {

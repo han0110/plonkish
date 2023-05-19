@@ -205,9 +205,8 @@ where
         // Round n
 
         let beta = transcript.squeeze_challenge();
-        let gamma = transcript.squeeze_challenge();
 
-        let timer = start_timer(|| format!("lookup_permuted_polys-{}", pp.lookups.len()));
+        let timer = start_timer(|| format!("lookup_compressed_polys-{}", pp.lookups.len()));
         let lookup_compressed_polys =
             lookup_compressed_polys(&pp.lookups, &polys, &challenges, &beta);
         end_timer(timer);
@@ -219,6 +218,8 @@ where
         let lookup_m_comms = Pcs::batch_commit_and_write(&pp.pcs, &lookup_m_polys, transcript)?;
 
         // Round n+1
+
+        let gamma = transcript.squeeze_challenge();
 
         let timer = start_timer(|| format!("lookup_h_polys-{}", pp.lookups.len()));
         let lookup_h_polys = lookup_h_polys(&lookup_compressed_polys, &lookup_m_polys, &gamma);
@@ -307,13 +308,14 @@ where
         // Round n
 
         let beta = transcript.squeeze_challenge();
-        let gamma = transcript.squeeze_challenge();
 
         let lookup_m_comms = iter::repeat_with(|| transcript.read_commitment())
             .take(vp.num_lookups)
             .try_collect::<_, Vec<_>, _>()?;
 
         // Round n+1
+
+        let gamma = transcript.squeeze_challenge();
 
         let lookup_h_comms = transcript.read_commitments(vp.num_lookups)?;
         let permutation_z_comms = transcript.read_commitments(vp.num_permutation_z_polys)?;

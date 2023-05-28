@@ -1,5 +1,5 @@
 use crate::{
-    pcs::{Evaluation, Point, PolynomialCommitmentScheme},
+    pcs::{AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme},
     poly::univariate::UnivariatePolynomial,
     util::{
         arithmetic::{
@@ -101,6 +101,19 @@ impl<M: MultiMillerLoop> Default for UnivariateKzgCommitment<M> {
 impl<M: MultiMillerLoop> AsRef<M::G1Affine> for UnivariateKzgCommitment<M> {
     fn as_ref(&self) -> &M::G1Affine {
         &self.0
+    }
+}
+
+impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for UnivariateKzgCommitment<M> {
+    fn sum_with_scalar<'a>(
+        scalars: impl IntoIterator<Item = &'a M::Scalar> + 'a,
+        bases: impl IntoIterator<Item = &'a Self> + 'a,
+    ) -> Self {
+        let scalars = scalars.into_iter().collect_vec();
+        let bases = bases.into_iter().map(AsRef::as_ref).collect_vec();
+        assert_eq!(scalars.len(), bases.len());
+
+        UnivariateKzgCommitment(variable_base_msm(scalars, bases).to_affine())
     }
 }
 

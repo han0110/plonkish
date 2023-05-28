@@ -6,7 +6,7 @@ pub mod parallel;
 mod timer;
 pub mod transcript;
 
-pub use itertools::Itertools;
+pub use itertools::{chain, Itertools};
 pub use timer::{end_timer, start_timer, start_unit_timer};
 
 pub trait BitIndex {

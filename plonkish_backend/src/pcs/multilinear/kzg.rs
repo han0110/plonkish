@@ -1,20 +1,15 @@
 use crate::{
     pcs::{
-        multilinear::{err_too_many_variates, validate_input},
-        Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
-    },
-    piop::sum_check::{
-        classic::{ClassicSumCheck, CoefficientsProver},
-        eq_xy_eval, SumCheck, VirtualPolynomial,
+        multilinear::{additive, err_too_many_variates, validate_input},
+        AdditiveCommitment, Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            div_ceil, fixed_base_msm, inner_product, variable_base_msm, window_size, window_table,
-            Curve, Field, MultiMillerLoop, PrimeCurveAffine,
+            div_ceil, fixed_base_msm, variable_base_msm, window_size, window_table, Curve, Field,
+            MultiMillerLoop, PrimeCurveAffine,
         },
         end_timer,
-        expression::{Expression, Query, Rotation},
         parallel::{num_threads, parallelize, parallelize_iter},
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
@@ -24,12 +19,7 @@ use crate::{
 };
 use num_integer::Integer;
 use rand::RngCore;
-use std::{
-    borrow::Cow,
-    iter,
-    marker::PhantomData,
-    ops::{Deref, Neg},
-};
+use std::{iter, marker::PhantomData, ops::Neg};
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
@@ -125,6 +115,19 @@ impl<M: MultiMillerLoop> Default for MultilinearKzgCommitment<M> {
 impl<M: MultiMillerLoop> AsRef<M::G1Affine> for MultilinearKzgCommitment<M> {
     fn as_ref(&self) -> &M::G1Affine {
         &self.0
+    }
+}
+
+impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for MultilinearKzgCommitment<M> {
+    fn sum_with_scalar<'a>(
+        scalars: impl IntoIterator<Item = &'a M::Scalar> + 'a,
+        bases: impl IntoIterator<Item = &'a Self> + 'a,
+    ) -> Self {
+        let scalars = scalars.into_iter().collect_vec();
+        let bases = bases.into_iter().map(AsRef::as_ref).collect_vec();
+        assert_eq!(scalars.len(), bases.len());
+
+        MultilinearKzgCommitment(variable_base_msm(scalars, bases).to_affine())
     }
 }
 
@@ -328,83 +331,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
         let polys = polys.into_iter().collect_vec();
-        validate_input("batch open", pp.num_vars(), polys.iter().copied(), points)?;
-
-        let ell = evals.len().next_power_of_two().ilog2() as usize;
-        let t = transcript.squeeze_challenges(ell);
-
-        let timer = start_timer(|| "merged_polys");
-        let eq_xt = MultilinearPolynomial::eq_xy(&t);
-        let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
-            vec![(M::Scalar::one(), Cow::<MultilinearPolynomial<_>>::default()); points.len()],
-            |mut merged_polys, (eval, eq_xt_i)| {
-                if merged_polys[eval.point()].1.is_zero() {
-                    merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
-                } else {
-                    let coeff = merged_polys[eval.point()].0;
-                    if coeff != M::Scalar::one() {
-                        merged_polys[eval.point()].0 = M::Scalar::one();
-                        *merged_polys[eval.point()].1.to_mut() *= &coeff;
-                    }
-                    *merged_polys[eval.point()].1.to_mut() += (eq_xt_i, polys[eval.poly()]);
-                }
-                merged_polys
-            },
-        );
-        end_timer(timer);
-
-        let expression = merged_polys
-            .iter()
-            .enumerate()
-            .map(|(idx, (scalar, _))| {
-                Expression::<M::Scalar>::eq_xy(idx)
-                    * Expression::Polynomial(Query::new(idx, Rotation::cur()))
-                    * scalar
-            })
-            .sum();
-        let tilde_gs_sum =
-            inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
-        let (challenges, _) = ClassicSumCheck::<CoefficientsProver<_>>::prove(
-            &(),
-            pp.num_vars(),
-            VirtualPolynomial::new(
-                &expression,
-                merged_polys.iter().map(|(_, poly)| poly.deref()),
-                &[],
-                points,
-            ),
-            tilde_gs_sum,
-            transcript,
-        )
-        .unwrap();
-
-        let timer = start_timer(|| "g_prime");
-        let eq_xy_evals = points
-            .iter()
-            .map(|point| eq_xy_eval(&challenges, point))
-            .collect_vec();
-        let g_prime = merged_polys
-            .into_iter()
-            .zip(eq_xy_evals.iter())
-            .map(|((scalar, poly), eq_xy_eval)| (scalar * eq_xy_eval, poly.into_owned()))
-            .sum::<MultilinearPolynomial<_>>();
-        end_timer(timer);
-
-        let g_prime_eval = if cfg!(feature = "sanity-check") {
-            g_prime.evaluate(&challenges)
-        } else {
-            M::Scalar::zero()
-        };
-        Self::open(
-            pp,
-            &g_prime,
-            &MultilinearKzgCommitment::default(),
-            &challenges,
-            &g_prime_eval,
-            transcript,
-        )?;
-
-        Ok(())
+        additive::batch_open::<_, Self>(pp, pp.num_vars(), polys, None, points, evals, transcript)
     }
 
     fn verify(
@@ -447,37 +374,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
-        validate_input("batch verify", vp.num_vars(), [], points)?;
-
-        let ell = evals.len().next_power_of_two().ilog2() as usize;
-        let t = transcript.squeeze_challenges(ell);
-
-        let eq_xt = MultilinearPolynomial::eq_xy(&t);
-        let tilde_gs_sum =
-            inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
-        let (g_prime_eval, challenges) = ClassicSumCheck::<CoefficientsProver<_>>::verify(
-            &(),
-            vp.num_vars(),
-            2,
-            tilde_gs_sum,
-            transcript,
-        )?;
-        let eq_xy_evals = points
-            .iter()
-            .map(|point| eq_xy_eval(&challenges, point))
-            .collect_vec();
-        let g_prime = variable_base_msm(
-            &evals
-                .iter()
-                .zip(eq_xt.evals())
-                .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
-                .collect_vec(),
-            &evals.iter().map(|eval| comms[eval.poly()]).collect_vec(),
-        )
-        .into();
-        Self::verify(vp, &g_prime, &challenges, &g_prime_eval, transcript)?;
-
-        Ok(())
+        additive::batch_verify::<_, Self>(vp, vp.num_vars(), comms, points, evals, transcript)
     }
 }
 

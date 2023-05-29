@@ -25,11 +25,11 @@ pub struct Evaluations<F>(Vec<F>);
 
 impl<F: PrimeField> Evaluations<F> {
     fn new(degree: usize) -> Self {
-        Self(vec![F::zero(); degree + 1])
+        Self(vec![F::ZERO; degree + 1])
     }
 
     fn points(degree: usize) -> Vec<F> {
-        steps(F::zero()).take(degree + 1).collect()
+        steps(F::ZERO).take(degree + 1).collect()
     }
 }
 
@@ -157,7 +157,7 @@ impl<F: PrimeField> GraphEvaluator<F> {
     ) -> Option<Self> {
         let mut ev = Self {
             num_vars,
-            constants: vec![F::zero(), F::one(), F::one().double()],
+            constants: vec![F::ZERO, F::ONE, F::ONE.double()],
             rotations: vec![(Rotation(0), num_vars)],
             ..Default::default()
         };
@@ -309,9 +309,9 @@ impl<F: PrimeField> GraphEvaluator<F> {
                 }
             }
             Expression::Scaled(value, scalar) => {
-                if scalar == &F::zero() {
+                if scalar == &F::ZERO {
                     ValueSource::Constant(0)
-                } else if scalar == &F::one() {
+                } else if scalar == &F::ONE {
                     self.register_expression(value)
                 } else {
                     let value = self.register_expression(value);
@@ -364,13 +364,13 @@ impl<F: PrimeField> GraphEvaluator<F> {
         let mut data = EvaluatorData {
             offsets: self.offsets,
             bs: vec![(0, 0); self.rotations.len()],
-            lagrange_steps: vec![F::zero(); self.lagranges.len()],
+            lagrange_steps: vec![F::ZERO; self.lagranges.len()],
             identity_step_first: F::from(1 << (state.round + 1))
                 - F::from(((state.degree - 1) << state.round) as u64),
             identity_step: F::from(1 << state.round),
-            eq_xy_steps: vec![F::zero(); self.eq_xys.len()],
-            poly_steps: vec![F::zero(); self.polys.len()],
-            calculations: vec![F::zero(); self.offsets.calculations() + self.calculations.len()],
+            eq_xy_steps: vec![F::ZERO; self.eq_xys.len()],
+            poly_steps: vec![F::ZERO; self.polys.len()],
+            calculations: vec![F::ZERO; self.offsets.calculations() + self.calculations.len()],
         };
         data.calculations[..self.constants.len()].clone_from_slice(&self.constants);
         data.calculations[self.offsets.identities()..]
@@ -419,8 +419,8 @@ impl<F: PrimeField> GraphEvaluator<F> {
                             *step = lagrange.1;
                         }
                     } else {
-                        *eval = F::zero();
-                        *step = F::zero();
+                        *eval = F::ZERO;
+                        *step = F::ZERO;
                     }
                 });
             data.identity_iter_mut()

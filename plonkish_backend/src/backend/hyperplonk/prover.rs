@@ -31,7 +31,7 @@ pub(super) fn instance_polys<'a, F: PrimeField>(
     instances
         .into_iter()
         .map(|instances| {
-            let mut poly = vec![F::zero(); 1 << num_vars];
+            let mut poly = vec![F::ZERO; 1 << num_vars];
             for (b, instance) in bh.iter().skip(1).zip(instances.into_iter()) {
                 poly[b] = *instance;
             }
@@ -99,16 +99,19 @@ fn lookup_compressed_poly<F: PrimeField>(
             .rev()
             .copied()
             .zip(expressions.iter().map(|expression| {
-                let mut compressed = vec![F::zero(); 1 << num_vars];
+                let mut compressed = vec![F::ZERO; 1 << num_vars];
                 parallelize(&mut compressed, |(compressed, start)| {
                     for (b, compressed) in (start..).zip(compressed) {
                         *compressed = expression.evaluate(
                             &|constant| constant,
                             &|common_poly| match common_poly {
-                                CommonPolynomial::Lagrange(i) => lagranges
-                                    .contains(&(i, b))
-                                    .then(F::one)
-                                    .unwrap_or_else(F::zero),
+                                CommonPolynomial::Lagrange(i) => {
+                                    if lagranges.contains(&(i, b)) {
+                                        F::ONE
+                                    } else {
+                                        F::ZERO
+                                    }
+                                }
                                 CommonPolynomial::Identity(idx) => {
                                     F::from(b as u64 + identities[idx])
                                 }
@@ -192,8 +195,8 @@ pub(super) fn lookup_m_poly<F: PrimeField + Hash>(
         m[idx] += count;
     }
     let m = par_map_collect(m, |count| match count {
-        0 => F::zero(),
-        1 => F::one(),
+        0 => F::ZERO,
+        1 => F::ONE,
         count => F::from(count),
     });
     Ok(MultilinearPolynomial::new(m))
@@ -217,8 +220,8 @@ pub(super) fn lookup_h_poly<F: PrimeField + Hash>(
     gamma: &F,
 ) -> MultilinearPolynomial<F> {
     let [input, table] = compressed_polys;
-    let mut h_input = vec![F::zero(); 1 << input.num_vars()];
-    let mut h_table = vec![F::zero(); 1 << input.num_vars()];
+    let mut h_input = vec![F::ZERO; 1 << input.num_vars()];
+    let mut h_table = vec![F::ZERO; 1 << input.num_vars()];
 
     parallelize(&mut h_input, |(h_input, start)| {
         for (h_input, input) in h_input.iter_mut().zip(input[start..].iter()) {
@@ -251,7 +254,7 @@ pub(super) fn lookup_h_poly<F: PrimeField + Hash>(
     });
 
     if cfg!(feature = "sanity-check") {
-        assert_eq!(sum::<F>(&h_input), F::zero());
+        assert_eq!(sum::<F>(&h_input), F::ZERO);
     }
 
     MultilinearPolynomial::new(h_input)
@@ -276,7 +279,7 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
         .chunks(chunk_size)
         .enumerate()
         .map(|(chunk_idx, permutation_polys)| {
-            let mut product = vec![F::one(); 1 << num_vars];
+            let mut product = vec![F::ONE; 1 << num_vars];
 
             for (poly, permutation_poly) in permutation_polys.iter() {
                 parallelize(&mut product, |(product, start)| {
@@ -314,15 +317,15 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
 
     let timer = start_timer(|| "z_polys");
     let z = iter::empty()
-        .chain(iter::repeat_with(F::zero).take(num_chunks))
-        .chain(Some(F::one()))
+        .chain(iter::repeat(F::ZERO).take(num_chunks))
+        .chain(Some(F::ONE))
         .chain(
             BooleanHypercube::new(num_vars)
                 .iter()
                 .skip(1)
                 .flat_map(|b| iter::repeat(b).take(num_chunks))
                 .zip(products.iter().cycle())
-                .scan(F::one(), |state, (b, product)| {
+                .scan(F::ONE, |state, (b, product)| {
                     *state *= &product[b];
                     Some(*state)
                 }),
@@ -334,7 +337,7 @@ pub(super) fn permutation_z_polys<F: PrimeField>(
         let b_last = BooleanHypercube::new(num_vars).iter().last().unwrap();
         assert_eq!(
             *z.last().unwrap() * products.last().unwrap()[b_last],
-            F::one()
+            F::ONE
         );
     }
 
@@ -368,7 +371,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
         &(),
         num_vars,
         virtual_poly,
-        F::zero(),
+        F::ZERO,
         transcript,
     )?;
 

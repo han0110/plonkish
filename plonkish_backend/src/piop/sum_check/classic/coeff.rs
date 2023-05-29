@@ -46,12 +46,12 @@ impl<'rhs, F: PrimeField> AddAssign<&'rhs F> for Coefficients<F> {
 
 impl<'rhs, F: PrimeField> AddAssign<(&'rhs F, &'rhs Coefficients<F>)> for Coefficients<F> {
     fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs Coefficients<F>)) {
-        if scalar == &F::one() {
+        if scalar == &F::ONE {
             self.0
                 .iter_mut()
                 .zip(rhs.0.iter())
                 .for_each(|(lhs, rhs)| *lhs += rhs)
-        } else if scalar != &F::zero() {
+        } else if scalar != &F::ZERO {
             self.0
                 .iter_mut()
                 .zip(rhs.0.iter())
@@ -76,16 +76,11 @@ where
             &|constant| (constant, vec![]),
             &|poly| {
                 (
-                    F::zero(),
-                    vec![(F::one(), vec![Expression::CommonPolynomial(poly)])],
+                    F::ZERO,
+                    vec![(F::ONE, vec![Expression::CommonPolynomial(poly)])],
                 )
             },
-            &|query| {
-                (
-                    F::zero(),
-                    vec![(F::one(), vec![Expression::Polynomial(query)])],
-                )
-            },
+            &|query| (F::ZERO, vec![(F::ONE, vec![Expression::Polynomial(query)])]),
             &|challenge| (state.challenges[challenge], vec![]),
             &|(constant, mut products)| {
                 products.iter_mut().for_each(|(scalar, _)| {
@@ -103,7 +98,7 @@ where
                 for (constant, products) in
                     [(lhs_constant, &rhs_products), (rhs_constant, &lhs_products)]
                 {
-                    if constant != F::zero() {
+                    if constant != F::ZERO {
                         outputs.extend(
                             products
                                 .iter()
@@ -136,7 +131,7 @@ where
     }
 
     fn prove_round(&self, state: &ProverState<F>) -> Self::RoundMessage {
-        let mut coeffs = Coefficients(vec![F::zero(); state.expression.degree() + 1]);
+        let mut coeffs = Coefficients(vec![F::ZERO; state.expression.degree() + 1]);
         coeffs += &(F::from(state.size() as u64) * &self.0);
         if self.1.iter().all(|(_, products)| products.len() == 2) {
             for (scalar, products) in self.1.iter() {
@@ -158,7 +153,7 @@ impl<F: PrimeField> CoefficientsProver<F> {
         lhs: &Expression<F>,
         rhs: &Expression<F>,
     ) -> Coefficients<F> {
-        let mut coeffs = [F::zero(); 3];
+        let mut coeffs = [F::ZERO; 3];
         match (lhs, rhs) {
             (
                 Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)),
@@ -191,7 +186,7 @@ impl<F: PrimeField> CoefficientsProver<F> {
                     evaluate_serial(&mut coeffs, 0, state.size());
                 } else {
                     let chunk_size = div_ceil(state.size(), num_threads);
-                    let mut partials = vec![[F::zero(); 3]; num_threads];
+                    let mut partials = vec![[F::ZERO; 3]; num_threads];
                     parallelize_iter(
                         partials.iter_mut().zip((0..).step_by(chunk_size << 1)),
                         |(partial, start)| {

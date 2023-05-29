@@ -49,7 +49,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                 .into_iter()
                 .map(|i| {
                     let b = bh[i.rem_euclid(1 << num_vars) as usize];
-                    (i, (b, F::one()))
+                    (i, (b, F::ONE))
                 })
                 .collect()
         };
@@ -89,7 +89,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             eq_xys,
             polys,
             challenges: virtual_poly.challenges,
-            buf: MultilinearPolynomial::new(vec![F::zero(); 1 << (num_vars - 1)]),
+            buf: MultilinearPolynomial::new(vec![F::ZERO; 1 << (num_vars - 1)]),
             round: 0,
             bh,
         }
@@ -103,7 +103,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
         self.sum = sum;
         self.lagranges.values_mut().for_each(|(b, value)| {
             if b.is_even() {
-                *value *= &(F::one() - challenge);
+                *value *= &(F::ONE - challenge);
             } else {
                 *value *= challenge;
             }

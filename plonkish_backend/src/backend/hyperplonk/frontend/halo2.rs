@@ -80,7 +80,7 @@ where
     let mut preprocess_collector = PreprocessCollector {
         k: k as u32,
         num_instances: num_instances.clone(),
-        fixeds: vec![vec![F::zero().into(); 1 << k]; cs.num_fixed_columns()],
+        fixeds: vec![vec![F::ZERO.into(); 1 << k]; cs.num_fixed_columns()],
         permutation: Permutation::new(permutation_column_idx),
         selectors: vec![vec![false; 1 << k]; cs.num_selectors()],
         row_map: row_map(k),
@@ -99,7 +99,7 @@ where
         .chain(preprocess_collector.selectors.into_iter().map(|selectors| {
             selectors
                 .into_iter()
-                .map(|selector| selector.then(F::one).unwrap_or_else(F::zero))
+                .map(|selector| if selector { F::ONE } else { F::ZERO })
                 .collect()
         }))
         .collect();
@@ -176,7 +176,7 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             advice_idx_in_phase: &self.advice_idx_in_phase,
             challenge_idx: &self.challenge_idx,
             instances: instances.as_slice(),
-            advices: vec![vec![F::zero().into(); 1 << self.k]; self.num_witness_polys[phase]],
+            advices: vec![vec![F::ZERO.into(); 1 << self.k]; self.num_witness_polys[phase]],
             challenges,
             row_map: &self.row_map,
         };
@@ -212,6 +212,13 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
     }
 
     fn exit_region(&mut self) {}
+
+    fn annotate_column<A, AR>(&mut self, _: A, _: Column<Any>)
+    where
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+    }
 
     fn enable_selector<A, AR>(&mut self, _: A, selector: &Selector, row: usize) -> Result<(), Error>
     where
@@ -423,6 +430,13 @@ impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
     }
 
     fn exit_region(&mut self) {}
+
+    fn annotate_column<A, AR>(&mut self, _: A, _: Column<Any>)
+    where
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+    }
 
     fn enable_selector<A, AR>(&mut self, _: A, _: &Selector, _: usize) -> Result<(), Error>
     where

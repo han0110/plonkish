@@ -116,7 +116,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
 
         let row_len = pp.brakedown.row_len();
         let codeword_len = pp.brakedown.codeword_len();
-        let mut rows = vec![F::zero(); pp.num_rows * codeword_len];
+        let mut rows = vec![F::ZERO; pp.num_rows * codeword_len];
 
         // encode rows
         let chunk_size = div_ceil(pp.num_rows, num_threads());
@@ -207,7 +207,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
                         .iter_mut()
                         .zip(offset..)
                         .for_each(|(combined, column)| {
-                            *combined = F::zero();
+                            *combined = F::ZERO;
                             coeffs
                                 .iter()
                                 .zip(poly.evals().iter().skip(column).step_by(row_len))
@@ -217,7 +217,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
                         })
                 });
             };
-            let mut combined_row = vec![F::zero(); row_len];
+            let mut combined_row = vec![F::ZERO; row_len];
             for _ in 0..pp.brakedown.num_proximity_testing() {
                 let coeffs = transcript.squeeze_challenges(pp.num_rows);
                 combine(&mut combined_row, &coeffs);
@@ -292,13 +292,13 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         if vp.num_rows > 1 {
             let coeffs = transcript.squeeze_challenges(vp.num_rows);
             let mut combined_row = transcript.read_field_elements(row_len)?;
-            combined_row.resize_with(codeword_len, F::zero);
+            combined_row.resize(codeword_len, F::ZERO);
             vp.brakedown.encode(&mut combined_row);
             combined_rows.push((coeffs, combined_row));
         }
         combined_rows.push({
             let mut combined_row = transcript.read_field_elements(row_len)?;
-            combined_row.resize_with(codeword_len, F::zero);
+            combined_row.resize(codeword_len, F::ZERO);
             vp.brakedown.encode(&mut combined_row);
             (t_0, combined_row)
         });

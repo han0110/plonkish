@@ -322,21 +322,21 @@ impl<F: Clone> From<CommonPolynomial> for Expression<F> {
 
 impl<F: Field> Expression<F> {
     pub fn zero() -> Self {
-        Expression::Constant(F::zero())
+        Expression::Constant(F::ZERO)
     }
 
     pub fn one() -> Self {
-        Expression::Constant(F::one())
+        Expression::Constant(F::ONE)
     }
 
     pub fn simplified(&self, challenges: Option<&[F]>) -> Option<Expression<F>> {
         let combine = |(scalar, expression): (F, Option<Expression<F>>)| {
-            if scalar == F::zero() {
+            if scalar == F::ZERO {
                 None
             } else if let Some(expression) = expression {
-                if scalar == F::one() {
+                if scalar == F::ONE {
                     Some(expression)
-                } else if scalar == -F::one() {
+                } else if scalar == -F::ONE {
                     Some(-expression)
                 } else {
                     Some(expression * scalar)
@@ -347,15 +347,15 @@ impl<F: Field> Expression<F> {
         };
         let output = self.evaluate(
             &|constant| (constant, None),
-            &|poly| (F::one(), Some(poly.into())),
-            &|query| (F::one(), Some(query.into())),
+            &|poly| (F::ONE, Some(poly.into())),
+            &|query| (F::ONE, Some(query.into())),
             &|challenge| {
                 challenges
                     .map(|challenges| (challenges[challenge], None))
-                    .unwrap_or_else(|| (F::one(), Some(Expression::Challenge(challenge))))
+                    .unwrap_or_else(|| (F::ONE, Some(Expression::Challenge(challenge))))
             },
             &|(scalar, expression)| match expression {
-                Some(expression) if scalar == F::one() => (F::one(), Some(-expression)),
+                Some(expression) if scalar == F::ONE => (F::ONE, Some(-expression)),
                 _ => (-scalar, expression),
             },
             &|lhs, rhs| match (lhs, rhs) {
@@ -366,7 +366,7 @@ impl<F: Field> Expression<F> {
                         (Some(expression), None) | (None, Some(expression)) => Some(expression),
                         (None, None) => None,
                     };
-                    let scalar = output.is_some().then(F::one).unwrap_or_else(F::zero);
+                    let scalar = if output.is_some() { F::ONE } else { F::ZERO };
                     (scalar, output)
                 }
             },

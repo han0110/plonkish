@@ -291,8 +291,8 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
 fn h_coeffs<F: Field>(xi: &[F]) -> Vec<F> {
     assert!(!xi.is_empty());
 
-    let mut coeffs = vec![F::zero(); 1 << xi.len()];
-    coeffs[0] = F::one();
+    let mut coeffs = vec![F::ZERO; 1 << xi.len()];
+    coeffs[0] = F::ONE;
 
     for (len, xi) in xi.iter().rev().enumerate().map(|(i, xi)| (1 << i, xi)) {
         let (left, right) = coeffs.split_at_mut(len);

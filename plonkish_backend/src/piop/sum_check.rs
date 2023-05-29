@@ -103,7 +103,7 @@ pub fn lagrange_eval<F: PrimeField>(x: &[F], b: usize) -> F {
             if b.nth_bit(idx) {
                 *x_i
             } else {
-                F::one() - x_i
+                F::ONE - x_i
             }
         },
     ))
@@ -116,7 +116,7 @@ pub fn eq_xy_eval<F: PrimeField>(x: &[F], y: &[F]) -> F {
     product(
         x.iter()
             .zip(y)
-            .map(|(x_i, y_i)| (*x_i * y_i).double() + F::one() - x_i - y_i),
+            .map(|(x_i, y_i)| (*x_i * y_i).double() + F::ONE - x_i - y_i),
     )
 }
 

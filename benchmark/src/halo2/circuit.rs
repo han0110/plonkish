@@ -3,6 +3,10 @@ pub use aggregation::AggregationCircuit;
 mod aggregation {
     use halo2_proofs::{
         circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
+        halo2curves::{
+            ff::{FromUniformBytes, WithSmallOrderMulGroup},
+            serde::SerdeObject,
+        },
         plonk::{create_proof, keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error},
         poly::{
             commitment::{Params, ParamsProver},
@@ -15,7 +19,7 @@ mod aggregation {
     use itertools::Itertools;
     use plonkish_backend::{
         backend::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk},
-        halo2_curves::{pairing::Engine, CurveAffine},
+        halo2_curves::{ff::PrimeField, pairing::Engine, CurveAffine},
     };
     use rand::{rngs::StdRng, RngCore, SeedableRng};
     use snark_verifier::{
@@ -32,7 +36,7 @@ mod aggregation {
             AccumulationDecider, AccumulationScheme, AccumulationSchemeProver,
         },
         system::halo2::{compile, transcript, Config},
-        util::arithmetic::{fe_to_limbs, FieldExt, MultiMillerLoop},
+        util::arithmetic::{fe_to_limbs, MultiMillerLoop},
         verifier::{self, plonk::PlonkProtocol, SnarkVerifier},
     };
     use std::rc::Rc;
@@ -135,11 +139,11 @@ mod aggregation {
             }
         }
 
-        fn main_gate<F: FieldExt>(&self) -> MainGate<F> {
+        fn main_gate<F: PrimeField>(&self) -> MainGate<F> {
             MainGate::new(self.main_gate_config.clone())
         }
 
-        fn range_chip<F: FieldExt>(&self) -> RangeChip<F> {
+        fn range_chip<F: PrimeField>(&self) -> RangeChip<F> {
             RangeChip::new(self.range_config.clone())
         }
 
@@ -150,7 +154,7 @@ mod aggregation {
             ))
         }
 
-        fn load_table<F: FieldExt>(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
+        fn load_table<F: PrimeField>(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
             self.range_chip().load_table(layouter)
         }
 
@@ -160,7 +164,12 @@ mod aggregation {
             layouter: &mut impl Layouter<M::Scalar>,
             svk: &KzgSvk<M>,
             snarks: impl IntoIterator<Item = &'a SnarkWitness<M::G1Affine>>,
-        ) -> Result<Vec<AssignedCell<M::Scalar, M::Scalar>>, Error> {
+        ) -> Result<Vec<AssignedCell<M::Scalar, M::Scalar>>, Error>
+        where
+            M::Scalar: FromUniformBytes<64>,
+            M::G1Affine: SerdeObject,
+            M::G2Affine: SerdeObject,
+        {
             type PoseidonTranscript<'a, C, S> = transcript::halo2::PoseidonTranscript<
                 C,
                 Rc<Halo2Loader<'a, C>>,
@@ -230,7 +239,12 @@ mod aggregation {
     fn aggregate<'a, M: MultiMillerLoop>(
         param: &ParamsKZG<M>,
         snarks: impl IntoIterator<Item = &'a Snark<M::G1Affine>>,
-    ) -> Option<[M::Scalar; 4 * LIMBS]> {
+    ) -> Option<[M::Scalar; 4 * LIMBS]>
+    where
+        M::Scalar: FromUniformBytes<64>,
+        M::G1Affine: SerdeObject,
+        M::G2Affine: SerdeObject,
+    {
         let svk = KzgSvk::<M>::new(param.get_g()[0]);
         let dk = KzgDk::new(svk, param.g2(), param.s_g2());
 
@@ -283,7 +297,12 @@ mod aggregation {
         instances: Vec<M::Scalar>,
     }
 
-    impl<M: MultiMillerLoop> Circuit<M::Scalar> for AggregationCircuit<M> {
+    impl<M: MultiMillerLoop> Circuit<M::Scalar> for AggregationCircuit<M>
+    where
+        M::Scalar: FromUniformBytes<64>,
+        M::G1Affine: SerdeObject,
+        M::G2Affine: SerdeObject,
+    {
         type Config = AggregationConfig;
         type FloorPlanner = SimpleFloorPlanner;
 
@@ -315,7 +334,12 @@ mod aggregation {
         }
     }
 
-    impl<M: MultiMillerLoop> CircuitExt<M::Scalar> for AggregationCircuit<M> {
+    impl<M: MultiMillerLoop> CircuitExt<M::Scalar> for AggregationCircuit<M>
+    where
+        M::Scalar: FromUniformBytes<64> + WithSmallOrderMulGroup<3>,
+        M::G1Affine: SerdeObject,
+        M::G2Affine: SerdeObject,
+    {
         fn rand(k: usize, mut rng: impl RngCore) -> Self {
             let param = ParamsKZG::<M>::setup(4, &mut rng);
             let snark = {

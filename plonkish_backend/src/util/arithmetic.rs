@@ -14,7 +14,7 @@ pub use halo2_curves::{
         prime::PrimeCurveAffine,
         Curve, Group,
     },
-    Coordinates, CurveAffine,
+    Coordinates, CurveAffine, CurveExt,
 };
 pub use msm::{fixed_base_msm, variable_base_msm, window_size, window_table};
 

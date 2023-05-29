@@ -1,7 +1,8 @@
 use crate::{
     util::{
-        arithmetic::Field,
+        arithmetic::{variable_base_msm, Curve, CurveAffine, Field},
         transcript::{TranscriptRead, TranscriptWrite},
+        Itertools,
     },
     Error,
 };
@@ -137,5 +138,27 @@ impl<F: Field> Evaluation<F> {
 
     pub fn value(&self) -> &F {
         &self.value
+    }
+}
+
+pub trait AdditiveCommitment<F: Field>: Debug + Default {
+    fn sum_with_scalar<'a>(
+        scalars: impl IntoIterator<Item = &'a F> + 'a,
+        bases: impl IntoIterator<Item = &'a Self> + 'a,
+    ) -> Self
+    where
+        Self: 'a;
+}
+
+impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for C {
+    fn sum_with_scalar<'a>(
+        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
+        bases: impl IntoIterator<Item = &'a Self> + 'a,
+    ) -> Self {
+        let scalars = scalars.into_iter().collect_vec();
+        let bases = bases.into_iter().collect_vec();
+        assert_eq!(scalars.len(), bases.len());
+
+        variable_base_msm(scalars, bases).to_affine()
     }
 }

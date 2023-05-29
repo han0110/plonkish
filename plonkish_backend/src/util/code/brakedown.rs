@@ -315,7 +315,7 @@ impl<F: Field> SparseMatrix<F> {
     }
 
     fn dot(&self, array: &[F]) -> Vec<F> {
-        let mut target = vec![F::zero(); self.dimension.m];
+        let mut target = vec![F::ZERO; self.dimension.m];
         self.dot_into(array, &mut target);
         target
     }
@@ -325,7 +325,7 @@ fn reed_solomon_into<F: Field>(input: &[F], mut target: impl AsMut<[F]>) {
     target
         .as_mut()
         .iter_mut()
-        .zip(steps(F::one()))
+        .zip(steps(F::ONE))
         .for_each(|(target, x)| *target = horner(input, &x));
 }
 

@@ -222,7 +222,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             )));
         }
 
-        let divisor = Self::Polynomial::new(vec![point.neg(), M::Scalar::one()]);
+        let divisor = Self::Polynomial::new(vec![point.neg(), M::Scalar::ONE]);
         let (quotient, remainder) = poly.div_rem(&divisor);
 
         if cfg!(feature = "sanity-check") {

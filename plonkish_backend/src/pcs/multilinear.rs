@@ -110,14 +110,14 @@ mod additive {
         let timer = start_timer(|| "merged_polys");
         let eq_xt = MultilinearPolynomial::eq_xy(&t);
         let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
-            vec![(F::one(), Cow::<MultilinearPolynomial<_>>::default()); points.len()],
+            vec![(F::ONE, Cow::<MultilinearPolynomial<_>>::default()); points.len()],
             |mut merged_polys, (eval, eq_xt_i)| {
                 if merged_polys[eval.point()].1.is_zero() {
                     merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
                 } else {
                     let coeff = merged_polys[eval.point()].0;
-                    if coeff != F::one() {
-                        merged_polys[eval.point()].0 = F::one();
+                    if coeff != F::ONE {
+                        merged_polys[eval.point()].0 = F::ONE;
                         *merged_polys[eval.point()].1.to_mut() *= &coeff;
                     }
                     *merged_polys[eval.point()].1.to_mut() += (eq_xt_i, polys[eval.poly()]);
@@ -173,7 +173,7 @@ mod additive {
         let g_prime_eval = if cfg!(feature = "sanity-check") {
             g_prime.evaluate(&challenges)
         } else {
-            F::zero()
+            F::ZERO
         };
         Pcs::open(
             pp,

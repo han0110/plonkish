@@ -156,10 +156,10 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         let g1 = M::G1Affine::generator();
         let eqs = {
             let mut eqs = Vec::with_capacity(num_vars);
-            let init_evals = vec![M::Scalar::one()];
+            let init_evals = vec![M::Scalar::ONE];
             for s_i in ss.iter().rev() {
                 let last_evals = eqs.last().unwrap_or(&init_evals);
-                let mut evals = vec![M::Scalar::zero(); 2 * last_evals.len()];
+                let mut evals = vec![M::Scalar::ZERO; 2 * last_evals.len()];
 
                 if evals.len() < 32 {
                     expand_serial(&mut evals, last_evals, s_i);
@@ -277,7 +277,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .enumerate()
             .map(|(idx, x_i)| {
                 let timer = start_timer(|| "quotients");
-                let mut quotient = vec![M::Scalar::zero(); remainder.len() >> 1];
+                let mut quotient = vec![M::Scalar::ZERO; remainder.len() >> 1];
                 parallelize(&mut quotient, |(quotient, start)| {
                     for (quotient, (remainder_0, remainder_1)) in quotient.iter_mut().zip(
                         remainder[2 * start..]
@@ -289,7 +289,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
                     }
                 });
 
-                let mut next_remainder = vec![M::Scalar::zero(); remainder.len() >> 1];
+                let mut next_remainder = vec![M::Scalar::ZERO; remainder.len() >> 1];
                 parallelize(&mut next_remainder, |(next_remainder, start)| {
                     for (next_remainder, (remainder_0, remainder_1)) in
                         next_remainder.iter_mut().zip(

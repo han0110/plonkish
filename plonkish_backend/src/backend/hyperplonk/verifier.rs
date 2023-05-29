@@ -28,7 +28,7 @@ pub(super) fn verify_zero_check<F: PrimeField>(
         &(),
         num_vars,
         expression.degree(),
-        F::zero(),
+        F::ZERO,
         transcript,
     )?;
 

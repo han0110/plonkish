@@ -87,7 +87,7 @@ impl<F: Field> UnivariatePolynomial<F> {
         }
 
         let chunk_size = div_ceil(self.coeffs().len(), num_threads);
-        let mut results = vec![F::zero(); num_threads];
+        let mut results = vec![F::ZERO; num_threads];
         parallelize_iter(
             results
                 .iter_mut()
@@ -95,7 +95,7 @@ impl<F: Field> UnivariatePolynomial<F> {
                 .zip(powers(x.pow_vartime([chunk_size as u64]))),
             |((result, coeffs), scalar)| *result = horner(coeffs, x) * scalar,
         );
-        results.iter().fold(F::zero(), |acc, result| acc + result)
+        results.iter().fold(F::ZERO, |acc, result| acc + result)
     }
 
     pub fn div_rem(&self, divisor: &Self) -> (Self, Self) {
@@ -103,7 +103,7 @@ impl<F: Field> UnivariatePolynomial<F> {
             (_, true) => unreachable!(),
             (true, _) => (Self::zero(), Self::zero()),
             (_, _) => {
-                let mut quotient = vec![F::zero(); self.degree() - divisor.degree() + 1];
+                let mut quotient = vec![F::ZERO; self.degree() - divisor.degree() + 1];
                 let mut remainder = self.clone();
                 let divisor_leading_inv = divisor.coeffs().last().unwrap().invert().unwrap();
                 while remainder.degree() >= divisor.degree() {
@@ -223,9 +223,9 @@ impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
 
 impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
     fn mul_assign(&mut self, rhs: &'rhs F) {
-        if rhs == &F::zero() {
+        if rhs == &F::ZERO {
             self.0 = Vec::new()
-        } else if rhs != &F::one() {
+        } else if rhs != &F::ONE {
             parallelize(&mut self.0, |(lhs, _)| {
                 for lhs in lhs.iter_mut() {
                     *lhs *= rhs;

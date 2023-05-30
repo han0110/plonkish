@@ -10,42 +10,59 @@ use crate::{
 use rand::RngCore;
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
+    fmt::Debug,
     iter::{self, Sum},
+    marker::PhantomData,
     ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UnivariatePolynomial<F>(Vec<F>);
+pub trait Basis: Clone + Copy + Debug {}
 
-impl<F> Default for UnivariatePolynomial<F> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoefficientBasis;
+
+impl Basis for CoefficientBasis {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnivariatePolynomial<F, B> {
+    values: Vec<F>,
+    _marker: PhantomData<B>,
+}
+
+impl<F> Default for UnivariatePolynomial<F, CoefficientBasis> {
     fn default() -> Self {
         UnivariatePolynomial::zero()
     }
 }
 
-impl<F> UnivariatePolynomial<F> {
+impl<F, B> UnivariatePolynomial<F, B> {
     pub const fn zero() -> Self {
-        Self(Vec::new())
+        Self {
+            values: Vec::new(),
+            _marker: PhantomData,
+        }
     }
 
     pub fn is_zero(&self) -> bool {
-        self.coeffs().is_empty()
+        self.values.is_empty()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &F> {
+        self.values.iter()
+    }
+}
+
+impl<F> UnivariatePolynomial<F, CoefficientBasis> {
     pub fn coeffs(&self) -> &[F] {
-        self.0.as_slice()
+        self.values.as_slice()
     }
 
     pub fn degree(&self) -> usize {
         self.coeffs().len().checked_sub(1).unwrap_or_default()
     }
-
-    pub fn iter(&self) -> impl Iterator<Item = &F> {
-        self.0.iter()
-    }
 }
 
-impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
+impl<F: Field> Polynomial<F> for UnivariatePolynomial<F, CoefficientBasis> {
     type Point = F;
 
     fn from_evals(_: Vec<F>) -> Self {
@@ -65,9 +82,12 @@ impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
     }
 }
 
-impl<F: Field> UnivariatePolynomial<F> {
+impl<F: Field> UnivariatePolynomial<F, CoefficientBasis> {
     pub fn new(coeffs: Vec<F>) -> Self {
-        let mut poly = Self(coeffs);
+        let mut poly = Self {
+            values: coeffs,
+            _marker: PhantomData,
+        };
         poly.truncate_leading_zeros();
         poly
     }
@@ -83,7 +103,7 @@ impl<F: Field> UnivariatePolynomial<F> {
     pub fn evaluate(&self, x: &F) -> F {
         let num_threads = num_threads();
         if self.coeffs().len() < num_threads {
-            return horner(&self.0, x);
+            return horner(&self.values, x);
         }
 
         let chunk_size = div_ceil(self.coeffs().len(), num_threads);
@@ -91,7 +111,7 @@ impl<F: Field> UnivariatePolynomial<F> {
         parallelize_iter(
             results
                 .iter_mut()
-                .zip(self.0.chunks(chunk_size))
+                .zip(self.values.chunks(chunk_size))
                 .zip(powers(x.pow_vartime([chunk_size as u64]))),
             |((result, coeffs), scalar)| *result = horner(coeffs, x) * scalar,
         );
@@ -110,7 +130,7 @@ impl<F: Field> UnivariatePolynomial<F> {
                     let quotient_coeff = divisor_leading_inv * remainder.coeffs().last().unwrap();
                     let degree = remainder.degree() - divisor.degree();
                     quotient[degree] = quotient_coeff;
-                    for (idx, coeff) in divisor.0.iter().enumerate() {
+                    for (idx, coeff) in divisor.values.iter().enumerate() {
                         remainder[degree + idx] -= &(quotient_coeff * coeff);
                     }
                     remainder.truncate_leading_zeros();
@@ -121,45 +141,54 @@ impl<F: Field> UnivariatePolynomial<F> {
     }
 
     fn truncate_leading_zeros(&mut self) {
-        self.0.truncate(
-            self.0
+        self.values.truncate(
+            self.values
                 .iter()
                 .rev()
                 .position(|coeff| !coeff.is_zero_vartime())
-                .map(|num_zeros| self.0.len() - num_zeros)
+                .map(|num_zeros| self.values.len() - num_zeros)
                 .unwrap_or_default(),
         );
     }
 }
 
-impl<F: Field> Neg for UnivariatePolynomial<F> {
-    type Output = UnivariatePolynomial<F>;
+impl<F: Field, B: Basis> Neg for UnivariatePolynomial<F, B> {
+    type Output = UnivariatePolynomial<F, B>;
 
-    fn neg(self) -> Self::Output {
-        Self(self.0.into_iter().map(|coeff| -coeff).collect())
+    fn neg(mut self) -> Self::Output {
+        self.values.iter_mut().for_each(|coeff| *coeff = -*coeff);
+        self
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Add<&'rhs UnivariatePolynomial<F>> for &'lhs UnivariatePolynomial<F> {
-    type Output = UnivariatePolynomial<F>;
+impl<'lhs, 'rhs, F: Field> Add<&'rhs UnivariatePolynomial<F, CoefficientBasis>>
+    for &'lhs UnivariatePolynomial<F, CoefficientBasis>
+{
+    type Output = UnivariatePolynomial<F, CoefficientBasis>;
 
-    fn add(self, rhs: &'rhs UnivariatePolynomial<F>) -> UnivariatePolynomial<F> {
+    fn add(
+        self,
+        rhs: &'rhs UnivariatePolynomial<F, CoefficientBasis>,
+    ) -> UnivariatePolynomial<F, CoefficientBasis> {
         let mut output = self.clone();
         output += rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn add_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
+impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F, CoefficientBasis>>
+    for UnivariatePolynomial<F, CoefficientBasis>
+{
+    fn add_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F, CoefficientBasis>) {
         match self.degree().cmp(&rhs.degree()) {
             Less => {
-                parallelize(&mut self.0, |(lhs, start)| {
+                parallelize(&mut self.values, |(lhs, start)| {
                     for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                         *lhs += rhs;
                     }
                 });
-                self.0.extend(rhs[self.coeffs().len()..].iter().cloned());
+                self.values
+                    .extend(rhs[self.coeffs().len()..].iter().cloned());
             }
             ord @ (Greater | Equal) => {
                 parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
@@ -175,26 +204,33 @@ impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Sub<&'rhs UnivariatePolynomial<F>> for &'lhs UnivariatePolynomial<F> {
-    type Output = UnivariatePolynomial<F>;
+impl<'lhs, 'rhs, F: Field> Sub<&'rhs UnivariatePolynomial<F, CoefficientBasis>>
+    for &'lhs UnivariatePolynomial<F, CoefficientBasis>
+{
+    type Output = UnivariatePolynomial<F, CoefficientBasis>;
 
-    fn sub(self, rhs: &'rhs UnivariatePolynomial<F>) -> UnivariatePolynomial<F> {
+    fn sub(
+        self,
+        rhs: &'rhs UnivariatePolynomial<F, CoefficientBasis>,
+    ) -> UnivariatePolynomial<F, CoefficientBasis> {
         let mut output = self.clone();
         output -= rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sub_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
+impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F, CoefficientBasis>>
+    for UnivariatePolynomial<F, CoefficientBasis>
+{
+    fn sub_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F, CoefficientBasis>) {
         match self.degree().cmp(&rhs.degree()) {
             Less => {
-                parallelize(&mut self.0, |(lhs, start)| {
+                parallelize(&mut self.values, |(lhs, start)| {
                     for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                         *lhs -= rhs;
                     }
                 });
-                self.0
+                self.values
                     .extend(rhs[self.coeffs().len()..].iter().cloned().map(Neg::neg));
             }
             ord @ (Greater | Equal) => {
@@ -211,22 +247,22 @@ impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
-    type Output = UnivariatePolynomial<F>;
+impl<'lhs, 'rhs, F: Field, B: Basis> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F, B> {
+    type Output = UnivariatePolynomial<F, B>;
 
-    fn mul(self, rhs: &'rhs F) -> UnivariatePolynomial<F> {
+    fn mul(self, rhs: &'rhs F) -> UnivariatePolynomial<F, B> {
         let mut output = self.clone();
         output *= rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
+impl<'rhs, F: Field, B: Basis> MulAssign<&'rhs F> for UnivariatePolynomial<F, B> {
     fn mul_assign(&mut self, rhs: &'rhs F) {
         if rhs == &F::ZERO {
-            self.0 = Vec::new()
+            self.values = Vec::new()
         } else if rhs != &F::ONE {
-            parallelize(&mut self.0, |(lhs, _)| {
+            parallelize(&mut self.values, |(lhs, _)| {
                 for lhs in lhs.iter_mut() {
                     *lhs *= rhs;
                 }
@@ -235,14 +271,16 @@ impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
     }
 }
 
-impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = &'a UnivariatePolynomial<F>>>(
+impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F, CoefficientBasis>>
+    for UnivariatePolynomial<F, CoefficientBasis>
+{
+    fn sum<I: Iterator<Item = &'a UnivariatePolynomial<F, CoefficientBasis>>>(
         mut iter: I,
-    ) -> UnivariatePolynomial<F> {
+    ) -> UnivariatePolynomial<F, CoefficientBasis> {
         let init = match (iter.next(), iter.next()) {
             (Some(lhs), Some(rhs)) => lhs + rhs,
             (Some(lhs), None) => return lhs.clone(),
-            _ => return UnivariatePolynomial::zero(),
+            _ => return Self::zero(),
         };
         iter.fold(init, |mut acc, poly| {
             acc += poly;
@@ -251,14 +289,18 @@ impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> 
     }
 }
 
-impl<F: Field> Sum<UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = UnivariatePolynomial<F>>>(iter: I) -> UnivariatePolynomial<F> {
+impl<F: Field> Sum<UnivariatePolynomial<F, CoefficientBasis>>
+    for UnivariatePolynomial<F, CoefficientBasis>
+{
+    fn sum<I: Iterator<Item = UnivariatePolynomial<F, CoefficientBasis>>>(
+        iter: I,
+    ) -> UnivariatePolynomial<F, CoefficientBasis> {
         iter.reduce(|mut acc, poly| {
             acc += &poly;
             acc
         })
-        .unwrap_or_else(UnivariatePolynomial::zero)
+        .unwrap_or_else(Self::zero)
     }
 }
 
-impl_index!(UnivariatePolynomial, 0);
+impl_index!(@ UnivariatePolynomial<F, CoefficientBasis>, values);

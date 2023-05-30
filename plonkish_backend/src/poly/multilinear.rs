@@ -564,7 +564,13 @@ fn merge_in_place<F: Field>(
     }
 }
 
-fn merge_into<F: Field>(target: &mut Vec<F>, evals: &[F], x_i: &F, distance: usize, skip: usize) {
+pub(crate) fn merge_into<F: Field>(
+    target: &mut Vec<F>,
+    evals: &[F],
+    x_i: &F,
+    distance: usize,
+    skip: usize,
+) {
     debug_assert!(target.capacity() >= evals.len() >> distance);
     target.resize(evals.len() >> distance, F::ZERO);
 

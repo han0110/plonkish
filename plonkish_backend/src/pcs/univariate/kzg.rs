@@ -1,6 +1,6 @@
 use crate::{
     pcs::{AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme},
-    poly::univariate::UnivariatePolynomial,
+    poly::univariate::{CoefficientBasis, UnivariatePolynomial},
     util::{
         arithmetic::{
             fixed_base_msm, inner_product, powers, variable_base_msm, window_size, window_table,
@@ -17,6 +17,15 @@ use std::{iter, marker::PhantomData, ops::Neg};
 
 #[derive(Clone, Debug)]
 pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
+
+impl<M: MultiMillerLoop> UnivariateKzg<M> {
+    pub(crate) fn commit_coeffs(
+        pp: &UnivariateKzgProverParam<M>,
+        coeffs: &[M::Scalar],
+    ) -> UnivariateKzgCommitment<M> {
+        UnivariateKzgCommitment(variable_base_msm(coeffs, &pp.powers_of_s[..coeffs.len()]).into())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
@@ -121,7 +130,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type Param = UnivariateKzgParam<M>;
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
-    type Polynomial = UnivariatePolynomial<M::Scalar>;
+    type Polynomial = UnivariatePolynomial<M::Scalar, CoefficientBasis>;
     type Commitment = M::G1Affine;
     type CommitmentWithAux = UnivariateKzgCommitment<M>;
 
@@ -192,8 +201,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             )));
         }
 
-        Ok(variable_base_msm(&poly[..], &pp.powers_of_s[..=poly.degree()]).into())
-            .map(UnivariateKzgCommitment)
+        Ok(Self::commit_coeffs(pp, poly.coeffs()))
     }
 
     fn batch_commit<'a>(
@@ -229,9 +237,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             assert_eq!(&remainder[0], eval);
         }
 
-        transcript.write_commitment(
-            &variable_base_msm(&quotient[..], &pp.powers_of_s[..=quotient.degree()]).into(),
-        )?;
+        transcript.write_commitment(Self::commit_coeffs(pp, quotient.coeffs()).as_ref())?;
 
         Ok(())
     }

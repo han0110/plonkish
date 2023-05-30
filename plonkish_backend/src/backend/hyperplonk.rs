@@ -363,7 +363,8 @@ pub(crate) mod test {
             PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
         },
         pcs::{
-            multilinear::{MultilinearBrakedown, MultilinearKzg},
+            multilinear::{MultilinearBrakedown, MultilinearKzg, MultilinearSimulator},
+            univariate::UnivariateKzg,
             PolynomialCommitmentScheme,
         },
         poly::multilinear::MultilinearPolynomial,
@@ -454,6 +455,7 @@ pub(crate) mod test {
         };
     }
 
-    tests!(kzg, MultilinearKzg<Bn256>);
     tests!(brakedown, MultilinearBrakedown<Fr, Keccak256, BrakedownSpec6>);
+    tests!(kzg, MultilinearKzg<Bn256>);
+    tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);
 }

@@ -20,9 +20,9 @@ impl BitIndex for usize {
 }
 
 macro_rules! impl_index {
-    (@ $name:ident, $field:tt, [$($range:ty => $output:ty),*$(,)?]) => {
+    (@ $name:ty, $field:tt, [$($range:ty => $output:ty),*$(,)?]) => {
         $(
-            impl<F> std::ops::Index<$range> for $name<F> {
+            impl<F> std::ops::Index<$range> for $name {
                 type Output = $output;
 
                 fn index(&self, index: $range) -> &$output {
@@ -30,14 +30,14 @@ macro_rules! impl_index {
                 }
             }
 
-            impl<F> std::ops::IndexMut<$range> for $name<F> {
+            impl<F> std::ops::IndexMut<$range> for $name {
                 fn index_mut(&mut self, index: $range) -> &mut $output {
                     self.$field.index_mut(index)
                 }
             }
         )*
     };
-    ($name:ident, $field:tt) => {
+    (@ $name:ty, $field:tt) => {
         impl_index!(
             @ $name, $field,
             [
@@ -50,6 +50,9 @@ macro_rules! impl_index {
                 std::ops::RangeToInclusive<usize> => [F],
             ]
         );
+    };
+    ($name:ident, $field:tt) => {
+        impl_index!(@ $name<F>, $field);
     };
 }
 

@@ -387,15 +387,17 @@ mod test {
         },
         util::transcript::Keccak256Transcript,
     };
-    use halo2_curves::bn256::{Bn256, Fr};
+    use halo2_curves::bn256::Bn256;
+
+    type Pcs = MultilinearKzg<Bn256>;
 
     #[test]
     fn commit_open_verify() {
-        run_commit_open_verify::<Fr, MultilinearKzg<Bn256>, Keccak256Transcript<_>>();
+        run_commit_open_verify::<_, Pcs, Keccak256Transcript<_>>();
     }
 
     #[test]
     fn batch_commit_open_verify() {
-        run_batch_commit_open_verify::<Fr, MultilinearKzg<Bn256>, Keccak256Transcript<_>>();
+        run_batch_commit_open_verify::<_, Pcs, Keccak256Transcript<_>>();
     }
 }

@@ -32,7 +32,7 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     type VerifierParam: Debug;
     type Polynomial: Polynomial<F>;
     type Commitment: Clone + Debug + Default;
-    type CommitmentWithAux: Debug + Default + AsRef<Self::Commitment>;
+    type CommitmentWithAux: Clone + Debug + Default + AsRef<Self::Commitment>;
 
     fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error>;
 

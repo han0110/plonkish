@@ -77,7 +77,7 @@ pub fn inner_product<'a, 'b, F: Field>(
         .unwrap_or_default()
 }
 
-pub fn barycentric_weights<F: PrimeField>(points: &[F]) -> Vec<F> {
+pub fn barycentric_weights<F: Field>(points: &[F]) -> Vec<F> {
     let mut weights = points
         .iter()
         .enumerate()
@@ -94,12 +94,7 @@ pub fn barycentric_weights<F: PrimeField>(points: &[F]) -> Vec<F> {
     weights
 }
 
-pub fn barycentric_interpolate<F: PrimeField>(
-    weights: &[F],
-    points: &[F],
-    evals: &[F],
-    x: &F,
-) -> F {
+pub fn barycentric_interpolate<F: Field>(weights: &[F], points: &[F], evals: &[F], x: &F) -> F {
     let (coeffs, sum_inv) = {
         let mut coeffs = points.iter().map(|point| *x - point).collect_vec();
         coeffs.iter_mut().batch_invert();

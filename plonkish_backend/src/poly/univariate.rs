@@ -9,6 +9,7 @@ use crate::{
 };
 use rand::RngCore;
 use std::{
+    borrow::Borrow,
     cmp::Ordering::{Equal, Greater, Less},
     fmt::Debug,
     iter::{self, Sum},
@@ -100,6 +101,23 @@ impl<F: Field> UnivariatePolynomial<F, CoefficientBasis> {
         )
     }
 
+    pub fn basis<'a>(points: impl IntoIterator<Item = &'a F>, weight: F) -> Self {
+        let points = points.into_iter().collect_vec();
+        assert!(!points.is_empty());
+
+        let mut buf;
+        let mut basis = vec![F::ZERO; points.len() + 1];
+        *basis.last_mut().unwrap() = weight;
+        for (point, len) in points.into_iter().zip(2..) {
+            buf = weight;
+            for idx in (0..basis.len() - 1).rev().take(len) {
+                buf = basis[idx] - buf * point;
+                std::mem::swap(&mut buf, &mut basis[idx]);
+            }
+        }
+        Self::new(basis)
+    }
+
     pub fn evaluate(&self, x: &F) -> F {
         let num_threads = num_threads();
         if self.coeffs().len() < num_threads {
@@ -123,6 +141,10 @@ impl<F: Field> UnivariatePolynomial<F, CoefficientBasis> {
             (_, true) => unreachable!(),
             (true, _) => (Self::zero(), Self::zero()),
             (_, _) => {
+                if self.degree() < divisor.degree() {
+                    return (Self::zero(), self.clone());
+                }
+
                 let mut quotient = vec![F::ZERO; self.degree() - divisor.degree() + 1];
                 let mut remainder = self.clone();
                 let divisor_leading_inv = divisor.coeffs().last().unwrap().invert().unwrap();
@@ -192,12 +214,49 @@ impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F, CoefficientBasis>>
             }
             ord @ (Greater | Equal) => {
                 parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
-                    for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                    for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                         *lhs += rhs;
                     }
                 });
                 if matches!(ord, Equal) {
                     self.truncate_leading_zeros();
+                }
+            }
+        }
+    }
+}
+
+impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs UnivariatePolynomial<F, CoefficientBasis>)>
+    for UnivariatePolynomial<F, CoefficientBasis>
+{
+    fn add_assign(
+        &mut self,
+        (scalar, rhs): (&'rhs F, &'rhs UnivariatePolynomial<F, CoefficientBasis>),
+    ) {
+        if scalar == &F::ONE {
+            *self += rhs;
+        } else if scalar == &-F::ONE {
+            *self -= rhs;
+        } else if scalar != &F::ZERO {
+            match self.degree().cmp(&rhs.degree()) {
+                Less => {
+                    parallelize(&mut self.values, |(lhs, start)| {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                            *lhs += *rhs * scalar;
+                        }
+                    });
+                    self.values
+                        .extend(rhs[self.coeffs().len()..].iter().map(|rhs| *rhs * scalar));
+                }
+                ord @ (Greater | Equal) => {
+                    parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                            *lhs += *rhs * scalar;
+                        }
+                    });
+                    if matches!(ord, Equal) {
+                        self.truncate_leading_zeros();
+                    }
                 }
             }
         }
@@ -300,6 +359,27 @@ impl<F: Field> Sum<UnivariatePolynomial<F, CoefficientBasis>>
             acc
         })
         .unwrap_or_else(Self::zero)
+    }
+}
+
+impl<'a, F: Field, P: Borrow<UnivariatePolynomial<F, CoefficientBasis>>> Sum<(&'a F, P)>
+    for UnivariatePolynomial<F, CoefficientBasis>
+{
+    fn sum<I: Iterator<Item = (&'a F, P)>>(
+        mut iter: I,
+    ) -> UnivariatePolynomial<F, CoefficientBasis> {
+        let init = match iter.next() {
+            Some((scalar, poly)) => {
+                let mut poly = poly.borrow().clone();
+                poly *= scalar;
+                poly
+            }
+            _ => return Self::zero(),
+        };
+        iter.fold(init, |mut acc, (scalar, poly)| {
+            acc += (scalar, poly.borrow());
+            acc
+        })
     }
 }
 

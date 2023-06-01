@@ -7,7 +7,7 @@ use crate::{
             variable_base_msm, window_size, window_table, Curve, Field, MultiMillerLoop,
             PrimeCurveAffine,
         },
-        chain, izip_eq,
+        chain, izip, izip_eq,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Itertools,
@@ -269,32 +269,29 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             .iter()
             .map(|set| {
                 let vanishing_poly = set.vanishing_poly(points);
-                let f = izip_eq!(
-                    powers_of_beta[..set.polys.len()].iter().rev(),
-                    set.polys.iter().map(|poly| polys[*poly])
-                )
-                .sum::<UnivariatePolynomial<_, _>>();
+                let f = izip!(&powers_of_beta, set.polys.iter().map(|poly| polys[*poly]))
+                    .sum::<UnivariatePolynomial<_, _>>();
                 let (q, r) = f.div_rem(&vanishing_poly);
                 (f, (q, r))
             })
             .unzip::<_, _, Vec<_>, (Vec<_>, Vec<_>)>();
-        let q =
-            izip_eq!(powers_of_gamma.iter().rev(), qs.iter()).sum::<UnivariatePolynomial<_, _>>();
+        let q = izip_eq!(&powers_of_gamma, qs.iter()).sum::<UnivariatePolynomial<_, _>>();
 
         Self::commit_and_write(pp, &q, transcript)?;
 
         let z = transcript.squeeze_challenge();
 
-        let set_coeffs = set_coeffs(&sets, &powers_of_gamma, points, &z);
+        let (normalized_scalars, normalizer) = set_scalars(&sets, &powers_of_gamma, points, &z);
         let f = {
-            let mut f = izip_eq!(&set_coeffs, &fs).sum::<UnivariatePolynomial<_, _>>();
-            let neg_superset_eval = -vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
-            f += (&neg_superset_eval, &q);
+            let mut f = izip_eq!(&normalized_scalars, &fs).sum::<UnivariatePolynomial<_, _>>();
+            let superset_eval = vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
+            let q_scalar = -superset_eval * normalizer;
+            f += (&q_scalar, &q);
             f
         };
         let eval = if cfg!(feature = "sanity-check") {
             let r_evals = rs.iter().map(|r| r.evaluate(&z)).collect_vec();
-            inner_product(&set_coeffs, &r_evals)
+            inner_product(&normalized_scalars, &r_evals)
         } else {
             M::Scalar::ZERO
         };
@@ -336,21 +333,22 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         let powers_of_beta = powers(beta).take(max_set_len).collect_vec();
         let powers_of_gamma = powers(gamma).take(sets.len()).collect_vec();
 
-        let set_coeffs = set_coeffs(&sets, &powers_of_gamma, points, &z);
+        let (normalized_scalars, normalizer) = set_scalars(&sets, &powers_of_gamma, points, &z);
         let f = {
-            let scalars = sets.iter().zip(&set_coeffs).fold(
+            let scalars = sets.iter().zip(&normalized_scalars).fold(
                 vec![M::Scalar::ZERO; comms.len()],
                 |mut scalars, (set, coeff)| {
-                    izip_eq!(&set.polys, powers_of_beta[..set.polys.len()].iter().rev())
+                    izip!(&set.polys, &powers_of_beta)
                         .for_each(|(poly, power_of_beta)| scalars[*poly] = *coeff * power_of_beta);
                     scalars
                 },
             );
-            let neg_superset_eval = -vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
-            variable_base_msm(chain![&scalars, [&neg_superset_eval]], chain![comms, [&q]]).into()
+            let superset_eval = vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
+            let q_scalar = -superset_eval * normalizer;
+            variable_base_msm(chain![&scalars, [&q_scalar]], chain![comms, [&q]]).into()
         };
         let eval = inner_product(
-            &set_coeffs,
+            &normalized_scalars,
             &sets
                 .iter()
                 .map(|set| set.r_eval(points, &z, &powers_of_beta))
@@ -388,7 +386,7 @@ impl<F: Field> EvaluationSet<F> {
             .iter()
             .map(|evals| barycentric_interpolate(&weights, &points, evals, z))
             .collect_vec();
-        inner_product(powers_of_beta[..r_evals.len()].iter().rev(), &r_evals)
+        inner_product(&powers_of_beta[..r_evals.len()], &r_evals)
     }
 }
 
@@ -452,15 +450,25 @@ fn eval_sets<F: Field>(evals: &[Evaluation<F>]) -> (Vec<EvaluationSet<F>>, BTree
     (sets, superset)
 }
 
-fn set_coeffs<F: Field>(
+fn set_scalars<F: Field>(
     sets: &[EvaluationSet<F>],
     powers_of_gamma: &[F],
     points: &[F],
     z: &F,
-) -> Vec<F> {
-    izip_eq!(powers_of_gamma.iter().rev(), sets.iter())
-        .map(|(power_of_gamma, set)| set.vanishing_diff_eval(points, z) * power_of_gamma)
-        .collect_vec()
+) -> (Vec<F>, F) {
+    let vanishing_diff_evals = sets
+        .iter()
+        .map(|set| set.vanishing_diff_eval(points, z))
+        .collect_vec();
+    // Adopt fflonk's trick to normalize the set scalars by the one of first set,
+    // to save 1 EC scalar multiplication for verifier.
+    let normalizer = vanishing_diff_evals[0].invert().unwrap_or(F::ONE);
+    let normalized_scalars = izip_eq!(powers_of_gamma, &vanishing_diff_evals)
+        .map(|(power_of_gamma, vanishing_diff_eval)| {
+            normalizer * vanishing_diff_eval * power_of_gamma
+        })
+        .collect_vec();
+    (normalized_scalars, normalizer)
 }
 
 fn vanishing_eval<'a, F: Field>(points: impl IntoIterator<Item = &'a F>, z: &F) -> F {

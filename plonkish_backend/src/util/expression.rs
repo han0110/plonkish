@@ -1,9 +1,9 @@
-use crate::util::{arithmetic::Field, Itertools};
+use crate::util::{arithmetic::Field, izip, Itertools};
 use std::{
     collections::BTreeSet,
     fmt::Debug,
     io::{self, Cursor},
-    iter::{Product, Sum},
+    iter::{self, Product, Sum},
     ops::{Add, Mul, Neg, Sub},
 };
 
@@ -154,11 +154,12 @@ impl<F: Clone> Expression<F> {
                 if exprs.len() == 1 {
                     return evaluate(exprs.first().unwrap());
                 }
-                let mut exprs = exprs.iter();
-                let first = evaluate(exprs.next().unwrap());
                 let scalar = evaluate(scalar);
-                exprs.fold(first, |acc, expr| {
-                    sum(product(acc, scalar.clone()), evaluate(expr))
+                let scalars = iter::successors(Some(scalar.clone()), |power| {
+                    Some(product(power.clone(), scalar.clone()))
+                });
+                izip!(&exprs[1..], scalars).fold(evaluate(&exprs[0]), |acc, (expr, scalar)| {
+                    sum(acc, product(scalar, evaluate(expr)))
                 })
             }
         }

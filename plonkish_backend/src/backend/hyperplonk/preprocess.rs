@@ -38,8 +38,8 @@ pub(super) fn compose<F: PrimeField>(
         let zero_check_on_every_row = Expression::distribute_powers(constraints, alpha) * eq;
         Expression::distribute_powers(
             iter::empty()
-                .chain(Some(&zero_check_on_every_row))
-                .chain(lookup_zero_checks.iter()),
+                .chain(lookup_zero_checks.iter())
+                .chain(Some(&zero_check_on_every_row)),
             alpha,
         )
     };
@@ -256,7 +256,7 @@ pub(crate) mod test {
             let eq = Expression::eq_xy(0);
             let zero_check_on_every_row = Expression::distribute_powers(&constraints, alpha) * eq;
             let lookup_zero_check = lookup_h;
-            Expression::distribute_powers([&zero_check_on_every_row, lookup_zero_check], alpha)
+            Expression::distribute_powers([lookup_zero_check, &zero_check_on_every_row], alpha)
         });
     }
 }

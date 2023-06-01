@@ -1,12 +1,9 @@
 pub use aggregation::AggregationCircuit;
+pub use sha256::Sha256Circuit;
 
 mod aggregation {
     use halo2_proofs::{
         circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
-        halo2curves::{
-            ff::{FromUniformBytes, WithSmallOrderMulGroup},
-            serde::SerdeObject,
-        },
         plonk::{create_proof, keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error},
         poly::{
             commitment::{Params, ParamsProver},
@@ -19,7 +16,14 @@ mod aggregation {
     use itertools::Itertools;
     use plonkish_backend::{
         backend::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk},
-        halo2_curves::{ff::PrimeField, pairing::Engine, CurveAffine},
+        halo2_curves::{
+            ff::PrimeField,
+            ff::{FromUniformBytes, WithSmallOrderMulGroup},
+            pairing::Engine,
+            serde::SerdeObject,
+            CurveAffine,
+        },
+        util::arithmetic::MultiMillerLoop,
     };
     use rand::{rngs::StdRng, RngCore, SeedableRng};
     use snark_verifier::{
@@ -36,7 +40,7 @@ mod aggregation {
             AccumulationDecider, AccumulationScheme, AccumulationSchemeProver,
         },
         system::halo2::{compile, transcript, Config},
-        util::arithmetic::{fe_to_limbs, MultiMillerLoop},
+        util::arithmetic::fe_to_limbs,
         verifier::{self, plonk::PlonkProtocol, SnarkVerifier},
     };
     use std::rc::Rc;
@@ -382,6 +386,103 @@ mod aggregation {
 
         fn instances(&self) -> Vec<Vec<M::Scalar>> {
             vec![self.instances.clone()]
+        }
+    }
+}
+
+mod sha256 {
+    use halo2_gadgets::sha256::{BlockWord, Sha256, Table16Chip, Table16Config};
+    use halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        plonk::{Circuit, ConstraintSystem, Error},
+    };
+    use plonkish_backend::{
+        backend::hyperplonk::frontend::halo2::circuit::CircuitExt, halo2_curves::bn256::Fr,
+    };
+    use rand::RngCore;
+
+    const INPUT_2: [BlockWord; 16 * 2] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 2];
+    const INPUT_3: [BlockWord; 16 * 3] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 3];
+    const INPUT_5: [BlockWord; 16 * 5] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 5];
+    const INPUT_9: [BlockWord; 16 * 9] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 9];
+    const INPUT_17: [BlockWord; 16 * 17] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 17];
+    const INPUT_33: [BlockWord; 16 * 33] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 33];
+    const INPUT_65: [BlockWord; 16 * 65] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 65];
+    const INPUT_129: [BlockWord; 16 * 129] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 129];
+    const INPUT_257: [BlockWord; 16 * 257] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 257];
+    const INPUT_513: [BlockWord; 16 * 513] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 513];
+    const INPUT_1025: [BlockWord; 16 * 1025] =
+        [BlockWord(Value::known(0b01111000100000000000000000000000)); 16 * 1025];
+
+    #[derive(Default)]
+    pub struct Sha256Circuit {
+        input_size: usize,
+    }
+
+    impl Circuit<Fr> for Sha256Circuit {
+        type Config = Table16Config;
+        type FloorPlanner = SimpleFloorPlanner;
+
+        fn without_witnesses(&self) -> Self {
+            unimplemented!()
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            Table16Chip::configure(meta)
+        }
+
+        fn synthesize(
+            &self,
+            config: Self::Config,
+            mut layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            Table16Chip::load(config.clone(), &mut layouter)?;
+            let chip = Table16Chip::construct(config);
+            let input = match self.input_size {
+                2 => INPUT_2.as_slice(),
+                3 => INPUT_3.as_slice(),
+                5 => INPUT_5.as_slice(),
+                9 => INPUT_9.as_slice(),
+                17 => INPUT_17.as_slice(),
+                33 => INPUT_33.as_slice(),
+                65 => INPUT_65.as_slice(),
+                129 => INPUT_129.as_slice(),
+                257 => INPUT_257.as_slice(),
+                513 => INPUT_513.as_slice(),
+                1025 => INPUT_1025.as_slice(),
+                _ => panic!("Unexpected input_size: {}", self.input_size),
+            };
+            Sha256::digest(chip, layouter, input).map(|_| ())
+        }
+    }
+
+    impl CircuitExt<Fr> for Sha256Circuit {
+        fn rand(k: usize, _: impl RngCore) -> Self {
+            assert!(k > 16);
+            let input_size = if k > 22 {
+                1025
+            } else {
+                [33, 65, 129, 257, 513, 1025][k - 17]
+            };
+            Self { input_size }
+        }
+
+        fn num_instances() -> Vec<usize> {
+            Vec::new()
+        }
+
+        fn instances(&self) -> Vec<Vec<Fr>> {
+            Vec::new()
         }
     }
 }

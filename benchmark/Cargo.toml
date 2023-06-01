@@ -13,6 +13,7 @@ plonkish_backend = { path = "../plonkish_backend", features = ["benchmark"] }
 
 # halo2
 halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
+halo2_gadgets = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark", features = ["unstable"] }
 snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "feature/for-benchmark", default-features = false, features = ["loader_halo2", "system_halo2"] }
 
 # espresso

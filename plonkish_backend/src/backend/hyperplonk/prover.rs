@@ -92,12 +92,8 @@ fn lookup_compressed_poly<F: PrimeField>(
 ) -> [MultilinearPolynomial<F>; 2] {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
-    let powers_of_theta = powers(*beta).take(lookup.len()).collect_vec();
     let compress = |expressions: &[&Expression<F>]| {
-        powers_of_theta
-            .iter()
-            .rev()
-            .copied()
+        powers(*beta)
             .zip(expressions.iter().map(|expression| {
                 let mut compressed = vec![F::ZERO; 1 << num_vars];
                 parallelize(&mut compressed, |(compressed, start)| {

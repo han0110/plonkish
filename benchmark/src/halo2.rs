@@ -1,3 +1,3 @@
 mod circuit;
 
-pub use circuit::AggregationCircuit;
+pub use circuit::*;

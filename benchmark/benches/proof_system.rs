@@ -1,4 +1,7 @@
-use benchmark::{espresso::standard_plonk, halo2::AggregationCircuit};
+use benchmark::{
+    espresso::standard_plonk,
+    halo2::{AggregationCircuit, Sha256Circuit},
+};
 use espresso_hyperplonk::{prelude::MockCircuit, HyperPlonkSNARK};
 use espresso_subroutines::{MultilinearKzgPCS, PolyIOP, PolynomialCommitmentScheme};
 use halo2_proofs::{
@@ -180,11 +183,11 @@ impl System {
     fn support(&self, circuit: Circuit) -> bool {
         match self {
             System::HyperPlonk | System::Halo2 => match circuit {
-                Circuit::Aggregation | Circuit::StandardPlonk => true,
+                Circuit::StandardPlonk | Circuit::Aggregation | Circuit::Sha256 => true,
             },
             System::EspressoHyperPlonk => match circuit {
                 Circuit::StandardPlonk => true,
-                Circuit::Aggregation => false,
+                Circuit::Aggregation | Circuit::Sha256 => false,
             },
         }
     }
@@ -199,16 +202,18 @@ impl System {
 
         match self {
             System::HyperPlonk => match circuit {
-                Circuit::Aggregation => bench_hyperplonk::<AggregationCircuit<Bn256>>(k),
                 Circuit::StandardPlonk => bench_hyperplonk::<StandardPlonk<Fr>>(k),
+                Circuit::Aggregation => bench_hyperplonk::<AggregationCircuit<Bn256>>(k),
+                Circuit::Sha256 => bench_hyperplonk::<Sha256Circuit>(k),
             },
             System::Halo2 => match circuit {
-                Circuit::Aggregation => bench_halo2::<AggregationCircuit<Bn256>>(k),
                 Circuit::StandardPlonk => bench_halo2::<StandardPlonk<Fr>>(k),
+                Circuit::Aggregation => bench_halo2::<AggregationCircuit<Bn256>>(k),
+                Circuit::Sha256 => bench_halo2::<Sha256Circuit>(k),
             },
             System::EspressoHyperPlonk => match circuit {
                 Circuit::StandardPlonk => bench_espresso_hyperplonk(standard_plonk(k)),
-                Circuit::Aggregation => unreachable!(),
+                Circuit::Aggregation | Circuit::Sha256 => unreachable!(),
             },
         }
     }
@@ -226,15 +231,17 @@ impl Display for System {
 
 #[derive(Debug, Clone, Copy)]
 enum Circuit {
-    Aggregation,
     StandardPlonk,
+    Aggregation,
+    Sha256,
 }
 
 impl Circuit {
     fn min_k(&self) -> usize {
         match self {
-            Circuit::Aggregation => 20,
             Circuit::StandardPlonk => 4,
+            Circuit::Aggregation => 20,
+            Circuit::Sha256 => 17,
         }
     }
 }
@@ -242,8 +249,9 @@ impl Circuit {
 impl Display for Circuit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Circuit::Aggregation => write!(f, "aggregation"),
             Circuit::StandardPlonk => write!(f, "standard_plonk"),
+            Circuit::Aggregation => write!(f, "aggregation"),
+            Circuit::Sha256 => write!(f, "sha256"),
         }
     }
 }
@@ -263,8 +271,9 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
                     ),
                 },
                 "--circuit" => match value.as_str() {
-                    "aggregation" => circuit = Circuit::Aggregation,
                     "standard_plonk" => circuit = Circuit::StandardPlonk,
+                    "aggregation" => circuit = Circuit::Aggregation,
+                    "sha256" => circuit = Circuit::Sha256,
                     _ => panic!("circuit should be one of {{aggregation,standard_plonk}}"),
                 },
                 "--k" => {

@@ -317,15 +317,17 @@ mod test {
         },
         util::transcript::Keccak256Transcript,
     };
-    use halo2_curves::pasta::pallas::{Affine, Scalar};
+    use halo2_curves::pasta::pallas::Affine;
+
+    type Pcs = MultilinearIpa<Affine>;
 
     #[test]
     fn commit_open_verify() {
-        run_commit_open_verify::<Scalar, MultilinearIpa<Affine>, Keccak256Transcript<_>>();
+        run_commit_open_verify::<_, Pcs, Keccak256Transcript<_>>();
     }
 
     #[test]
     fn batch_commit_open_verify() {
-        run_batch_commit_open_verify::<Scalar, MultilinearIpa<Affine>, Keccak256Transcript<_>>();
+        run_batch_commit_open_verify::<_, Pcs, Keccak256Transcript<_>>();
     }
 }

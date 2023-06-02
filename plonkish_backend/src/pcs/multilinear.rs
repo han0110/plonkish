@@ -7,6 +7,7 @@ use crate::{
 mod brakedown;
 mod ipa;
 mod kzg;
+mod simulator;
 
 pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
@@ -16,6 +17,7 @@ pub use kzg::{
     MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,
     MultilinearKzgVerifierParams,
 };
+pub use simulator::MultilinearSimulator;
 
 fn validate_input<'a, F: Field>(
     function: &str,

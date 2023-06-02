@@ -407,21 +407,15 @@ mod test {
     };
     use halo2_curves::bn256::Fr;
 
+    type Pcs = MultilinearBrakedown<Fr, Keccak256, BrakedownSpec6>;
+
     #[test]
     fn commit_open_verify() {
-        run_commit_open_verify::<
-            Fr,
-            MultilinearBrakedown<_, Keccak256, BrakedownSpec6>,
-            Keccak256Transcript<_>,
-        >();
+        run_commit_open_verify::<_, Pcs, Keccak256Transcript<_>>();
     }
 
     #[test]
     fn batch_commit_open_verify() {
-        run_batch_commit_open_verify::<
-            Fr,
-            MultilinearBrakedown<_, Keccak256, BrakedownSpec6>,
-            Keccak256Transcript<_>,
-        >();
+        run_batch_commit_open_verify::<_, Pcs, Keccak256Transcript<_>>();
     }
 }

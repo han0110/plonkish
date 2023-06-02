@@ -6,8 +6,28 @@ pub mod parallel;
 mod timer;
 pub mod transcript;
 
-pub use itertools::{chain, Itertools};
+pub use itertools::{chain, izip, Itertools};
 pub use timer::{end_timer, start_timer, start_unit_timer};
+
+macro_rules! izip_eq {
+    (@closure $p:pat => $tup:expr) => {
+        |$p| $tup
+    };
+    (@closure $p:pat => ($($tup:tt)*) , $_iter:expr $(, $tail:expr)*) => {
+        $crate::util::izip_eq!(@closure ($p, b) => ($($tup)*, b) $(, $tail)*)
+    };
+    ($first:expr $(,)*) => {
+        itertools::__std_iter::IntoIterator::into_iter($first)
+    };
+    ($first:expr, $second:expr $(,)*) => {
+        $crate::util::izip_eq!($first).zip_eq($second)
+    };
+    ($first:expr $(, $rest:expr)* $(,)*) => {
+        $crate::util::izip_eq!($first)
+            $(.zip_eq($rest))*
+            .map($crate::util::izip_eq!(@closure a => (a) $(, $rest)*))
+    };
+}
 
 pub trait BitIndex {
     fn nth_bit(&self, nth: usize) -> bool;
@@ -20,9 +40,9 @@ impl BitIndex for usize {
 }
 
 macro_rules! impl_index {
-    (@ $name:ident, $field:tt, [$($range:ty => $output:ty),*$(,)?]) => {
+    (@ $name:ty, $field:tt, [$($range:ty => $output:ty),*$(,)?]) => {
         $(
-            impl<F> std::ops::Index<$range> for $name<F> {
+            impl<F> std::ops::Index<$range> for $name {
                 type Output = $output;
 
                 fn index(&self, index: $range) -> &$output {
@@ -30,14 +50,14 @@ macro_rules! impl_index {
                 }
             }
 
-            impl<F> std::ops::IndexMut<$range> for $name<F> {
+            impl<F> std::ops::IndexMut<$range> for $name {
                 fn index_mut(&mut self, index: $range) -> &mut $output {
                     self.$field.index_mut(index)
                 }
             }
         )*
     };
-    ($name:ident, $field:tt) => {
+    (@ $name:ty, $field:tt) => {
         impl_index!(
             @ $name, $field,
             [
@@ -51,9 +71,12 @@ macro_rules! impl_index {
             ]
         );
     };
+    ($name:ident, $field:tt) => {
+        impl_index!(@ $name<F>, $field);
+    };
 }
 
-pub(crate) use impl_index;
+pub(crate) use {impl_index, izip_eq};
 
 #[cfg(any(test, feature = "benchmark"))]
 pub mod test {

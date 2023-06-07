@@ -371,7 +371,8 @@ pub(crate) mod test {
         },
         pcs::{
             multilinear::{
-                MultilinearBrakedown, MultilinearIpa, MultilinearKzg, MultilinearSimulator,
+                MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
+                MultilinearSimulator,
             },
             univariate::UnivariateKzg,
             PolynomialCommitmentScheme,
@@ -469,6 +470,7 @@ pub(crate) mod test {
     }
 
     tests!(brakedown, MultilinearBrakedown<bn256::Fr, Keccak256, BrakedownSpec6>);
+    tests!(hyrax, MultilinearHyrax<grumpkin::G1Affine>, 5..16);
     tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
     tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);

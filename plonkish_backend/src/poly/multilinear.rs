@@ -150,6 +150,27 @@ impl<F: Field> MultilinearPolynomial<F> {
         evals[usize_from_bits_le(&bits)]
     }
 
+    pub fn fix_last_vars(&self, x: &[F]) -> Self {
+        assert!(!x.is_empty() && x.len() <= self.num_vars);
+
+        let mut output = self.evals.clone();
+        for (x_i, len) in x.iter().rev().zip((1..).map(|i| 1 << (self.num_vars - i))) {
+            let (lo, hi) = output.split_at_mut(len);
+            let chunk_size = div_ceil(len, num_threads());
+            parallelize_iter(
+                lo.chunks_mut(chunk_size).zip(hi.chunks(chunk_size)),
+                |(lo, hi)| {
+                    lo.iter_mut()
+                        .zip(hi.iter())
+                        .for_each(|(lo, hi)| *lo += (*hi - lo as &_) * x_i);
+                },
+            );
+        }
+
+        output.truncate(1 << (self.num_vars - x.len()));
+        Self::new(output)
+    }
+
     pub fn fix_var(&self, x_i: &F) -> Self {
         let mut output = Vec::with_capacity(1 << (self.num_vars - 1));
         merge_into(&mut output, self.evals(), x_i, 1, 0);

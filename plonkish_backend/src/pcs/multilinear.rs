@@ -5,6 +5,7 @@ use crate::{
 };
 
 mod brakedown;
+mod hyrax;
 mod ipa;
 mod kzg;
 mod simulator;
@@ -12,6 +13,7 @@ mod simulator;
 pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
 };
+pub use hyrax::{MultilinearHyrax, MultilinearHyraxCommitment, MultilinearHyraxParams};
 pub use ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParams};
 pub use kzg::{
     MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,

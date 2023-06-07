@@ -35,7 +35,7 @@ impl<F> MultilinearPolynomial<F> {
             0
         } else {
             let num_vars = evals.len().ilog2() as usize;
-            debug_assert_eq!(evals.len(), 1 << num_vars);
+            assert_eq!(evals.len(), 1 << num_vars);
             num_vars
         };
 
@@ -130,7 +130,7 @@ impl<F: Field> MultilinearPolynomial<F> {
     }
 
     pub fn evaluate(&self, x: &[F]) -> F {
-        debug_assert_eq!(x.len(), self.num_vars);
+        assert_eq!(x.len(), self.num_vars);
 
         let mut evals = Cow::Borrowed(self.evals());
         let mut bits = Vec::new();
@@ -163,7 +163,7 @@ impl<F: Field> MultilinearPolynomial<F> {
     }
 
     pub fn evaluate_for_rotation(&self, x: &[F], rotation: Rotation) -> Vec<F> {
-        debug_assert_eq!(x.len(), self.num_vars);
+        assert_eq!(x.len(), self.num_vars);
         if rotation == Rotation::cur() {
             return vec![self.evaluate(x)];
         }
@@ -253,7 +253,7 @@ impl<'rhs, F: Field> AddAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPo
             (_, true) => {}
             (true, false) => *self = rhs.clone(),
             (false, false) => {
-                debug_assert_eq!(self.num_vars, rhs.num_vars);
+                assert_eq!(self.num_vars, rhs.num_vars);
 
                 parallelize(&mut self.evals, |(lhs, start)| {
                     for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
@@ -276,7 +276,7 @@ impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs MultilinearPolynomial<F>)>
                 *self *= scalar;
             }
             (false, false) => {
-                debug_assert_eq!(self.num_vars, rhs.num_vars);
+                assert_eq!(self.num_vars, rhs.num_vars);
 
                 if scalar == &F::ONE {
                     *self += rhs;
@@ -313,7 +313,7 @@ impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPo
                 *self *= &-F::ONE;
             }
             (false, false) => {
-                debug_assert_eq!(self.num_vars, rhs.num_vars);
+                assert_eq!(self.num_vars, rhs.num_vars);
 
                 parallelize(&mut self.evals, |(lhs, start)| {
                     for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
@@ -571,7 +571,7 @@ pub(crate) fn merge_into<F: Field>(
     distance: usize,
     skip: usize,
 ) {
-    debug_assert!(target.capacity() >= evals.len() >> distance);
+    assert!(target.capacity() >= evals.len() >> distance);
     target.resize(evals.len() >> distance, F::ZERO);
 
     let step = 1 << distance;

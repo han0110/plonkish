@@ -19,7 +19,7 @@ use crate::{
 };
 use num_integer::Integer;
 use rand::RngCore;
-use std::{iter, marker::PhantomData, ops::Neg};
+use std::{iter, marker::PhantomData, ops::Neg, slice};
 
 #[derive(Clone, Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
@@ -112,9 +112,9 @@ impl<M: MultiMillerLoop> Default for MultilinearKzgCommitment<M> {
     }
 }
 
-impl<M: MultiMillerLoop> AsRef<M::G1Affine> for MultilinearKzgCommitment<M> {
-    fn as_ref(&self) -> &M::G1Affine {
-        &self.0
+impl<M: MultiMillerLoop> AsRef<[M::G1Affine]> for MultilinearKzgCommitment<M> {
+    fn as_ref(&self) -> &[M::G1Affine] {
+        slice::from_ref(&self.0)
     }
 }
 
@@ -124,7 +124,7 @@ impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for MultilinearKzgCommitm
         bases: impl IntoIterator<Item = &'a Self> + 'a,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
-        let bases = bases.into_iter().map(AsRef::as_ref).collect_vec();
+        let bases = bases.into_iter().map(|base| &base.0).collect_vec();
         assert_eq!(scalars.len(), bases.len());
 
         MultilinearKzgCommitment(variable_base_msm(scalars, bases).to_affine())
@@ -136,12 +136,12 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     type ProverParam = MultilinearKzgProverParams<M>;
     type VerifierParam = MultilinearKzgVerifierParams<M>;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
-    type Commitment = M::G1Affine;
-    type CommitmentWithAux = MultilinearKzgCommitment<M>;
+    type CommitmentChunk = M::G1Affine;
+    type Commitment = MultilinearKzgCommitment<M>;
 
-    fn setup(size: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
-        assert!(size.is_power_of_two());
-        let num_vars = size.ilog2() as usize;
+    fn setup(poly_size: usize, _: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
+        assert!(poly_size.is_power_of_two());
+        let num_vars = poly_size.ilog2() as usize;
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
             .take(num_vars)
             .collect_vec();
@@ -215,10 +215,11 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
 
     fn trim(
         param: &Self::Param,
-        size: usize,
+        poly_size: usize,
+        _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        assert!(size.is_power_of_two());
-        let num_vars = size.ilog2() as usize;
+        assert!(poly_size.is_power_of_two());
+        let num_vars = poly_size.ilog2() as usize;
         if param.num_vars() < num_vars {
             return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }
@@ -234,10 +235,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
         Ok((pp, vp))
     }
 
-    fn commit(
-        pp: &Self::ProverParam,
-        poly: &Self::Polynomial,
-    ) -> Result<Self::CommitmentWithAux, Error> {
+    fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         validate_input("commit", pp.num_vars(), [poly], None)?;
 
         Ok(variable_base_msm(poly.evals(), pp.eq(poly.num_vars())).into())
@@ -247,7 +245,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-    ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
+    ) -> Result<Vec<Self::Commitment>, Error> {
         let polys = polys.into_iter().collect_vec();
         if polys.is_empty() {
             return Ok(Vec::new());
@@ -264,12 +262,17 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        _: &Self::CommitmentWithAux,
+        comm: &Self::Commitment,
         point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
         validate_input("open", pp.num_vars(), [poly], [point])?;
+
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(Self::commit(pp, poly).unwrap().0, comm.0);
+            assert_eq!(poly.evaluate(point), *eval);
+        }
 
         let mut remainder = poly.evals().to_vec();
         let quotients = point
@@ -325,13 +328,27 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        _: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
         let polys = polys.into_iter().collect_vec();
-        additive::batch_open::<_, Self>(pp, pp.num_vars(), polys, None, points, evals, transcript)
+        let comms = comms.into_iter().collect_vec();
+        additive::batch_open::<_, Self>(pp, pp.num_vars(), polys, comms, points, evals, transcript)
+    }
+
+    fn read_commitments(
+        _: &Self::VerifierParam,
+        num_polys: usize,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
+    ) -> Result<Vec<Self::Commitment>, Error> {
+        transcript.read_commitments(num_polys).map(|comms| {
+            comms
+                .into_iter()
+                .map(MultilinearKzgCommitment)
+                .collect_vec()
+        })
     }
 
     fn verify(
@@ -359,7 +376,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .map_into()
             .collect_vec();
         let lhs = iter::empty()
-            .chain(Some((comm.to_curve() - vp.g1 * eval).into()))
+            .chain(Some((comm.0.to_curve() - vp.g1 * eval).into()))
             .chain(quotients.iter().cloned())
             .collect_vec();
         M::pairings_product_is_identity(&lhs.iter().zip_eq(rhs.iter()).collect_vec())
@@ -367,13 +384,14 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKz
             .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear KZG open".to_string()))
     }
 
-    fn batch_verify(
+    fn batch_verify<'a>(
         vp: &Self::VerifierParam,
-        comms: &[Self::Commitment],
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
+        let comms = comms.into_iter().collect_vec();
         additive::batch_verify::<_, Self>(vp, vp.num_vars(), comms, points, evals, transcript)
     }
 }

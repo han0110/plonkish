@@ -131,7 +131,7 @@ pub(super) mod test {
         poly::multilinear::{rotation_eval, MultilinearPolynomial},
         util::{
             expression::Expression,
-            transcript::{InMemoryTranscriptRead, InMemoryTranscriptWrite, Keccak256Transcript},
+            transcript::{InMemoryTranscript, Keccak256Transcript},
         },
     };
     use halo2_curves::bn256::Fr;

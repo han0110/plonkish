@@ -3,11 +3,25 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, steps, PrimeField},
+        chain,
         expression::{CommonPolynomial, Expression, Query, Rotation},
         Itertools,
     },
 };
-use std::{array, iter, mem};
+use std::{array, borrow::Cow, iter, mem};
+
+pub(super) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -> usize {
+    let num_lookups = circuit_info.lookups.len();
+    let num_permutation_polys = circuit_info.permutation_polys().len();
+    chain![
+        [circuit_info.preprocess_polys.len() + circuit_info.permutation_polys().len()],
+        circuit_info.num_witness_polys.clone(),
+        [num_lookups],
+        [num_lookups + div_ceil(num_permutation_polys, max_degree(circuit_info, None) - 1)],
+    ]
+    .into_iter()
+    .sum()
+}
 
 pub(super) fn compose<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
@@ -18,13 +32,7 @@ pub(super) fn compose<F: PrimeField>(
 
     let (lookup_constraints, lookup_zero_checks) = lookup_constraints(circuit_info, beta, gamma);
 
-    let max_degree = iter::empty()
-        .chain(circuit_info.constraints.iter().map(Expression::degree))
-        .chain(lookup_constraints.iter().map(Expression::degree))
-        .chain(circuit_info.max_degree)
-        .chain(Some(2))
-        .max()
-        .unwrap();
+    let max_degree = max_degree(circuit_info, Some(&lookup_constraints));
     let (num_permutation_z_polys, permutation_constraints) =
         permutation_constraints(circuit_info, max_degree, beta, gamma);
 
@@ -45,6 +53,23 @@ pub(super) fn compose<F: PrimeField>(
     };
 
     (num_permutation_z_polys, expression)
+}
+
+pub(super) fn max_degree<F: PrimeField>(
+    circuit_info: &PlonkishCircuitInfo<F>,
+    lookup_constraints: Option<&[Expression<F>]>,
+) -> usize {
+    let lookup_constraints = lookup_constraints.map(Cow::Borrowed).unwrap_or_else(|| {
+        let dummy_challenge = Expression::zero();
+        Cow::Owned(self::lookup_constraints(circuit_info, &dummy_challenge, &dummy_challenge).0)
+    });
+    iter::empty()
+        .chain(circuit_info.constraints.iter().map(Expression::degree))
+        .chain(lookup_constraints.iter().map(Expression::degree))
+        .chain(circuit_info.max_degree)
+        .chain(Some(2))
+        .max()
+        .unwrap()
 }
 
 pub(super) fn lookup_constraints<F: PrimeField>(

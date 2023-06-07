@@ -5,10 +5,7 @@ use crate::{
     },
     Error,
 };
-use halo2_curves::{
-    bn256::G1Affine,
-    pasta::{EpAffine, EqAffine},
-};
+use halo2_curves::{bn256, grumpkin, pasta};
 use std::io::{self, Cursor};
 
 pub trait FieldTranscript<F> {
@@ -72,11 +69,9 @@ pub trait TranscriptWrite<C, F>: Transcript<C, F> + FieldTranscriptWrite<F> {
     }
 }
 
-pub trait InMemoryTranscriptWrite: Default {
+pub trait InMemoryTranscript: Default {
     fn into_proof(self) -> Vec<u8>;
-}
 
-pub trait InMemoryTranscriptRead {
     fn from_proof(proof: &[u8]) -> Self;
 }
 
@@ -88,13 +83,11 @@ pub struct FiatShamirTranscript<H, S> {
     stream: S,
 }
 
-impl<H: Hash> InMemoryTranscriptWrite for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+impl<H: Hash> InMemoryTranscript for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
     fn into_proof(self) -> Vec<u8> {
         self.stream.into_inner()
     }
-}
 
-impl<H: Hash> InMemoryTranscriptRead for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
     fn from_proof(proof: &[u8]) -> Self {
         Self {
             state: H::default(),
@@ -146,7 +139,7 @@ impl<H: Hash, F: PrimeField, W: io::Write> FieldTranscriptWrite<F> for FiatShami
 }
 
 macro_rules! impl_fs_transcript_curve_commitment {
-    ($($curve:ty),*) => {
+    ($($curve:ty),*$(,)?) => {
         $(
             impl<H: Hash, S> Transcript<$curve, <$curve as CurveAffine>::ScalarExt> for FiatShamirTranscript<H, S> {
                 fn common_commitment(&mut self, comm: &$curve) -> Result<(), Error> {
@@ -210,7 +203,12 @@ macro_rules! impl_fs_transcript_curve_commitment {
     };
 }
 
-impl_fs_transcript_curve_commitment!(G1Affine, EpAffine, EqAffine);
+impl_fs_transcript_curve_commitment!(
+    bn256::G1Affine,
+    grumpkin::G1Affine,
+    pasta::EpAffine,
+    pasta::EqAffine,
+);
 
 impl<F: PrimeField, S> Transcript<Output<Keccak256>, F> for Keccak256Transcript<S> {
     fn common_commitment(&mut self, comm: &Output<Keccak256>) -> Result<(), Error> {

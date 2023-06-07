@@ -28,7 +28,7 @@ use plonkish_backend::{
     util::{
         end_timer, start_timer,
         test::std_rng,
-        transcript::{InMemoryTranscriptRead, InMemoryTranscriptWrite, Keccak256Transcript},
+        transcript::{InMemoryTranscript, Keccak256Transcript},
     },
 };
 use std::{
@@ -57,14 +57,14 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     let circuit = C::rand(k, std_rng());
     let circuit = Halo2Circuit::new(k, circuit.instances(), circuit);
     let instances = circuit.instances();
+    let circuit_info = circuit_info(k, circuit.as_ref(), C::num_instances()).unwrap();
 
     let timer = start_timer(|| format!("hyperplonk_setup-{k}"));
-    let param = HyperPlonk::setup(1 << k, std_rng()).unwrap();
+    let param = HyperPlonk::setup(&circuit_info, std_rng()).unwrap();
     end_timer(timer);
 
     let timer = start_timer(|| format!("hyperplonk_preprocess-{k}"));
-    let circuit_info = circuit_info(k, circuit.as_ref(), C::num_instances()).unwrap();
-    let (pp, vp) = HyperPlonk::preprocess(&param, circuit_info).unwrap();
+    let (pp, vp) = HyperPlonk::preprocess(&param, &circuit_info).unwrap();
     end_timer(timer);
 
     let proof = sample(System::HyperPlonk, k, || {

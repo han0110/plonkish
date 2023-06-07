@@ -1,7 +1,8 @@
 use crate::{
     pcs::{
-        multilinear::additive, univariate::UnivariateKzg, Evaluation, Point, Polynomial,
-        PolynomialCommitmentScheme,
+        multilinear::additive,
+        univariate::{UnivariateKzg, UnivariateKzgCommitment},
+        Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
     },
     poly::{
         multilinear::{merge_into, MultilinearPolynomial},
@@ -29,25 +30,23 @@ where
     type ProverParam = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::ProverParam;
     type VerifierParam = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::VerifierParam;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
+    type CommitmentChunk =
+        <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::CommitmentChunk;
     type Commitment = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::Commitment;
-    type CommitmentWithAux =
-        <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::CommitmentWithAux;
 
-    fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
-        UnivariateKzg::<M>::setup(size, rng)
+    fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
+        UnivariateKzg::<M>::setup(poly_size, batch_size, rng)
     }
 
     fn trim(
         param: &Self::Param,
-        size: usize,
+        poly_size: usize,
+        batch_size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        UnivariateKzg::<M>::trim(param, size)
+        UnivariateKzg::<M>::trim(param, poly_size, batch_size)
     }
 
-    fn commit(
-        pp: &Self::ProverParam,
-        poly: &Self::Polynomial,
-    ) -> Result<Self::CommitmentWithAux, Error> {
+    fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         if pp.degree() + 1 < poly.evals().len() {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large degree of poly to commit (param supports degree up to {} but got {})",
@@ -62,7 +61,7 @@ where
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-    ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
+    ) -> Result<Vec<Self::Commitment>, Error> {
         polys
             .into_iter()
             .map(|poly| Self::commit(pp, poly))
@@ -72,11 +71,24 @@ where
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        comm: &Self::CommitmentWithAux,
+        comm: &Self::Commitment,
         point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
-        transcript: &mut impl TranscriptWrite<Self::Commitment, M::Scalar>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
+        if pp.degree() + 1 < poly.evals().len() {
+            return Err(Error::InvalidPcsParam(format!(
+                "Too large degree of poly to open (param supports degree up to {} but got {})",
+                pp.degree(),
+                poly.evals().len()
+            )));
+        }
+
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(Self::commit(pp, poly).unwrap().0, comm.0);
+            assert_eq!(poly.evaluate(point), *eval);
+        }
+
         let fs = {
             let mut fs = Vec::with_capacity(point.len());
             fs.push(UnivariatePolynomial::new(poly.evals().to_vec()));
@@ -123,18 +135,26 @@ where
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
-        transcript: &mut impl TranscriptWrite<Self::Commitment, M::Scalar>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error>
     where
-        Self::CommitmentWithAux: 'a,
+        Self::Commitment: 'a,
     {
         let polys = polys.into_iter().collect_vec();
         let comms = comms.into_iter().collect_vec();
         let num_vars = points.first().map(|point| point.len()).unwrap_or_default();
-        additive::batch_open::<_, Self>(pp, num_vars, polys, Some(comms), points, evals, transcript)
+        additive::batch_open::<_, Self>(pp, num_vars, polys, comms, points, evals, transcript)
+    }
+
+    fn read_commitments(
+        vp: &Self::VerifierParam,
+        num_polys: usize,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
+    ) -> Result<Vec<Self::Commitment>, Error> {
+        UnivariateKzg::read_commitments(vp, num_polys, transcript)
     }
 
     fn verify(
@@ -142,10 +162,12 @@ where
         comm: &Self::Commitment,
         point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
-        transcript: &mut impl TranscriptRead<Self::Commitment, M::Scalar>,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
         let num_vars = point.len();
-        let comms = chain![[*comm], transcript.read_commitments(num_vars - 1)?].collect_vec();
+        let comms = chain![[comm.0], transcript.read_commitments(num_vars - 1)?]
+            .map(UnivariateKzgCommitment)
+            .collect_vec();
 
         let beta = transcript.squeeze_challenge();
         let points = [beta, -beta, beta.square()];
@@ -176,14 +198,15 @@ where
         UnivariateKzg::<M>::batch_verify(vp, &comms, &points, &evals, transcript)
     }
 
-    fn batch_verify(
+    fn batch_verify<'a>(
         vp: &Self::VerifierParam,
-        comms: &[Self::Commitment],
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
-        transcript: &mut impl TranscriptRead<Self::Commitment, M::Scalar>,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
         let num_vars = points.first().map(|point| point.len()).unwrap_or_default();
+        let comms = comms.into_iter().collect_vec();
         additive::batch_verify::<_, Self>(vp, num_vars, comms, points, evals, transcript)
     }
 }

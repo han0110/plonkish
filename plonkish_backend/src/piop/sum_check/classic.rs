@@ -155,7 +155,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
     }
 
     fn into_evals(self) -> Vec<F> {
-        debug_assert_eq!(self.round, self.num_vars);
+        assert_eq!(self.round, self.num_vars);
         self.polys
             .iter()
             .map(|polys| polys[self.num_vars][0])

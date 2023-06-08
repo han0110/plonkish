@@ -1,7 +1,7 @@
 use crate::{
     backend::{
         hyperplonk::{
-            preprocess::{compose, permutation_polys},
+            preprocess::{batch_size, compose, permutation_polys},
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
                 permutation_z_polys, prove_zero_check,
@@ -51,9 +51,9 @@ where
     num_vars: usize,
     expression: Expression<F>,
     preprocess_polys: Vec<MultilinearPolynomial<F>>,
-    preprocess_comms: Vec<Pcs::CommitmentWithAux>,
+    preprocess_comms: Vec<Pcs::Commitment>,
     permutation_polys: Vec<(usize, MultilinearPolynomial<F>)>,
-    permutation_comms: Vec<Pcs::CommitmentWithAux>,
+    permutation_comms: Vec<Pcs::Commitment>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,19 +83,28 @@ where
     type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
     type ProverState = ();
 
-    fn setup(size: usize, rng: impl RngCore) -> Result<Pcs::Param, Error> {
-        Pcs::setup(size, rng)
+    fn setup(
+        circuit_info: &PlonkishCircuitInfo<F>,
+        rng: impl RngCore,
+    ) -> Result<Pcs::Param, Error> {
+        assert!(circuit_info.is_well_formed());
+
+        let num_vars = circuit_info.k;
+        let poly_size = 1 << num_vars;
+        let batch_size = batch_size(circuit_info);
+        Pcs::setup(poly_size, batch_size, rng)
     }
 
     fn preprocess(
         param: &Pcs::Param,
-        circuit_info: PlonkishCircuitInfo<F>,
+        circuit_info: &PlonkishCircuitInfo<F>,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
         assert!(circuit_info.is_well_formed());
 
         let num_vars = circuit_info.k;
-        let size = 1 << num_vars;
-        let (pcs_pp, pcs_vp) = Pcs::trim(param, size)?;
+        let poly_size = 1 << num_vars;
+        let batch_size = batch_size(circuit_info);
+        let (pcs_pp, pcs_vp) = Pcs::trim(param, poly_size, batch_size)?;
 
         // Compute preprocesses comms
         let preprocess_polys = circuit_info
@@ -115,7 +124,7 @@ where
         let permutation_comms = Pcs::batch_commit(&pcs_pp, &permutation_polys)?;
 
         // Compose `VirtualPolynomialInfo`
-        let (num_permutation_z_polys, expression) = compose(&circuit_info);
+        let (num_permutation_z_polys, expression) = compose(circuit_info);
         let vp = HyperPlonkVerifierParam {
             pcs: pcs_vp,
             num_instances: circuit_info.num_instances.clone(),
@@ -125,14 +134,11 @@ where
             num_permutation_z_polys,
             num_vars,
             expression: expression.clone(),
-            preprocess_comms: preprocess_comms
-                .iter()
-                .map(|comm| comm.as_ref().clone())
-                .collect(),
+            preprocess_comms: preprocess_comms.clone(),
             permutation_comms: circuit_info
                 .permutation_polys()
                 .into_iter()
-                .zip(permutation_comms.iter().map(|comm| comm.as_ref().clone()))
+                .zip(permutation_comms.clone())
                 .collect(),
         };
         let pp = HyperPlonkProverParam {
@@ -161,7 +167,7 @@ where
         _: impl BorrowMut<Self::ProverState>,
         instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
-        transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
+        transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
         for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
@@ -265,14 +271,14 @@ where
 
         // PCS open
 
-        let dummy_comm = Pcs::CommitmentWithAux::default();
+        let dummy_comm = Pcs::Commitment::default();
         let comms = iter::empty()
             .chain(iter::repeat(&dummy_comm).take(pp.num_instances.len()))
-            .chain(pp.preprocess_comms.iter())
-            .chain(witness_comms.iter())
-            .chain(pp.permutation_comms.iter())
-            .chain(lookup_m_comms.iter())
-            .chain(lookup_h_permutation_z_comms.iter())
+            .chain(&pp.preprocess_comms)
+            .chain(&witness_comms)
+            .chain(&pp.permutation_comms)
+            .chain(&lookup_m_comms)
+            .chain(&lookup_h_permutation_z_comms)
             .collect_vec();
         let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
         Pcs::batch_open(&pp.pcs, polys, comms, &points, &evals, transcript)?;
@@ -284,7 +290,7 @@ where
     fn verify(
         vp: &Self::VerifierParam,
         instances: &[&[F]],
-        transcript: &mut impl TranscriptRead<Pcs::Commitment, F>,
+        transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
         for (num_instances, instances) in vp.num_instances.iter().zip_eq(instances) {
@@ -298,10 +304,10 @@ where
 
         let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
         let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 4);
-        for (num_witness_polys, num_challenges) in
+        for (num_polys, num_challenges) in
             vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
         {
-            witness_comms.extend(transcript.read_commitments(*num_witness_polys)?);
+            witness_comms.extend(Pcs::read_commitments(&vp.pcs, *num_polys, transcript)?);
             challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
 
@@ -309,16 +315,17 @@ where
 
         let beta = transcript.squeeze_challenge();
 
-        let lookup_m_comms = iter::repeat_with(|| transcript.read_commitment())
-            .take(vp.num_lookups)
-            .try_collect::<_, Vec<_>, _>()?;
+        let lookup_m_comms = Pcs::read_commitments(&vp.pcs, vp.num_lookups, transcript)?;
 
         // Round n+1
 
         let gamma = transcript.squeeze_challenge();
 
-        let lookup_h_comms = transcript.read_commitments(vp.num_lookups)?;
-        let permutation_z_comms = transcript.read_commitments(vp.num_permutation_z_polys)?;
+        let lookup_h_permutation_z_comms = Pcs::read_commitments(
+            &vp.pcs,
+            vp.num_lookups + vp.num_permutation_z_polys,
+            transcript,
+        )?;
 
         // Round n+2
 
@@ -337,16 +344,16 @@ where
 
         // PCS verify
 
+        let dummy_comm = Pcs::Commitment::default();
         let comms = iter::empty()
-            .chain(iter::repeat_with(Pcs::Commitment::default).take(vp.num_instances.len()))
-            .chain(vp.preprocess_comms.iter().cloned())
-            .chain(witness_comms)
-            .chain(vp.permutation_comms.iter().map(|(_, comm)| comm.clone()))
-            .chain(lookup_m_comms)
-            .chain(lookup_h_comms)
-            .chain(permutation_z_comms)
+            .chain(iter::repeat(&dummy_comm).take(vp.num_instances.len()))
+            .chain(&vp.preprocess_comms)
+            .chain(&witness_comms)
+            .chain(vp.permutation_comms.iter().map(|(_, comm)| comm))
+            .chain(&lookup_m_comms)
+            .chain(&lookup_h_permutation_z_comms)
             .collect_vec();
-        Pcs::batch_verify(&vp.pcs, &comms, &points, &evals, transcript)?;
+        Pcs::batch_verify(&vp.pcs, comms, &points, &evals, transcript)?;
 
         Ok(())
     }
@@ -363,7 +370,10 @@ pub(crate) mod test {
             PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
         },
         pcs::{
-            multilinear::{MultilinearBrakedown, MultilinearKzg, MultilinearSimulator},
+            multilinear::{
+                MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
+                MultilinearSimulator,
+            },
             univariate::UnivariateKzg,
             PolynomialCommitmentScheme,
         },
@@ -376,13 +386,15 @@ pub(crate) mod test {
             start_timer,
             test::seeded_std_rng,
             transcript::{
-                InMemoryTranscriptRead, InMemoryTranscriptWrite, Keccak256Transcript,
-                TranscriptRead, TranscriptWrite,
+                InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
             },
             Itertools,
         },
     };
-    use halo2_curves::bn256::{Bn256, Fr};
+    use halo2_curves::{
+        bn256::{self, Bn256},
+        grumpkin,
+    };
     use std::{hash::Hash, ops::Range};
 
     pub(crate) fn run_hyperplonk<F, Pcs, T, C>(
@@ -391,10 +403,9 @@ pub(crate) mod test {
     ) where
         F: PrimeField + Hash,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-        T: TranscriptRead<Pcs::Commitment, F>
-            + TranscriptWrite<Pcs::Commitment, F>
-            + InMemoryTranscriptRead
-            + InMemoryTranscriptWrite,
+        T: TranscriptRead<Pcs::CommitmentChunk, F>
+            + TranscriptWrite<Pcs::CommitmentChunk, F>
+            + InMemoryTranscript,
         C: PlonkishCircuit<F>,
     {
         for num_vars in num_vars_range {
@@ -402,11 +413,11 @@ pub(crate) mod test {
             let instances = instances.iter().map(Vec::as_slice).collect_vec();
 
             let timer = start_timer(|| format!("setup-{num_vars}"));
-            let param = HyperPlonk::<Pcs>::setup(1 << num_vars, seeded_std_rng()).unwrap();
+            let param = HyperPlonk::<Pcs>::setup(&circuit_info, seeded_std_rng()).unwrap();
             end_timer(timer);
 
             let timer = start_timer(|| format!("preprocess-{num_vars}"));
-            let (pp, vp) = HyperPlonk::<Pcs>::preprocess(&param, circuit_info).unwrap();
+            let (pp, vp) = HyperPlonk::<Pcs>::preprocess(&param, &circuit_info).unwrap();
             end_timer(timer);
 
             let timer = start_timer(|| format!("prove-{num_vars}"));
@@ -436,26 +447,31 @@ pub(crate) mod test {
     }
 
     macro_rules! tests {
-        ($name:ident, $pcs:ty) => {
+        ($name:ident, $pcs:ty, $num_vars_range:expr) => {
             paste::paste! {
                 #[test]
                 fn [<$name _hyperplonk_plonk>]() {
-                    run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>(2..16, |num_vars| {
+                    run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         rand_plonk_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
 
                 #[test]
                 fn [<$name _hyperplonk_plonk_with_lookup>]() {
-                    run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>(2..16, |num_vars| {
+                    run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         rand_plonk_with_lookup_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
             }
         };
+        ($name:ident, $pcs:ty) => {
+            tests!($name, $pcs, 2..16);
+        }
     }
 
-    tests!(brakedown, MultilinearBrakedown<Fr, Keccak256, BrakedownSpec6>);
+    tests!(brakedown, MultilinearBrakedown<bn256::Fr, Keccak256, BrakedownSpec6>);
+    tests!(hyrax, MultilinearHyrax<grumpkin::G1Affine>, 5..16);
+    tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
     tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);
 }

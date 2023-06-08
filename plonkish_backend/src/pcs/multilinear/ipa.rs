@@ -17,7 +17,7 @@ use crate::{
 };
 use halo2_curves::group::ff::BatchInvert;
 use rand::RngCore;
-use std::{iter, marker::PhantomData};
+use std::{iter, marker::PhantomData, slice};
 
 #[derive(Clone, Debug)]
 pub struct MultilinearIpa<C: CurveAffine>(PhantomData<C>);
@@ -52,9 +52,9 @@ impl<C: CurveAffine> Default for MultilinearIpaCommitment<C> {
     }
 }
 
-impl<C: CurveAffine> AsRef<C> for MultilinearIpaCommitment<C> {
-    fn as_ref(&self) -> &C {
-        &self.0
+impl<C: CurveAffine> AsRef<[C]> for MultilinearIpaCommitment<C> {
+    fn as_ref(&self) -> &[C] {
+        slice::from_ref(&self.0)
     }
 }
 
@@ -64,7 +64,7 @@ impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearIpaCommitment<
         bases: impl IntoIterator<Item = &'a Self> + 'a,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
-        let bases = bases.into_iter().map(AsRef::as_ref).collect_vec();
+        let bases = bases.into_iter().map(|base| &base.0).collect_vec();
         assert_eq!(scalars.len(), bases.len());
 
         MultilinearIpaCommitment(variable_base_msm(scalars, bases).to_affine())
@@ -76,15 +76,15 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
     type ProverParam = MultilinearIpaParams<C>;
     type VerifierParam = MultilinearIpaParams<C>;
     type Polynomial = MultilinearPolynomial<C::Scalar>;
-    type Commitment = C;
-    type CommitmentWithAux = MultilinearIpaCommitment<C>;
+    type CommitmentChunk = C;
+    type Commitment = MultilinearIpaCommitment<C>;
 
-    fn setup(size: usize, _: impl RngCore) -> Result<Self::Param, Error> {
-        assert!(size.is_power_of_two());
-        let num_vars = size.ilog2() as usize;
+    fn setup(poly_size: usize, _: usize, _: impl RngCore) -> Result<Self::Param, Error> {
+        assert!(poly_size.is_power_of_two());
+        let num_vars = poly_size.ilog2() as usize;
 
         let g_projective = {
-            let mut g = vec![C::Curve::identity(); size];
+            let mut g = vec![C::Curve::identity(); poly_size];
             parallelize(&mut g, |(g, start)| {
                 let hasher = C::CurveExt::hash_to_curve("MultilinearIpa::setup");
                 for (g, idx) in g.iter_mut().zip(start as u32..) {
@@ -97,7 +97,7 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
         };
 
         let g = {
-            let mut g = vec![C::identity(); size];
+            let mut g = vec![C::identity(); poly_size];
             parallelize(&mut g, |(g, start)| {
                 C::Curve::batch_normalize(&g_projective[start..(start + g.len())], g);
             });
@@ -112,25 +112,23 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
 
     fn trim(
         param: &Self::Param,
-        size: usize,
+        poly_size: usize,
+        _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        assert!(size.is_power_of_two());
-        let num_vars = size.ilog2() as usize;
+        assert!(poly_size.is_power_of_two());
+        let num_vars = poly_size.ilog2() as usize;
         if param.num_vars() < num_vars {
             return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }
         let param = Self::ProverParam {
             num_vars: param.num_vars,
-            g: param.g[..size].to_vec(),
+            g: param.g[..poly_size].to_vec(),
             h: param.h,
         };
         Ok((param.clone(), param))
     }
 
-    fn commit(
-        pp: &Self::ProverParam,
-        poly: &Self::Polynomial,
-    ) -> Result<Self::CommitmentWithAux, Error> {
+    fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         validate_input("commit", pp.num_vars(), [poly], None)?;
 
         Ok(variable_base_msm(poly.evals(), pp.g()).into()).map(MultilinearIpaCommitment)
@@ -139,7 +137,7 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-    ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
+    ) -> Result<Vec<Self::Commitment>, Error> {
         let polys = polys.into_iter().collect_vec();
         if polys.is_empty() {
             return Ok(Vec::new());
@@ -156,12 +154,17 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        _: &Self::CommitmentWithAux,
+        comm: &Self::Commitment,
         point: &Point<C::Scalar, Self::Polynomial>,
-        _: &C::Scalar,
+        eval: &C::Scalar,
         transcript: &mut impl TranscriptWrite<C, C::Scalar>,
     ) -> Result<(), Error> {
         validate_input("open", pp.num_vars(), [poly], [point])?;
+
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(Self::commit(pp, poly).unwrap().0, comm.0);
+            assert_eq!(poly.evaluate(point), *eval);
+        }
 
         let xi_0 = transcript.squeeze_challenge();
         let h_prime = (pp.h * xi_0).to_affine();
@@ -225,13 +228,27 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        _: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<C::Scalar, Self::Polynomial>],
         evals: &[Evaluation<C::Scalar>],
         transcript: &mut impl TranscriptWrite<C, C::Scalar>,
     ) -> Result<(), Error> {
         let polys = polys.into_iter().collect_vec();
-        additive::batch_open::<_, Self>(pp, pp.num_vars(), polys, None, points, evals, transcript)
+        let comms = comms.into_iter().collect_vec();
+        additive::batch_open::<_, Self>(pp, pp.num_vars(), polys, comms, points, evals, transcript)
+    }
+
+    fn read_commitments(
+        _: &Self::VerifierParam,
+        num_polys: usize,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, C::Scalar>,
+    ) -> Result<Vec<Self::Commitment>, Error> {
+        transcript.read_commitments(num_polys).map(|comms| {
+            comms
+                .into_iter()
+                .map(MultilinearIpaCommitment)
+                .collect_vec()
+        })
     }
 
     fn verify(
@@ -268,7 +285,7 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
         let c_k = variable_base_msm(
             chain![&xi_invs, &xis, Some(&eval_prime)],
             chain![&ls, &rs, Some(vp.h())],
-        ) + comm;
+        ) + comm.0;
         let h = MultilinearPolynomial::new(h_coeffs(&xis));
 
         (c_k == variable_base_msm(&[c, c * h.evaluate(point) * xi_0], [&g_k, vp.h()])
@@ -277,13 +294,14 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
         .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
     }
 
-    fn batch_verify(
+    fn batch_verify<'a>(
         vp: &Self::VerifierParam,
-        comms: &[Self::Commitment],
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<C::Scalar, Self::Polynomial>],
         evals: &[Evaluation<C::Scalar>],
         transcript: &mut impl TranscriptRead<C, C::Scalar>,
     ) -> Result<(), Error> {
+        let comms = comms.into_iter().collect_vec();
         additive::batch_verify::<_, Self>(vp, vp.num_vars(), comms, points, evals, transcript)
     }
 }

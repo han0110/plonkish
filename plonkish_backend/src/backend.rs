@@ -22,11 +22,12 @@ where
     type VerifierParam: Debug;
     type ProverState: Debug;
 
-    fn setup(size: usize, rng: impl RngCore) -> Result<Pcs::Param, Error>;
+    fn setup(circuit_info: &PlonkishCircuitInfo<F>, rng: impl RngCore)
+        -> Result<Pcs::Param, Error>;
 
     fn preprocess(
         param: &Pcs::Param,
-        circuit_info: PlonkishCircuitInfo<F>,
+        circuit_info: &PlonkishCircuitInfo<F>,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error>;
 
     fn prove(
@@ -34,14 +35,14 @@ where
         state: impl BorrowMut<Self::ProverState>,
         instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
-        transcript: &mut impl TranscriptWrite<Pcs::Commitment, F>,
+        transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 
     fn verify(
         vp: &Self::VerifierParam,
         instances: &[&[F]],
-        transcript: &mut impl TranscriptRead<Pcs::Commitment, F>,
+        transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 }

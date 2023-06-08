@@ -19,7 +19,7 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{borrow::Cow, marker::PhantomData, mem::size_of};
+use std::{borrow::Cow, marker::PhantomData, mem::size_of, slice};
 
 #[derive(Debug)]
 pub struct MultilinearBrakedown<F: PrimeField, H: Hash, S: BrakedownSpec>(PhantomData<(F, H, S)>);
@@ -54,22 +54,34 @@ impl<F: PrimeField> MultilinearBrakedownParams<F> {
 #[derive(Clone, Debug, Default)]
 pub struct MultilinearBrakedownCommitment<F: PrimeField, H: Hash> {
     rows: Vec<F>,
-    hashes: Vec<Output<H>>,
+    intermediate_hashes: Vec<Output<H>>,
+    root: Output<H>,
 }
 
 impl<F: PrimeField, H: Hash> MultilinearBrakedownCommitment<F, H> {
+    fn from_root(root: Output<H>) -> Self {
+        Self {
+            root,
+            ..Default::default()
+        }
+    }
+
     pub fn rows(&self) -> &[F] {
         &self.rows
     }
 
-    pub fn hashes(&self) -> &[Output<H>] {
-        &self.hashes
+    pub fn intermediate_hashes(&self) -> &[Output<H>] {
+        &self.intermediate_hashes
+    }
+
+    pub fn root(&self) -> &Output<H> {
+        &self.root
     }
 }
 
-impl<F: PrimeField, H: Hash> AsRef<Output<H>> for MultilinearBrakedownCommitment<F, H> {
-    fn as_ref(&self) -> &Output<H> {
-        self.hashes.last().unwrap()
+impl<F: PrimeField, H: Hash> AsRef<[Output<H>]> for MultilinearBrakedownCommitment<F, H> {
+    fn as_ref(&self) -> &[Output<H>] {
+        slice::from_ref(&self.root)
     }
 }
 
@@ -80,12 +92,12 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     type ProverParam = MultilinearBrakedownParams<F>;
     type VerifierParam = MultilinearBrakedownParams<F>;
     type Polynomial = MultilinearPolynomial<F>;
-    type Commitment = Output<H>;
-    type CommitmentWithAux = MultilinearBrakedownCommitment<F, H>;
+    type CommitmentChunk = Output<H>;
+    type Commitment = MultilinearBrakedownCommitment<F, H>;
 
-    fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
-        assert!(size.is_power_of_two());
-        let num_vars = size.ilog2() as usize;
+    fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
+        assert!(poly_size.is_power_of_two());
+        let num_vars = poly_size.ilog2() as usize;
         let brakedown = Brakedown::new_multilinear::<S>(num_vars, 20.min((1 << num_vars) - 1), rng);
         Ok(MultilinearBrakedownParams {
             num_vars,
@@ -96,22 +108,20 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
 
     fn trim(
         param: &Self::Param,
-        size: usize,
+        poly_size: usize,
+        _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        assert!(size.is_power_of_two());
-        if size == 1 << param.num_vars {
+        assert!(poly_size.is_power_of_two());
+        if poly_size == 1 << param.num_vars {
             Ok((param.clone(), param.clone()))
         } else {
             Err(Error::InvalidPcsParam(
-                "Can't trim MultilinearBrakedownParams into different size".to_string(),
+                "Can't trim MultilinearBrakedownParams into different poly_size".to_string(),
             ))
         }
     }
 
-    fn commit(
-        pp: &Self::ProverParam,
-        poly: &Self::Polynomial,
-    ) -> Result<Self::CommitmentWithAux, Error> {
+    fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         validate_input("commit", pp.num_vars(), [poly], None)?;
 
         let row_len = pp.brakedown.row_len();
@@ -169,13 +179,23 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
             offset += width;
         }
 
-        Ok(MultilinearBrakedownCommitment { rows, hashes })
+        let (intermediate_hashes, root) = {
+            let mut intermediate_hashes = hashes;
+            let root = intermediate_hashes.pop().unwrap();
+            (intermediate_hashes, root)
+        };
+
+        Ok(MultilinearBrakedownCommitment {
+            rows,
+            intermediate_hashes,
+            root,
+        })
     }
 
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-    ) -> Result<Vec<Self::CommitmentWithAux>, Error>
+    ) -> Result<Vec<Self::Commitment>, Error>
     where
         Self::Polynomial: 'a,
     {
@@ -188,10 +208,10 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        comm: &Self::CommitmentWithAux,
+        comm: &Self::Commitment,
         point: &Point<F, Self::Polynomial>,
         eval: &F,
-        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
     ) -> Result<(), Error> {
         validate_input("open", pp.num_vars(), [poly], [point])?;
 
@@ -243,7 +263,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
             let mut offset = 0;
             for (idx, width) in (1..=depth).rev().map(|depth| 1 << depth).enumerate() {
                 let neighbor_idx = (column >> idx) ^ 1;
-                transcript.write_commitment(&comm.hashes[offset + neighbor_idx])?;
+                transcript.write_commitment(&comm.intermediate_hashes[offset + neighbor_idx])?;
                 offset += width;
             }
         }
@@ -255,10 +275,10 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        comms: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<F, Self::Polynomial>],
         evals: &[Evaluation<F>],
-        transcript: &mut impl TranscriptWrite<Self::Commitment, F>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
     ) -> Result<(), Error> {
         let polys = polys.into_iter().collect_vec();
         let comms = comms.into_iter().collect_vec();
@@ -275,12 +295,25 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         Ok(())
     }
 
+    fn read_commitments(
+        _: &Self::VerifierParam,
+        num_polys: usize,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, F>,
+    ) -> Result<Vec<Self::Commitment>, Error> {
+        transcript.read_commitments(num_polys).map(|roots| {
+            roots
+                .into_iter()
+                .map(MultilinearBrakedownCommitment::from_root)
+                .collect_vec()
+        })
+    }
+
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
         point: &Point<F, Self::Polynomial>,
         eval: &F,
-        transcript: &mut impl TranscriptRead<Self::Commitment, F>,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, F>,
     ) -> Result<(), Error> {
         validate_input("verify", vp.num_vars(), [], [point])?;
 
@@ -339,7 +372,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
                 }
                 output = hasher.finalize_fixed_reset();
             }
-            if output != *comm {
+            if &output != comm.root() {
                 return Err(Error::InvalidPcsOpen(
                     "Invalid merkle tree opening".to_string(),
                 ));
@@ -358,17 +391,18 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
         Ok(())
     }
 
-    fn batch_verify(
+    fn batch_verify<'a>(
         vp: &Self::VerifierParam,
-        comms: &[Self::Commitment],
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<F, Self::Polynomial>],
         evals: &[Evaluation<F>],
-        transcript: &mut impl TranscriptRead<Self::Commitment, F>,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, F>,
     ) -> Result<(), Error> {
+        let comms = comms.into_iter().collect_vec();
         for eval in evals {
             Self::verify(
                 vp,
-                &comms[eval.poly()],
+                comms[eval.poly()],
                 &points[eval.point()],
                 eval.value(),
                 transcript,

@@ -15,7 +15,7 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{collections::BTreeSet, marker::PhantomData, ops::Neg};
+use std::{collections::BTreeSet, marker::PhantomData, ops::Neg, slice};
 
 #[derive(Clone, Debug)]
 pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
@@ -101,7 +101,7 @@ impl<M: MultiMillerLoop> UnivariateKzgVerifierParam<M> {
 }
 
 #[derive(Clone, Debug)]
-pub struct UnivariateKzgCommitment<M: MultiMillerLoop>(M::G1Affine);
+pub struct UnivariateKzgCommitment<M: MultiMillerLoop>(pub M::G1Affine);
 
 impl<M: MultiMillerLoop> Default for UnivariateKzgCommitment<M> {
     fn default() -> Self {
@@ -109,9 +109,9 @@ impl<M: MultiMillerLoop> Default for UnivariateKzgCommitment<M> {
     }
 }
 
-impl<M: MultiMillerLoop> AsRef<M::G1Affine> for UnivariateKzgCommitment<M> {
-    fn as_ref(&self) -> &M::G1Affine {
-        &self.0
+impl<M: MultiMillerLoop> AsRef<[M::G1Affine]> for UnivariateKzgCommitment<M> {
+    fn as_ref(&self) -> &[M::G1Affine] {
+        slice::from_ref(&self.0)
     }
 }
 
@@ -121,7 +121,7 @@ impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for UnivariateKzgCommitme
         bases: impl IntoIterator<Item = &'a Self> + 'a,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
-        let bases = bases.into_iter().map(AsRef::as_ref).collect_vec();
+        let bases = bases.into_iter().map(|base| &base.0).collect_vec();
         assert_eq!(scalars.len(), bases.len());
 
         UnivariateKzgCommitment(variable_base_msm(scalars, bases).to_affine())
@@ -133,16 +133,16 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
     type Polynomial = UnivariatePolynomial<M::Scalar, CoefficientBasis>;
-    type Commitment = M::G1Affine;
-    type CommitmentWithAux = UnivariateKzgCommitment<M>;
+    type CommitmentChunk = M::G1Affine;
+    type Commitment = UnivariateKzgCommitment<M>;
 
-    fn setup(size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
+    fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         let s = M::Scalar::random(rng);
 
         let g1 = M::G1Affine::generator();
         let powers_of_s = {
-            let powers_of_s = powers(s).take(size).collect_vec();
-            let window_size = window_size(size);
+            let powers_of_s = powers(s).take(poly_size).collect_vec();
+            let window_size = window_size(poly_size);
             let window_table = window_table(window_size, g1);
             let powers_of_s_projective = fixed_base_msm(window_size, &window_table, &powers_of_s);
 
@@ -169,16 +169,17 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 
     fn trim(
         param: &Self::Param,
-        size: usize,
+        poly_size: usize,
+        _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        if param.powers_of_s.len() < size {
+        if param.powers_of_s.len() < poly_size {
             return Err(Error::InvalidPcsParam(format!(
-                "Too large size to trim to (param supports size up to {} but got {size})",
+                "Too large poly_size to trim to (param supports poly_size up to {} but got {poly_size})",
                 param.powers_of_s.len(),
             )));
         }
 
-        let powers_of_s = param.powers_of_s[..size].to_vec();
+        let powers_of_s = param.powers_of_s[..poly_size].to_vec();
         let pp = Self::ProverParam {
             g1: param.g1,
             powers_of_s,
@@ -191,10 +192,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         Ok((pp, vp))
     }
 
-    fn commit(
-        pp: &Self::ProverParam,
-        poly: &Self::Polynomial,
-    ) -> Result<Self::CommitmentWithAux, Error> {
+    fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         if pp.degree() < poly.degree() {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large degree of poly to commit (param supports degree up to {} but got {})",
@@ -209,7 +207,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn batch_commit<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-    ) -> Result<Vec<Self::CommitmentWithAux>, Error> {
+    ) -> Result<Vec<Self::Commitment>, Error> {
         polys
             .into_iter()
             .map(|poly| Self::commit(pp, poly))
@@ -219,7 +217,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
-        _: &Self::CommitmentWithAux,
+        comm: &Self::Commitment,
         point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
@@ -230,6 +228,11 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
                 pp.degree(),
                 poly.degree()
             )));
+        }
+
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(Self::commit(pp, poly).unwrap().0, comm.0);
+            assert_eq!(poly.evaluate(point), *eval);
         }
 
         let divisor = Self::Polynomial::new(vec![point.neg(), M::Scalar::ONE]);
@@ -243,7 +246,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             }
         }
 
-        transcript.write_commitment(Self::commit_coeffs(pp, quotient.coeffs()).as_ref())?;
+        transcript.write_commitment(&Self::commit_coeffs(pp, quotient.coeffs()).0)?;
 
         Ok(())
     }
@@ -251,7 +254,7 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
     fn batch_open<'a>(
         pp: &Self::ProverParam,
         polys: impl IntoIterator<Item = &'a Self::Polynomial>,
-        _: impl IntoIterator<Item = &'a Self::CommitmentWithAux>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
@@ -277,25 +280,40 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
             .unzip::<_, _, Vec<_>, (Vec<_>, Vec<_>)>();
         let q = izip_eq!(&powers_of_gamma, qs.iter()).sum::<UnivariatePolynomial<_, _>>();
 
-        Self::commit_and_write(pp, &q, transcript)?;
+        let q_comm = Self::commit_and_write(pp, &q, transcript)?;
 
         let z = transcript.squeeze_challenge();
 
         let (normalized_scalars, normalizer) = set_scalars(&sets, &powers_of_gamma, points, &z);
+        let superset_eval = vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
+        let q_scalar = -superset_eval * normalizer;
         let f = {
             let mut f = izip_eq!(&normalized_scalars, &fs).sum::<UnivariatePolynomial<_, _>>();
-            let superset_eval = vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
-            let q_scalar = -superset_eval * normalizer;
             f += (&q_scalar, &q);
             f
         };
-        let eval = if cfg!(feature = "sanity-check") {
+        let (comm, eval) = if cfg!(feature = "sanity-check") {
+            let comms = comms.into_iter().map(|comm| &comm.0).collect_vec();
+            let scalars = comm_scalars(comms.len(), &sets, &powers_of_beta, &normalized_scalars);
+            let comm = UnivariateKzgCommitment(
+                variable_base_msm(chain![&scalars, [&q_scalar]], chain![comms, [&q_comm.0]]).into(),
+            );
             let r_evals = rs.iter().map(|r| r.evaluate(&z)).collect_vec();
-            inner_product(&normalized_scalars, &r_evals)
+            (comm, inner_product(&normalized_scalars, &r_evals))
         } else {
-            M::Scalar::ZERO
+            (UnivariateKzgCommitment::default(), M::Scalar::ZERO)
         };
-        Self::open(pp, &f, &Default::default(), &z, &eval, transcript)
+        Self::open(pp, &f, &comm, &z, &eval, transcript)
+    }
+
+    fn read_commitments(
+        _: &Self::VerifierParam,
+        num_polys: usize,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
+    ) -> Result<Vec<Self::Commitment>, Error> {
+        transcript
+            .read_commitments(num_polys)
+            .map(|comms| comms.into_iter().map(UnivariateKzgCommitment).collect_vec())
     }
 
     fn verify(
@@ -303,29 +321,30 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         comm: &Self::Commitment,
         point: &Point<M::Scalar, Self::Polynomial>,
         eval: &M::Scalar,
-        transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
         let quotient = transcript.read_commitment()?;
-        let lhs = (quotient * point + comm - vp.g1 * eval).into();
+        let lhs = (quotient * point + comm.0 - vp.g1 * eval).into();
         let rhs = quotient;
         M::pairings_product_is_identity(&[(&lhs, &vp.g2.neg().into()), (&rhs, &vp.s_g2.into())])
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsOpen("Invalid univariate KZG open".to_string()))
     }
 
-    fn batch_verify(
+    fn batch_verify<'a>(
         vp: &Self::VerifierParam,
-        comms: &[Self::Commitment],
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
         points: &[Point<M::Scalar, Self::Polynomial>],
         evals: &[Evaluation<M::Scalar>],
-        transcript: &mut impl TranscriptRead<M::G1Affine, M::Scalar>,
+        transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
+        let comms = comms.into_iter().collect_vec();
         let (sets, superset) = eval_sets(evals);
 
         let beta = transcript.squeeze_challenge();
         let gamma = transcript.squeeze_challenge();
 
-        let q = transcript.read_commitment()?;
+        let q_comm = transcript.read_commitment()?;
 
         let z = transcript.squeeze_challenge();
 
@@ -335,17 +354,13 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
 
         let (normalized_scalars, normalizer) = set_scalars(&sets, &powers_of_gamma, points, &z);
         let f = {
-            let scalars = sets.iter().zip(&normalized_scalars).fold(
-                vec![M::Scalar::ZERO; comms.len()],
-                |mut scalars, (set, coeff)| {
-                    izip!(&set.polys, &powers_of_beta)
-                        .for_each(|(poly, power_of_beta)| scalars[*poly] = *coeff * power_of_beta);
-                    scalars
-                },
-            );
+            let comms = comms.iter().map(|comm| &comm.0).collect_vec();
+            let scalars = comm_scalars(comms.len(), &sets, &powers_of_beta, &normalized_scalars);
             let superset_eval = vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
             let q_scalar = -superset_eval * normalizer;
-            variable_base_msm(chain![&scalars, [&q_scalar]], chain![comms, [&q]]).into()
+            UnivariateKzgCommitment(
+                variable_base_msm(chain![&scalars, [&q_scalar]], chain![comms, [&q_comm]]).into(),
+            )
         };
         let eval = inner_product(
             &normalized_scalars,
@@ -477,20 +492,37 @@ fn vanishing_eval<'a, F: Field>(points: impl IntoIterator<Item = &'a F>, z: &F) 
         .fold(F::ONE, |eval, point| eval * (*z - point))
 }
 
+fn comm_scalars<F: Field>(
+    num_polys: usize,
+    sets: &[EvaluationSet<F>],
+    powers_of_beta: &[F],
+    normalized_scalars: &[F],
+) -> Vec<F> {
+    sets.iter().zip(normalized_scalars).fold(
+        vec![F::ZERO; num_polys],
+        |mut scalars, (set, coeff)| {
+            izip!(&set.polys, powers_of_beta)
+                .for_each(|(poly, power_of_beta)| scalars[*poly] = *coeff * power_of_beta);
+            scalars
+        },
+    )
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
         pcs::{univariate::kzg::UnivariateKzg, Evaluation, PolynomialCommitmentScheme},
         util::{
+            chain,
             transcript::{
-                FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscriptRead,
-                InMemoryTranscriptWrite, Keccak256Transcript, TranscriptRead,
+                FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscript,
+                Keccak256Transcript,
             },
             Itertools,
         },
     };
     use halo2_curves::bn256::{Bn256, Fr};
-    use rand::rngs::OsRng;
+    use rand::{rngs::OsRng, Rng};
     use std::iter;
 
     type Pcs = UnivariateKzg<Bn256>;
@@ -498,85 +530,100 @@ mod test {
 
     #[test]
     fn commit_open_verify() {
-        // Setup
-        let (pp, vp) = {
-            let mut rng = OsRng;
-            let size = 1 << 10;
-            let param = Pcs::setup(size, &mut rng).unwrap();
-            Pcs::trim(&param, size).unwrap()
-        };
-        // Commit and open
-        let proof = {
-            let mut transcript = Keccak256Transcript::default();
-            let poly = Polynomial::rand(pp.degree(), OsRng);
-            let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
-            let point = transcript.squeeze_challenge();
-            let eval = poly.evaluate(&point);
-            transcript.write_field_element(&eval).unwrap();
-            Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
-            transcript.into_proof()
-        };
-        // Verify
-        let result = {
-            let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
-            Pcs::verify(
-                &vp,
-                &transcript.read_commitment().unwrap(),
-                &transcript.squeeze_challenge(),
-                &transcript.read_field_element().unwrap(),
-                &mut transcript,
-            )
-        };
-        assert_eq!(result, Ok(()));
+        for k in 3..16 {
+            // Setup
+            let (pp, vp) = {
+                let mut rng = OsRng;
+                let poly_size = 1 << k;
+                let param = Pcs::setup(poly_size, 1, &mut rng).unwrap();
+                Pcs::trim(&param, poly_size, 1).unwrap()
+            };
+            // Commit and open
+            let proof = {
+                let mut transcript = Keccak256Transcript::default();
+                let poly = Polynomial::rand(pp.degree(), OsRng);
+                let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
+                let point = transcript.squeeze_challenge();
+                let eval = poly.evaluate(&point);
+                transcript.write_field_element(&eval).unwrap();
+                Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
+                transcript.into_proof()
+            };
+            // Verify
+            let result = {
+                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                Pcs::verify(
+                    &vp,
+                    &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
+                    &transcript.squeeze_challenge(),
+                    &transcript.read_field_element().unwrap(),
+                    &mut transcript,
+                )
+            };
+            assert_eq!(result, Ok(()));
+        }
     }
 
     #[test]
     fn batch_commit_open_verify() {
-        // Setup
-        let (pp, vp) = {
+        for k in 3..16 {
+            let batch_size = 8;
+            let num_points = batch_size >> 1;
             let mut rng = OsRng;
-            let size = 1 << 10;
-            let param = Pcs::setup(size, &mut rng).unwrap();
-            Pcs::trim(&param, size).unwrap()
-        };
-        // Batch commit and open
-        let batch_size = 4;
-        let proof = {
-            let mut transcript = Keccak256Transcript::default();
-            let polys = iter::repeat_with(|| Polynomial::rand(pp.degree(), OsRng))
-                .take(batch_size)
-                .collect_vec();
-            let comms = Pcs::batch_commit_and_write(&pp, &polys, &mut transcript).unwrap();
-            let points = transcript.squeeze_challenges(batch_size);
-            let evals = polys
-                .iter()
-                .zip(points.iter())
-                .enumerate()
-                .map(|(idx, (poly, point))| Evaluation::new(idx, idx, poly.evaluate(point)))
-                .collect_vec();
-            transcript
-                .write_field_elements(evals.iter().map(Evaluation::value))
-                .unwrap();
-            Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript).unwrap();
-            transcript.into_proof()
-        };
-        // Batch verify
-        let result = {
-            let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
-            Pcs::batch_verify(
-                &vp,
-                &transcript.read_commitments(batch_size).unwrap(),
-                &transcript.squeeze_challenges(batch_size),
-                &transcript
-                    .read_field_elements(batch_size)
-                    .unwrap()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, eval)| Evaluation::new(idx, idx, eval))
-                    .collect_vec(),
-                &mut transcript,
-            )
-        };
-        assert_eq!(result, Ok(()));
+            // Setup
+            let (pp, vp) = {
+                let poly_size = 1 << k;
+                let param = Pcs::setup(poly_size, batch_size, &mut rng).unwrap();
+                Pcs::trim(&param, poly_size, batch_size).unwrap()
+            };
+            // Batch commit and open
+            let evals = chain![
+                (0..num_points).map(|point| (0, point)),
+                (1..batch_size).map(|poly| (poly, 0)),
+                iter::repeat_with(|| (rng.gen_range(0..batch_size), rng.gen_range(0..num_points)))
+                    .take(batch_size)
+            ]
+            .unique()
+            .collect_vec();
+            let proof = {
+                let mut transcript = Keccak256Transcript::default();
+                let polys = iter::repeat_with(|| Polynomial::rand(pp.degree(), OsRng))
+                    .take(batch_size)
+                    .collect_vec();
+                let comms = Pcs::batch_commit_and_write(&pp, &polys, &mut transcript).unwrap();
+                let points = transcript.squeeze_challenges(num_points);
+                let evals = evals
+                    .iter()
+                    .copied()
+                    .map(|(poly, point)| Evaluation {
+                        poly,
+                        point,
+                        value: polys[poly].evaluate(&points[point]),
+                    })
+                    .collect_vec();
+                transcript
+                    .write_field_elements(evals.iter().map(Evaluation::value))
+                    .unwrap();
+                Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript).unwrap();
+                transcript.into_proof()
+            };
+            // Batch verify
+            let result = {
+                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                Pcs::batch_verify(
+                    &vp,
+                    &Pcs::read_commitments(&vp, batch_size, &mut transcript).unwrap(),
+                    &transcript.squeeze_challenges(num_points),
+                    &evals
+                        .iter()
+                        .copied()
+                        .zip(transcript.read_field_elements(evals.len()).unwrap())
+                        .map(|((poly, point), eval)| Evaluation::new(poly, point, eval))
+                        .collect_vec(),
+                    &mut transcript,
+                )
+            };
+            assert_eq!(result, Ok(()));
+        }
     }
 }

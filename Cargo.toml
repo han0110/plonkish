@@ -5,3 +5,7 @@ members = ["benchmark", "plonkish_backend"]
 inherits = "release"
 debug = true
 codegen-units = 1
+
+# Remove patch after https://github.com/privacy-scaling-explorations/halo2curves/pull/47 is merged.
+[patch."https://github.com/privacy-scaling-explorations/halo2curves"]
+halo2_curves = { git = "https://github.com/han0110/halo2curves", branch = "feature/hash-to-curve", package = "halo2curves" }

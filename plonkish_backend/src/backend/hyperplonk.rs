@@ -1,7 +1,7 @@
 use crate::{
     backend::{
         hyperplonk::{
-            preprocess::{batch_size, compose, permutation_polys},
+            preprocessor::{batch_size, compose, permutation_polys},
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
                 permutation_z_polys, prove_zero_check,
@@ -13,7 +13,7 @@ use crate::{
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::PrimeField,
+        arithmetic::{powers, PrimeField},
         end_timer,
         expression::Expression,
         start_timer,
@@ -25,10 +25,11 @@ use crate::{
 use rand::RngCore;
 use std::{borrow::BorrowMut, fmt::Debug, hash::Hash, iter, marker::PhantomData};
 
-pub mod frontend;
-mod preprocess;
+mod preprocessor;
 mod prover;
 mod verifier;
+
+pub mod frontend;
 
 #[cfg(any(test, feature = "benchmark"))]
 pub mod util;
@@ -213,8 +214,11 @@ where
         let beta = transcript.squeeze_challenge();
 
         let timer = start_timer(|| format!("lookup_compressed_polys-{}", pp.lookups.len()));
-        let lookup_compressed_polys =
-            lookup_compressed_polys(&pp.lookups, &polys, &challenges, &beta);
+        let lookup_compressed_polys = {
+            let max_lookup_width = pp.lookups.iter().map(Vec::len).max().unwrap_or_default();
+            let betas = powers(beta).take(max_lookup_width).collect_vec();
+            lookup_compressed_polys(&pp.lookups, &polys, &challenges, &betas)
+        };
         end_timer(timer);
 
         let timer = start_timer(|| format!("lookup_m_polys-{}", pp.lookups.len()));
@@ -466,7 +470,7 @@ pub(crate) mod test {
         };
         ($name:ident, $pcs:ty) => {
             tests!($name, $pcs, 2..16);
-        }
+        };
     }
 
     tests!(brakedown, MultilinearBrakedown<bn256::Fr, Keccak256, BrakedownSpec6>);

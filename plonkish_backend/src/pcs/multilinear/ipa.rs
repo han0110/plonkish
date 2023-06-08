@@ -43,7 +43,7 @@ impl<C: CurveAffine> MultilinearIpaParams<C> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultilinearIpaCommitment<C: CurveAffine>(pub C);
 
 impl<C: CurveAffine> Default for MultilinearIpaCommitment<C> {

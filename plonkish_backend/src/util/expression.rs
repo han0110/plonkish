@@ -54,14 +54,14 @@ impl Query {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommonPolynomial {
     Lagrange(i32),
     EqXY(usize),
     Identity(usize),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Expression<F> {
     Constant(F),
     CommonPolynomial(CommonPolynomial),
@@ -152,7 +152,7 @@ impl<F: Clone> Expression<F> {
             Expression::DistributePowers(exprs, scalar) => {
                 assert!(!exprs.is_empty());
                 if exprs.len() == 1 {
-                    return evaluate(exprs.first().unwrap());
+                    return evaluate(&exprs[0]);
                 }
                 let scalar = evaluate(scalar);
                 let scalars = iter::successors(Some(scalar.clone()), |power| {

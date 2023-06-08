@@ -7,12 +7,12 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::fmt::Debug;
+use std::{fmt::Debug, ops::AddAssign};
 
 pub mod multilinear;
 pub mod univariate;
 
-pub trait Polynomial<F: Field>: Clone + Debug {
+pub trait Polynomial<F: Field>: Clone + Debug + for<'a> AddAssign<(&'a F, &'a Self)> {
     type Point: Clone + Debug;
 
     fn from_evals(evals: Vec<F>) -> Self;
@@ -156,7 +156,7 @@ impl<F: Field> Evaluation<F> {
     }
 }
 
-pub trait AdditiveCommitment<F: Field>: Debug + Default {
+pub trait AdditiveCommitment<F: Field>: Debug + Default + PartialEq + Eq {
     fn sum_with_scalar<'a>(
         scalars: impl IntoIterator<Item = &'a F> + 'a,
         bases: impl IntoIterator<Item = &'a Self> + 'a,

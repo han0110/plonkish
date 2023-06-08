@@ -33,8 +33,13 @@ pub(super) fn compose<F: PrimeField>(
     let (lookup_constraints, lookup_zero_checks) = lookup_constraints(circuit_info, beta, gamma);
 
     let max_degree = max_degree(circuit_info, Some(&lookup_constraints));
-    let (num_permutation_z_polys, permutation_constraints) =
-        permutation_constraints(circuit_info, max_degree, beta, gamma);
+    let (num_permutation_z_polys, permutation_constraints) = permutation_constraints(
+        circuit_info,
+        max_degree,
+        beta,
+        gamma,
+        2 * circuit_info.lookups.len(),
+    );
 
     let expression = {
         let constraints = iter::empty()
@@ -109,12 +114,13 @@ pub(super) fn permutation_constraints<F: PrimeField>(
     max_degree: usize,
     beta: &Expression<F>,
     gamma: &Expression<F>,
+    num_lookup_witness_polys: usize,
 ) -> (usize, Vec<Expression<F>>) {
     let permutation_polys = circuit_info.permutation_polys();
     let chunk_size = max_degree - 1;
     let num_chunks = div_ceil(permutation_polys.len(), chunk_size);
     let permutation_offset = circuit_info.num_poly();
-    let z_offset = permutation_offset + permutation_polys.len() + 2 * circuit_info.lookups.len();
+    let z_offset = permutation_offset + permutation_polys.len() + num_lookup_witness_polys;
     let polys = permutation_polys
         .iter()
         .map(|idx| Expression::Polynomial(Query::new(*idx, Rotation::cur())))

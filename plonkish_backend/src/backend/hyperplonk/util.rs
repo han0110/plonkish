@@ -1,7 +1,7 @@
 use crate::{
     backend::{
         hyperplonk::{
-            preprocess::{compose, permutation_polys},
+            preprocessor::{compose, permutation_polys},
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
                 permutation_z_polys,
@@ -12,7 +12,7 @@ use crate::{
     pcs::Polynomial,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{BooleanHypercube, PrimeField},
+        arithmetic::{powers, BooleanHypercube, PrimeField},
         expression::{Expression, Query, Rotation},
         test::{rand_array, rand_idx, rand_vec},
         Itertools,
@@ -335,8 +335,9 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Hash>(
     let (lookup_compressed_polys, lookup_m_polys) = {
         let PlonkishCircuitInfo { lookups, .. } =
             plonk_with_lookup_circuit_info(0, 0, Default::default(), Vec::new());
+        let betas = powers(beta).take(3).collect_vec();
         let lookup_compressed_polys =
-            lookup_compressed_polys(&lookups, &polys.iter().collect_vec(), &[], &beta);
+            lookup_compressed_polys(&lookups, &polys.iter().collect_vec(), &[], &betas);
         let lookup_m_polys = lookup_m_polys(&lookup_compressed_polys).unwrap();
         (lookup_compressed_polys, lookup_m_polys)
     };

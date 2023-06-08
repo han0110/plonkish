@@ -112,6 +112,14 @@ impl<M: MultiMillerLoop> Default for MultilinearKzgCommitment<M> {
     }
 }
 
+impl<M: MultiMillerLoop> PartialEq for MultilinearKzgCommitment<M> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl<M: MultiMillerLoop> Eq for MultilinearKzgCommitment<M> {}
+
 impl<M: MultiMillerLoop> AsRef<[M::G1Affine]> for MultilinearKzgCommitment<M> {
     fn as_ref(&self) -> &[M::G1Affine] {
         slice::from_ref(&self.0)

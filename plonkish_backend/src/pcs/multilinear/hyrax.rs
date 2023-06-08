@@ -61,7 +61,7 @@ impl<C: CurveAffine> MultilinearHyraxParams<C> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultilinearHyraxCommitment<C: CurveAffine>(pub Vec<C>);
 
 impl<C: CurveAffine> Default for MultilinearHyraxCommitment<C> {
@@ -82,9 +82,11 @@ impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearHyraxCommitmen
         scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
         bases: impl IntoIterator<Item = &'a Self> + 'a,
     ) -> Self {
-        let scalars = scalars.into_iter().collect_vec();
-        let bases = bases.into_iter().collect_vec();
-        assert_eq!(scalars.len(), bases.len());
+        let (scalars, bases) = scalars
+            .into_iter()
+            .zip_eq(bases)
+            .filter_map(|(scalar, bases)| (bases != &Self::default()).then_some((scalar, bases)))
+            .unzip::<_, _, Vec<_>, Vec<_>>();
 
         let num_chunks = bases[0].0.len();
         for bases in bases.iter() {

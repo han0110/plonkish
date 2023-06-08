@@ -7,7 +7,7 @@ use crate::{
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{div_ceil, powers, steps_by, sum, BatchInvert, BooleanHypercube, PrimeField},
+        arithmetic::{div_ceil, steps_by, sum, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,
         expression::{CommonPolynomial, Expression, Rotation},
         parallel::{num_threads, par_map_collect, parallelize, parallelize_iter},
@@ -45,7 +45,7 @@ pub(super) fn lookup_compressed_polys<F: PrimeField>(
     lookups: &[Vec<(Expression<F>, Expression<F>)>],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
-    beta: &F,
+    betas: &[F],
 ) -> Vec<[MultilinearPolynomial<F>; 2]> {
     if lookups.is_empty() {
         return Default::default();
@@ -77,23 +77,25 @@ pub(super) fn lookup_compressed_polys<F: PrimeField>(
     lookups
         .iter()
         .map(|lookup| {
-            lookup_compressed_poly(lookup, &lagranges, &identities, polys, challenges, beta)
+            lookup_compressed_poly(lookup, &lagranges, &identities, polys, challenges, betas)
         })
         .collect()
 }
 
-fn lookup_compressed_poly<F: PrimeField>(
+pub(super) fn lookup_compressed_poly<F: PrimeField>(
     lookup: &[(Expression<F>, Expression<F>)],
     lagranges: &HashSet<(i32, usize)>,
     identities: &[u64],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
-    beta: &F,
+    betas: &[F],
 ) -> [MultilinearPolynomial<F>; 2] {
     let num_vars = polys[0].num_vars();
     let bh = BooleanHypercube::new(num_vars);
     let compress = |expressions: &[&Expression<F>]| {
-        powers(*beta)
+        betas
+            .iter()
+            .copied()
             .zip(expressions.iter().map(|expression| {
                 let mut compressed = vec![F::ZERO; 1 << num_vars];
                 parallelize(&mut compressed, |(compressed, start)| {

@@ -109,6 +109,14 @@ impl<M: MultiMillerLoop> Default for UnivariateKzgCommitment<M> {
     }
 }
 
+impl<M: MultiMillerLoop> PartialEq for UnivariateKzgCommitment<M> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl<M: MultiMillerLoop> Eq for UnivariateKzgCommitment<M> {}
+
 impl<M: MultiMillerLoop> AsRef<[M::G1Affine]> for UnivariateKzgCommitment<M> {
     fn as_ref(&self) -> &[M::G1Affine] {
         slice::from_ref(&self.0)

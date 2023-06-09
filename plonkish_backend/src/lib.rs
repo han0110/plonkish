@@ -1,6 +1,7 @@
 #![allow(clippy::op_ref)]
 
 pub mod backend;
+pub mod frontend;
 pub mod pcs;
 pub mod piop;
 pub mod poly;

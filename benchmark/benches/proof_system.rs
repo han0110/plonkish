@@ -1,5 +1,5 @@
 use benchmark::{
-    espresso::standard_plonk,
+    espresso,
     halo2::{AggregationCircuit, Sha256Circuit},
 };
 use espresso_hyperplonk::{prelude::MockCircuit, HyperPlonkSNARK};
@@ -15,14 +15,8 @@ use halo2_proofs::{
 };
 use itertools::Itertools;
 use plonkish_backend::{
-    backend::{
-        self,
-        hyperplonk::frontend::halo2::{
-            circuit::{CircuitExt, StandardPlonk},
-            circuit_info, Halo2Circuit,
-        },
-        PlonkishBackend,
-    },
+    backend::{self, PlonkishBackend, PlonkishCircuit},
+    frontend::halo2::{circuit::VanillaPlonk, CircuitExt, Halo2Circuit},
     halo2_curves::bn256::{Bn256, Fr},
     pcs::multilinear,
     util::{
@@ -55,9 +49,9 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     type HyperPlonk = backend::hyperplonk::HyperPlonk<MultilinearKzg>;
 
     let circuit = C::rand(k, std_rng());
-    let circuit = Halo2Circuit::new(k, circuit.instances(), circuit);
-    let instances = circuit.instances();
-    let circuit_info = circuit_info(k, circuit.as_ref(), C::num_instances()).unwrap();
+    let circuit = Halo2Circuit::new::<HyperPlonk>(k, circuit);
+    let instances = circuit.instance_slices();
+    let circuit_info = circuit.circuit_info().unwrap();
 
     let timer = start_timer(|| format!("hyperplonk_setup-{k}"));
     let param = HyperPlonk::setup(&circuit_info, std_rng()).unwrap();
@@ -183,10 +177,10 @@ impl System {
     fn support(&self, circuit: Circuit) -> bool {
         match self {
             System::HyperPlonk | System::Halo2 => match circuit {
-                Circuit::StandardPlonk | Circuit::Aggregation | Circuit::Sha256 => true,
+                Circuit::VanillaPlonk | Circuit::Aggregation | Circuit::Sha256 => true,
             },
             System::EspressoHyperPlonk => match circuit {
-                Circuit::StandardPlonk => true,
+                Circuit::VanillaPlonk => true,
                 Circuit::Aggregation | Circuit::Sha256 => false,
             },
         }
@@ -202,17 +196,17 @@ impl System {
 
         match self {
             System::HyperPlonk => match circuit {
-                Circuit::StandardPlonk => bench_hyperplonk::<StandardPlonk<Fr>>(k),
+                Circuit::VanillaPlonk => bench_hyperplonk::<VanillaPlonk<Fr>>(k),
                 Circuit::Aggregation => bench_hyperplonk::<AggregationCircuit<Bn256>>(k),
                 Circuit::Sha256 => bench_hyperplonk::<Sha256Circuit>(k),
             },
             System::Halo2 => match circuit {
-                Circuit::StandardPlonk => bench_halo2::<StandardPlonk<Fr>>(k),
+                Circuit::VanillaPlonk => bench_halo2::<VanillaPlonk<Fr>>(k),
                 Circuit::Aggregation => bench_halo2::<AggregationCircuit<Bn256>>(k),
                 Circuit::Sha256 => bench_halo2::<Sha256Circuit>(k),
             },
             System::EspressoHyperPlonk => match circuit {
-                Circuit::StandardPlonk => bench_espresso_hyperplonk(standard_plonk(k)),
+                Circuit::VanillaPlonk => bench_espresso_hyperplonk(espresso::vanilla_plonk(k)),
                 Circuit::Aggregation | Circuit::Sha256 => unreachable!(),
             },
         }
@@ -231,7 +225,7 @@ impl Display for System {
 
 #[derive(Debug, Clone, Copy)]
 enum Circuit {
-    StandardPlonk,
+    VanillaPlonk,
     Aggregation,
     Sha256,
 }
@@ -239,7 +233,7 @@ enum Circuit {
 impl Circuit {
     fn min_k(&self) -> usize {
         match self {
-            Circuit::StandardPlonk => 4,
+            Circuit::VanillaPlonk => 4,
             Circuit::Aggregation => 20,
             Circuit::Sha256 => 17,
         }
@@ -249,7 +243,7 @@ impl Circuit {
 impl Display for Circuit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Circuit::StandardPlonk => write!(f, "standard_plonk"),
+            Circuit::VanillaPlonk => write!(f, "vanilla_plonk"),
             Circuit::Aggregation => write!(f, "aggregation"),
             Circuit::Sha256 => write!(f, "sha256"),
         }
@@ -271,10 +265,10 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
                     ),
                 },
                 "--circuit" => match value.as_str() {
-                    "standard_plonk" => circuit = Circuit::StandardPlonk,
+                    "vanilla_plonk" => circuit = Circuit::VanillaPlonk,
                     "aggregation" => circuit = Circuit::Aggregation,
                     "sha256" => circuit = Circuit::Sha256,
-                    _ => panic!("circuit should be one of {{aggregation,standard_plonk}}"),
+                    _ => panic!("circuit should be one of {{aggregation,vanilla_plonk}}"),
                 },
                 "--k" => {
                     if let Some((start, end)) = value.split_once("..") {

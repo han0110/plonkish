@@ -1,7 +1,7 @@
 use crate::{
-    backend::{PlonkishCircuit, PlonkishCircuitInfo},
+    backend::{PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding},
     util::{
-        arithmetic::{BatchInvert, BooleanHypercube, Field},
+        arithmetic::{BatchInvert, Field},
         expression::{Expression, Query, Rotation},
         Itertools,
     },
@@ -13,6 +13,7 @@ use halo2_proofs::{
         Error, Fixed, FloorPlanner, Instance, Selector,
     },
 };
+use rand::RngCore;
 use std::{
     collections::{HashMap, HashSet},
     iter, mem,
@@ -23,141 +24,61 @@ pub mod circuit;
 #[cfg(test)]
 mod test;
 
-pub fn circuit_info<F, C>(
-    k: usize,
-    circuit: &C,
-    num_instances: Vec<usize>,
-) -> Result<PlonkishCircuitInfo<F>, crate::Error>
-where
-    F: Field,
-    C: Circuit<F>,
-{
-    let (cs, config) = {
-        let mut cs = ConstraintSystem::default();
-        let config = C::configure(&mut cs);
-        (cs, config)
-    };
+pub trait CircuitExt<F: Field>: Circuit<F> {
+    fn rand(k: usize, rng: impl RngCore) -> Self;
 
-    let advice_idx = advice_idx(&cs);
-    let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
-    let constraints = cs
-        .gates()
-        .iter()
-        .flat_map(|gate| {
-            gate.polynomials()
-                .iter()
-                .map(|expression| convert_expression(&cs, &advice_idx, &challenge_idx, expression))
-        })
-        .collect();
-    let lookups = cs
-        .lookups()
-        .iter()
-        .map(|lookup| {
-            lookup
-                .input_expressions()
-                .iter()
-                .zip(lookup.table_expressions())
-                .map(|(input, table)| {
-                    let [input, table] = [input, table].map(|expression| {
-                        convert_expression(&cs, &advice_idx, &challenge_idx, expression)
-                    });
-                    (input, table)
-                })
-                .collect_vec()
-        })
-        .collect();
+    fn num_instances() -> Vec<usize>;
 
-    let column_idx = column_idx(&cs);
-    let permutation_column_idx = cs
-        .permutation()
-        .get_columns()
-        .iter()
-        .map(|column| {
-            let key = (*column.column_type(), column.index());
-            (key, column_idx[&key])
-        })
-        .collect();
-    let mut preprocess_collector = PreprocessCollector {
-        k: k as u32,
-        num_instances: num_instances.clone(),
-        fixeds: vec![vec![F::ZERO.into(); 1 << k]; cs.num_fixed_columns()],
-        permutation: Permutation::new(permutation_column_idx),
-        selectors: vec![vec![false; 1 << k]; cs.num_selectors()],
-        row_map: row_map(k),
-    };
-
-    C::FloorPlanner::synthesize(
-        &mut preprocess_collector,
-        circuit,
-        config,
-        cs.constants().clone(),
-    )
-    .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
-
-    let preprocess_polys = iter::empty()
-        .chain(batch_invert_assigned(preprocess_collector.fixeds))
-        .chain(preprocess_collector.selectors.into_iter().map(|selectors| {
-            selectors
-                .into_iter()
-                .map(|selector| if selector { F::ONE } else { F::ZERO })
-                .collect()
-        }))
-        .collect();
-    let permutations = preprocess_collector.permutation.into_cycles();
-
-    Ok(PlonkishCircuitInfo {
-        k,
-        num_instances,
-        preprocess_polys,
-        num_witness_polys: num_by_phase(&cs.advice_column_phase()),
-        num_challenges: num_by_phase(&cs.challenge_phase()),
-        constraints,
-        lookups,
-        permutations,
-        max_degree: Some(cs.degree::<false>()),
-    })
+    fn instances(&self) -> Vec<Vec<F>>;
 }
 
 pub struct Halo2Circuit<F: Field, C: Circuit<F>> {
     k: u32,
     instances: Vec<Vec<F>>,
     circuit: C,
+    cs: ConstraintSystem<F>,
     config: C::Config,
     constants: Vec<Column<Fixed>>,
     num_witness_polys: Vec<usize>,
     advice_idx_in_phase: Vec<usize>,
     challenge_idx: Vec<usize>,
-    row_map: Vec<usize>,
+    row_mapping: Vec<usize>,
 }
 
-impl<F: Field, C: Circuit<F>> Halo2Circuit<F, C> {
-    pub fn new(k: usize, instances: Vec<Vec<F>>, circuit: C) -> Self {
+impl<F: Field, C: CircuitExt<F>> Halo2Circuit<F, C> {
+    pub fn new<E: WitnessEncoding>(k: usize, circuit: C) -> Self {
         let (cs, config) = {
             let mut cs = ConstraintSystem::default();
             let config = C::configure(&mut cs);
             (cs, config)
         };
+        let constants = cs.constants().clone();
 
         let num_witness_polys = num_by_phase(&cs.advice_column_phase());
         let advice_idx_in_phase = idx_in_phase(&cs.advice_column_phase());
         let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
-        let row_map = row_map(k);
+        let row_mapping = E::row_mapping(k);
 
         Self {
             k: k as u32,
-            instances,
+            instances: circuit.instances(),
             circuit,
+            cs,
             config,
-            constants: cs.constants().clone(),
+            constants,
             num_witness_polys,
             advice_idx_in_phase,
             challenge_idx,
-            row_map,
+            row_mapping,
         }
     }
 
-    pub fn instances(&self) -> Vec<&[F]> {
+    pub fn instance_slices(&self) -> Vec<&[F]> {
         self.instances.iter().map(Vec::as_slice).collect()
+    }
+
+    pub fn instances(&self) -> Vec<Vec<F>> {
+        self.instances.clone()
     }
 }
 
@@ -168,6 +89,98 @@ impl<F: Field, C: Circuit<F>> AsRef<C> for Halo2Circuit<F, C> {
 }
 
 impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
+    fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, crate::Error> {
+        let Self {
+            k,
+            instances,
+            cs,
+            config,
+            circuit,
+            constants,
+            challenge_idx,
+            row_mapping,
+            ..
+        } = self;
+        let advice_idx = advice_idx(cs);
+        let constraints = cs
+            .gates()
+            .iter()
+            .flat_map(|gate| {
+                gate.polynomials().iter().map(|expression| {
+                    convert_expression(cs, &advice_idx, challenge_idx, expression)
+                })
+            })
+            .collect();
+        let lookups = cs
+            .lookups()
+            .iter()
+            .map(|lookup| {
+                lookup
+                    .input_expressions()
+                    .iter()
+                    .zip(lookup.table_expressions())
+                    .map(|(input, table)| {
+                        let [input, table] = [input, table].map(|expression| {
+                            convert_expression(cs, &advice_idx, challenge_idx, expression)
+                        });
+                        (input, table)
+                    })
+                    .collect_vec()
+            })
+            .collect();
+
+        let num_instances = instances.iter().map(Vec::len).collect_vec();
+        let column_idx = column_idx(cs);
+        let permutation_column_idx = cs
+            .permutation()
+            .get_columns()
+            .iter()
+            .map(|column| {
+                let key = (*column.column_type(), column.index());
+                (key, column_idx[&key])
+            })
+            .collect();
+        let mut preprocess_collector = PreprocessCollector {
+            k: *k,
+            num_instances: num_instances.clone(),
+            fixeds: vec![vec![F::ZERO.into(); 1 << k]; cs.num_fixed_columns()],
+            permutation: Permutation::new(permutation_column_idx),
+            selectors: vec![vec![false; 1 << k]; cs.num_selectors()],
+            row_mapping,
+        };
+
+        C::FloorPlanner::synthesize(
+            &mut preprocess_collector,
+            circuit,
+            config.clone(),
+            constants.clone(),
+        )
+        .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
+
+        let preprocess_polys = iter::empty()
+            .chain(batch_invert_assigned(preprocess_collector.fixeds))
+            .chain(preprocess_collector.selectors.into_iter().map(|selectors| {
+                selectors
+                    .into_iter()
+                    .map(|selector| if selector { F::ONE } else { F::ZERO })
+                    .collect()
+            }))
+            .collect();
+        let permutations = preprocess_collector.permutation.into_cycles();
+
+        Ok(PlonkishCircuitInfo {
+            k: *k as usize,
+            num_instances,
+            preprocess_polys,
+            num_witness_polys: num_by_phase(&cs.advice_column_phase()),
+            num_challenges: num_by_phase(&cs.challenge_phase()),
+            constraints,
+            lookups,
+            permutations,
+            max_degree: Some(cs.degree::<false>()),
+        })
+    }
+
     fn synthesize(&self, phase: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, crate::Error> {
         let instances = self.instances.iter().map(Vec::as_slice).collect_vec();
         let mut witness_collector = WitnessCollector {
@@ -178,7 +191,7 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             instances: instances.as_slice(),
             advices: vec![vec![F::ZERO.into(); 1 << self.k]; self.num_witness_polys[phase]],
             challenges,
-            row_map: &self.row_map,
+            row_mapping: &self.row_mapping,
         };
 
         C::FloorPlanner::synthesize(
@@ -194,16 +207,16 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
 }
 
 #[derive(Debug)]
-struct PreprocessCollector<F: Field> {
+struct PreprocessCollector<'a, F: Field> {
     k: u32,
     num_instances: Vec<usize>,
     fixeds: Vec<Vec<Assigned<F>>>,
     permutation: Permutation,
     selectors: Vec<Vec<bool>>,
-    row_map: Vec<usize>,
+    row_mapping: &'a [usize],
 }
 
-impl<F: Field> Assignment<F> for PreprocessCollector<F> {
+impl<'a, F: Field> Assignment<F> for PreprocessCollector<'a, F> {
     fn enter_region<NR, N>(&mut self, _: N)
     where
         NR: Into<String>,
@@ -225,7 +238,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
-        let Some(row) = self.row_map.get(row).copied() else {
+        let Some(row) = self.row_mapping.get(row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -270,7 +283,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
-        let Some(row) = self.row_map.get(row).copied() else {
+        let Some(row) = self.row_mapping.get(row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -290,10 +303,10 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         rhs_column: Column<Any>,
         rhs_row: usize,
     ) -> Result<(), Error> {
-        let Some(lhs_row) = self.row_map.get(lhs_row).copied() else {
+        let Some(lhs_row) = self.row_mapping.get(lhs_row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
-        let Some(rhs_row) = self.row_map.get(rhs_row).copied() else {
+        let Some(rhs_row) = self.row_mapping.get(rhs_row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
         self.permutation
@@ -306,7 +319,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
         from_row: usize,
         to: Value<Assigned<F>>,
     ) -> Result<(), Error> {
-        let Some(_) = self.row_map.get(from_row) else {
+        let Some(_) = self.row_mapping.get(from_row) else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -316,7 +329,7 @@ impl<F: Field> Assignment<F> for PreprocessCollector<F> {
             .ok_or(Error::BoundsFailure)?;
 
         let filler = to.assign()?;
-        for row in self.row_map.iter().skip(from_row).copied() {
+        for row in self.row_mapping.iter().skip(from_row).copied() {
             col[row] = filler;
         }
 
@@ -418,7 +431,7 @@ struct WitnessCollector<'a, F: Field> {
     instances: &'a [&'a [F]],
     advices: Vec<Vec<Assigned<F>>>,
     challenges: &'a [F],
-    row_map: &'a [usize],
+    row_mapping: &'a [usize],
 }
 
 impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
@@ -471,7 +484,7 @@ impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
             return Ok(());
         }
 
-        let Some(row) = self.row_map.get(row).copied() else {
+        let Some(row) = self.row_mapping.get(row).copied() else {
             return Err(Error::NotEnoughRowsAvailable { current_k: self.k });
         };
 
@@ -623,10 +636,6 @@ fn convert_expression<F: Field>(
         &|lhs, rhs| lhs * rhs,
         &|value, scalar| value * scalar,
     )
-}
-
-fn row_map(k: usize) -> Vec<usize> {
-    BooleanHypercube::new(k).iter().skip(1).collect()
 }
 
 fn batch_invert_assigned<F: Field>(assigneds: Vec<Vec<Assigned<F>>>) -> Vec<Vec<F>> {

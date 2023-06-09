@@ -27,7 +27,7 @@ use std::{
     iter,
 };
 
-pub fn plonk_circuit_info<F: PrimeField>(
+pub fn vanilla_plonk_circuit_info<F: PrimeField>(
     num_vars: usize,
     num_instances: usize,
     preprocess_polys: [Vec<F>; 5],
@@ -48,8 +48,8 @@ pub fn plonk_circuit_info<F: PrimeField>(
     }
 }
 
-pub fn plonk_expression<F: PrimeField>() -> Expression<F> {
-    let circuit_info = plonk_circuit_info(
+pub fn vanilla_plonk_expression<F: PrimeField>() -> Expression<F> {
+    let circuit_info = vanilla_plonk_circuit_info(
         0,
         0,
         Default::default(),
@@ -60,7 +60,7 @@ pub fn plonk_expression<F: PrimeField>() -> Expression<F> {
     expression
 }
 
-pub fn plonk_with_lookup_circuit_info<F: PrimeField>(
+pub fn vanilla_plonk_with_lookup_circuit_info<F: PrimeField>(
     num_vars: usize,
     num_instances: usize,
     preprocess_polys: [Vec<F>; 9],
@@ -85,8 +85,8 @@ pub fn plonk_with_lookup_circuit_info<F: PrimeField>(
     }
 }
 
-pub fn plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
-    let circuit_info = plonk_with_lookup_circuit_info(
+pub fn vanilla_plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
+    let circuit_info = vanilla_plonk_with_lookup_circuit_info(
         0,
         0,
         Default::default(),
@@ -97,7 +97,7 @@ pub fn plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
     expression
 }
 
-pub fn rand_plonk_circuit<F: PrimeField>(
+pub fn rand_vanilla_plonk_circuit<F: PrimeField>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
@@ -112,7 +112,7 @@ pub fn rand_plonk_circuit<F: PrimeField>(
     for poly in [6, 7, 8] {
         permutation.copy((poly, 1), (poly, 1));
     }
-    for idx in 0..size {
+    for idx in 0..size - 1 {
         let [w_l, w_r] = if preprocess_rng.next_u32().is_even() && idx > 1 {
             let [l_copy_idx, r_copy_idx] = [(); 2].map(|_| {
                 (
@@ -156,7 +156,7 @@ pub fn rand_plonk_circuit<F: PrimeField>(
     }
 
     let [_, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] = polys;
-    let circuit_info = plonk_circuit_info(
+    let circuit_info = vanilla_plonk_circuit_info(
         num_vars,
         instances.len(),
         [q_l, q_r, q_m, q_o, q_c],
@@ -165,14 +165,14 @@ pub fn rand_plonk_circuit<F: PrimeField>(
     (circuit_info, vec![instances], vec![w_l, w_r, w_o])
 }
 
-pub fn rand_plonk_assignment<F: PrimeField>(
+pub fn rand_vanilla_plonk_assignment<F: PrimeField>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
         let (circuit_info, instances, circuit) =
-            rand_plonk_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
+            rand_vanilla_plonk_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
             .chain(instance_polys(num_vars, &instances))
@@ -210,7 +210,7 @@ pub fn rand_plonk_assignment<F: PrimeField>(
     )
 }
 
-pub fn rand_plonk_with_lookup_circuit<F: PrimeField>(
+pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
@@ -240,7 +240,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField>(
     for poly in [10, 11, 12] {
         permutation.copy((poly, 1), (poly, 1));
     }
-    for idx in 0..size {
+    for idx in 0..size - 1 {
         let use_copy = preprocess_rng.next_u32().is_even() && idx > 1;
         let [w_l, w_r] = if use_copy {
             let [l_copy_idx, r_copy_idx] = [(); 2].map(|_| {
@@ -300,7 +300,7 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField>(
     }
 
     let [_, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o] = polys;
-    let circuit_info = plonk_with_lookup_circuit_info(
+    let circuit_info = vanilla_plonk_with_lookup_circuit_info(
         num_vars,
         instances.len(),
         [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o],
@@ -309,14 +309,14 @@ pub fn rand_plonk_with_lookup_circuit<F: PrimeField>(
     (circuit_info, vec![instances], vec![w_l, w_r, w_o])
 }
 
-pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Hash>(
+pub fn rand_vanilla_plonk_with_lookup_assignment<F: PrimeField + Hash>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
         let (circuit_info, instances, circuit) =
-            rand_plonk_with_lookup_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
+            rand_vanilla_plonk_with_lookup_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
             .chain(instance_polys(num_vars, &instances))
@@ -334,7 +334,7 @@ pub fn rand_plonk_with_lookup_assignment<F: PrimeField + Hash>(
 
     let (lookup_compressed_polys, lookup_m_polys) = {
         let PlonkishCircuitInfo { lookups, .. } =
-            plonk_with_lookup_circuit_info(0, 0, Default::default(), Vec::new());
+            vanilla_plonk_with_lookup_circuit_info(0, 0, Default::default(), Vec::new());
         let betas = powers(beta).take(3).collect_vec();
         let lookup_compressed_polys =
             lookup_compressed_polys(&lookups, &polys.iter().collect_vec(), &[], &betas);

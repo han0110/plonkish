@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use halo2_curves::bn256::Fr;
 use plonkish_backend::{
-    backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
+    backend::hyperplonk::util::{rand_vanilla_plonk_assignment, vanilla_plonk_expression},
     piop::sum_check::{
         classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
@@ -22,9 +22,9 @@ fn run(num_vars: usize, virtual_poly: VirtualPolynomial<Fr>) {
 
 fn zero_check(c: &mut Criterion) {
     let setup = |num_vars: usize| {
-        let expression = plonk_expression();
+        let expression = vanilla_plonk_expression();
         let (polys, challenges) =
-            rand_plonk_assignment::<Fr>(num_vars, seeded_std_rng(), seeded_std_rng());
+            rand_vanilla_plonk_assignment::<Fr>(num_vars, seeded_std_rng(), seeded_std_rng());
         let ys = [rand_vec(num_vars, seeded_std_rng())];
         (expression, polys, challenges, ys)
     };

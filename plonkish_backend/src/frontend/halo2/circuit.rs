@@ -1,20 +1,8 @@
-use crate::util::arithmetic::Field;
-use halo2_proofs::plonk::Circuit;
-use rand::RngCore;
+pub use vanilla_plonk::VanillaPlonk;
 
-pub use stand_plonk::StandardPlonk;
-
-pub trait CircuitExt<F: Field>: Circuit<F> {
-    fn rand(k: usize, rng: impl RngCore) -> Self;
-
-    fn num_instances() -> Vec<usize>;
-
-    fn instances(&self) -> Vec<Vec<F>>;
-}
-
-mod stand_plonk {
+mod vanilla_plonk {
     use crate::{
-        backend::hyperplonk::frontend::halo2::circuit::CircuitExt,
+        frontend::halo2::CircuitExt,
         util::{arithmetic::Field, Itertools},
     };
     use halo2_proofs::{
@@ -26,12 +14,12 @@ mod stand_plonk {
     use std::iter;
 
     #[derive(Clone)]
-    pub struct StandardPlonkConfig {
+    pub struct VanillaPlonkConfig {
         selectors: [Column<Fixed>; 5],
         wires: [Column<Advice>; 3],
     }
 
-    impl StandardPlonkConfig {
+    impl VanillaPlonkConfig {
         fn configure<F: Field>(meta: &mut ConstraintSystem<F>) -> Self {
             let pi = meta.instance_column();
             let [q_l, q_r, q_m, q_o, q_c] = [(); 5].map(|_| meta.fixed_column());
@@ -55,7 +43,7 @@ mod stand_plonk {
                     )
                 },
             );
-            StandardPlonkConfig {
+            VanillaPlonkConfig {
                 selectors: [q_l, q_r, q_m, q_o, q_c],
                 wires: [w_l, w_r, w_o],
             }
@@ -63,10 +51,10 @@ mod stand_plonk {
     }
 
     #[derive(Clone, Default)]
-    pub struct StandardPlonk<F>(usize, Vec<[Assigned<F>; 8]>);
+    pub struct VanillaPlonk<F>(usize, Vec<[Assigned<F>; 8]>);
 
-    impl<F: Field> Circuit<F> for StandardPlonk<F> {
-        type Config = StandardPlonkConfig;
+    impl<F: Field> Circuit<F> for VanillaPlonk<F> {
+        type Config = VanillaPlonkConfig;
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
@@ -75,7 +63,7 @@ mod stand_plonk {
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
             meta.set_minimum_degree(4);
-            StandardPlonkConfig::configure(meta)
+            VanillaPlonkConfig::configure(meta)
         }
 
         fn synthesize(
@@ -108,7 +96,7 @@ mod stand_plonk {
         }
     }
 
-    impl<F: Field> CircuitExt<F> for StandardPlonk<F> {
+    impl<F: Field> CircuitExt<F> for VanillaPlonk<F> {
         fn rand(k: usize, mut rng: impl RngCore) -> Self {
             let mut rand_row =
                 || [(); 8].map(|_| Assigned::Rational(F::random(&mut rng), F::random(&mut rng)));

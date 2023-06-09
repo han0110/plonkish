@@ -1,5 +1,11 @@
 use crate::{
-    backend::hyperplonk::verifier::{pcs_query, point_offset, points},
+    backend::{
+        hyperplonk::{
+            verifier::{pcs_query, point_offset, points},
+            HyperPlonk,
+        },
+        WitnessEncoding,
+    },
     pcs::{Evaluation, Polynomial},
     piop::sum_check::{
         classic::{ClassicSumCheck, EvaluationsProver},
@@ -27,13 +33,13 @@ pub(super) fn instance_polys<'a, F: PrimeField>(
     num_vars: usize,
     instances: impl IntoIterator<Item = impl IntoIterator<Item = &'a F>>,
 ) -> Vec<MultilinearPolynomial<F>> {
-    let bh = BooleanHypercube::new(num_vars);
+    let row_mapping = HyperPlonk::<()>::row_mapping(num_vars);
     instances
         .into_iter()
         .map(|instances| {
             let mut poly = vec![F::ZERO; 1 << num_vars];
-            for (b, instance) in bh.iter().skip(1).zip(instances.into_iter()) {
-                poly[b] = *instance;
+            for (b, instance) in row_mapping.iter().zip(instances.into_iter()) {
+                poly[*b] = *instance;
             }
             poly
         })

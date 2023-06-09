@@ -15,7 +15,7 @@ mod aggregation {
     };
     use itertools::Itertools;
     use plonkish_backend::{
-        backend::hyperplonk::frontend::halo2::circuit::{CircuitExt, StandardPlonk},
+        frontend::halo2::{circuit::VanillaPlonk, CircuitExt},
         halo2_curves::{
             ff::PrimeField,
             ff::{FromUniformBytes, WithSmallOrderMulGroup},
@@ -347,7 +347,7 @@ mod aggregation {
         fn rand(k: usize, mut rng: impl RngCore) -> Self {
             let param = ParamsKZG::<M>::setup(4, &mut rng);
             let snark = {
-                let circuit = StandardPlonk::rand(param.k() as usize, &mut rng);
+                let circuit = VanillaPlonk::rand(param.k() as usize, &mut rng);
                 let vk = keygen_vk::<_, _, _, true>(&param, &circuit).unwrap();
                 let pk = keygen_pk::<_, _, _, true>(&param, vk, &circuit).unwrap();
                 let protocol = compile(
@@ -390,15 +390,14 @@ mod aggregation {
     }
 }
 
+// Modified from https://github.com/celer-network/halo2/tree/KZG-bench-sha256
 mod sha256 {
     use halo2_gadgets::sha256::{BlockWord, Sha256, Table16Chip, Table16Config};
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
         plonk::{Circuit, ConstraintSystem, Error},
     };
-    use plonkish_backend::{
-        backend::hyperplonk::frontend::halo2::circuit::CircuitExt, halo2_curves::bn256::Fr,
-    };
+    use plonkish_backend::{frontend::halo2::CircuitExt, halo2_curves::bn256::Fr};
     use rand::RngCore;
 
     const INPUT_2: [BlockWord; 16 * 2] =

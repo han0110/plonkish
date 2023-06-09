@@ -8,12 +8,12 @@ use crate::{
             },
             verifier::verify_zero_check,
         },
-        PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
+        PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding,
     },
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{powers, PrimeField},
+        arithmetic::{powers, BooleanHypercube, PrimeField},
         end_timer,
         expression::Expression,
         start_timer,
@@ -28,8 +28,6 @@ use std::{borrow::BorrowMut, fmt::Debug, hash::Hash, iter, marker::PhantomData};
 mod preprocessor;
 mod prover;
 mod verifier;
-
-pub mod frontend;
 
 #[cfg(any(test, feature = "benchmark"))]
 pub mod util;
@@ -363,12 +361,18 @@ where
     }
 }
 
+impl<Pcs> WitnessEncoding for HyperPlonk<Pcs> {
+    fn row_mapping(k: usize) -> Vec<usize> {
+        BooleanHypercube::new(k).iter().skip(1).chain([0]).collect()
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
         backend::{
             hyperplonk::{
-                util::{rand_plonk_circuit, rand_plonk_with_lookup_circuit},
+                util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_with_lookup_circuit},
                 HyperPlonk,
             },
             PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
@@ -454,16 +458,16 @@ pub(crate) mod test {
         ($name:ident, $pcs:ty, $num_vars_range:expr) => {
             paste::paste! {
                 #[test]
-                fn [<$name _hyperplonk_plonk>]() {
+                fn [<$name _hyperplonk_vanilla_plonk>]() {
                     run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        rand_plonk_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
+                        rand_vanilla_plonk_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
 
                 #[test]
-                fn [<$name _hyperplonk_plonk_with_lookup>]() {
+                fn [<$name _hyperplonk_vanilla_plonk_with_lookup>]() {
                     run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        rand_plonk_with_lookup_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
+                        rand_vanilla_plonk_with_lookup_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
             }

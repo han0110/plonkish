@@ -134,14 +134,27 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
 }
 
 pub trait PlonkishCircuit<F> {
+    fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, Error>;
+
     fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error>;
+}
+
+pub trait WitnessEncoding {
+    fn row_mapping(k: usize) -> Vec<usize>;
 }
 
 #[cfg(any(test, feature = "benchmark"))]
 mod test {
-    use crate::{backend::PlonkishCircuit, Error};
+    use crate::{
+        backend::{PlonkishCircuit, PlonkishCircuitInfo},
+        Error,
+    };
 
     impl<F: Clone> PlonkishCircuit<F> for Vec<Vec<F>> {
+        fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, Error> {
+            unreachable!()
+        }
+
         fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error> {
             assert!(round == 0 && challenges.is_empty());
             Ok(self.to_vec())

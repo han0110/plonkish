@@ -203,15 +203,17 @@ pub(super) fn permutation_polys<F: PrimeField>(
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        backend::hyperplonk::util::{plonk_expression, plonk_with_lookup_expression},
+        backend::hyperplonk::util::{
+            vanilla_plonk_expression, vanilla_plonk_with_lookup_expression,
+        },
         util::expression::{Expression, Query, Rotation},
     };
     use halo2_curves::bn256::Fr;
     use std::array;
 
     #[test]
-    fn compose_plonk() {
-        let expression = plonk_expression();
+    fn compose_vanilla_plonk() {
+        let expression = vanilla_plonk_expression();
         assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))
@@ -244,8 +246,8 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn compose_plonk_with_lookup() {
-        let expression = plonk_with_lookup_expression();
+    fn compose_vanilla_plonk_with_lookup() {
+        let expression = vanilla_plonk_with_lookup_expression();
         assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))

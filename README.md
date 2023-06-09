@@ -13,18 +13,18 @@ Usage: cargo bench --bench proof_system -- [OPTIONS]
 
 Options:
   --system <SYSTEM>    Proof system(s) to run. [possible values: hyperplonk, halo2, espresso_hyperplonk]
-  --circuit <CIRCUIT>  Circuit to run. [possible values: standard_plonk, aggregation]
+  --circuit <CIRCUIT>  Circuit to run. [possible values: vanilla_plonk, aggregation]
   --k <K>              (Range of) log number of rows.
 ```
 
-For example to compare different proof systems on standard PLONK, run:
+For example to compare different proof systems on vanilla PLONK, run:
 
 ```sh
 cargo bench --bench proof_system -- \
     --system hyperplonk \
     --system halo2 \
     --system espresso_hyperplonk \
-    --circuit standard_plonk \
+    --circuit vanilla_plonk \
     --k 20..24
 ```
 

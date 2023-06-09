@@ -297,32 +297,38 @@ pub(super) mod test {
             }
 
             #[test]
-            fn sum_check_plonk() {
+            fn sum_check_vanilla_plonk() {
                 use halo2_curves::bn256::Fr;
                 use $crate::{
-                    backend::hyperplonk::util::{plonk_expression, rand_plonk_assignment},
+                    backend::hyperplonk::util::{
+                        rand_vanilla_plonk_assignment, vanilla_plonk_expression,
+                    },
                     piop::sum_check::test::run_zero_check,
                     util::test::{rand_vec, seeded_std_rng},
                 };
 
                 run_zero_check::<$impl>(
                     2..16,
-                    |_| plonk_expression(),
+                    |_| vanilla_plonk_expression(),
                     |_| ((), ()),
                     |num_vars| {
-                        let (polys, challenges) =
-                            rand_plonk_assignment(num_vars, seeded_std_rng(), seeded_std_rng());
+                        let (polys, challenges) = rand_vanilla_plonk_assignment(
+                            num_vars,
+                            seeded_std_rng(),
+                            seeded_std_rng(),
+                        );
                         (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
                     },
                 );
             }
 
             #[test]
-            fn sum_check_plonk_with_lookup() {
+            fn sum_check_vanilla_plonk_with_lookup() {
                 use halo2_curves::bn256::Fr;
                 use $crate::{
                     backend::hyperplonk::util::{
-                        plonk_with_lookup_expression, rand_plonk_with_lookup_assignment,
+                        rand_vanilla_plonk_with_lookup_assignment,
+                        vanilla_plonk_with_lookup_expression,
                     },
                     piop::sum_check::test::run_zero_check,
                     util::test::{rand_vec, seeded_std_rng},
@@ -330,10 +336,10 @@ pub(super) mod test {
 
                 run_zero_check::<$impl>(
                     2..16,
-                    |_| plonk_with_lookup_expression(),
+                    |_| vanilla_plonk_with_lookup_expression(),
                     |_| ((), ()),
                     |num_vars| {
-                        let (polys, challenges) = rand_plonk_with_lookup_assignment(
+                        let (polys, challenges) = rand_vanilla_plonk_with_lookup_assignment(
                             num_vars,
                             seeded_std_rng(),
                             seeded_std_rng(),

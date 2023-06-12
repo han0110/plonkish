@@ -24,11 +24,32 @@ pub(super) fn verify_zero_check<F: PrimeField>(
     y: &[F],
     transcript: &mut impl FieldTranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
+    verify_sum_check(
+        num_vars,
+        expression,
+        F::ZERO,
+        instances,
+        challenges,
+        y,
+        transcript,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn verify_sum_check<F: PrimeField>(
+    num_vars: usize,
+    expression: &Expression<F>,
+    sum: F,
+    instances: &[&[F]],
+    challenges: &[F],
+    y: &[F],
+    transcript: &mut impl FieldTranscriptRead<F>,
+) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_>>::verify(
         &(),
         num_vars,
         expression.degree(),
-        F::ZERO,
+        sum,
         transcript,
     )?;
 

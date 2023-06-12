@@ -353,6 +353,27 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     y: Vec<F>,
     transcript: &mut impl FieldTranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
+    prove_sum_check(
+        num_instance_poly,
+        expression,
+        F::ZERO,
+        polys,
+        challenges,
+        y,
+        transcript,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn prove_sum_check<F: PrimeField>(
+    num_instance_poly: usize,
+    expression: &Expression<F>,
+    sum: F,
+    polys: &[&MultilinearPolynomial<F>],
+    challenges: Vec<F>,
+    y: Vec<F>,
+    transcript: &mut impl FieldTranscriptWrite<F>,
+) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
@@ -360,7 +381,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
         &(),
         num_vars,
         virtual_poly,
-        F::ZERO,
+        sum,
         transcript,
     )?;
 

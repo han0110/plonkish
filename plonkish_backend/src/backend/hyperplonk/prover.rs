@@ -70,28 +70,15 @@ pub(super) fn lookup_compressed_polys<F: PrimeField>(
             .map(|i| (i, bh[i.rem_euclid(1 << num_vars) as usize]))
             .collect::<HashSet<_>>()
     };
-    let identities = {
-        let max_used_identity = expression
-            .used_identity()
-            .into_iter()
-            .max()
-            .unwrap_or_default();
-        (0..=max_used_identity)
-            .map(|idx| (idx as u64) << num_vars)
-            .collect_vec()
-    };
     lookups
         .iter()
-        .map(|lookup| {
-            lookup_compressed_poly(lookup, &lagranges, &identities, polys, challenges, betas)
-        })
+        .map(|lookup| lookup_compressed_poly(lookup, &lagranges, polys, challenges, betas))
         .collect()
 }
 
 pub(super) fn lookup_compressed_poly<F: PrimeField>(
     lookup: &[(Expression<F>, Expression<F>)],
     lagranges: &HashSet<(i32, usize)>,
-    identities: &[u64],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
     betas: &[F],
@@ -109,15 +96,13 @@ pub(super) fn lookup_compressed_poly<F: PrimeField>(
                         *compressed = expression.evaluate(
                             &|constant| constant,
                             &|common_poly| match common_poly {
+                                CommonPolynomial::Identity => F::from(b as u64),
                                 CommonPolynomial::Lagrange(i) => {
                                     if lagranges.contains(&(i, b)) {
                                         F::ONE
                                     } else {
                                         F::ZERO
                                     }
-                                }
-                                CommonPolynomial::Identity(idx) => {
-                                    F::from(b as u64 + identities[idx])
                                 }
                                 CommonPolynomial::EqXY(_) => unreachable!(),
                             },

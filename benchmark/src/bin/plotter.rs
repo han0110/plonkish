@@ -57,11 +57,9 @@ fn main() {
 }
 
 fn parse_args() -> (bool, Vec<String>) {
-    let (verbose, logs) = args()
-        .into_iter()
-        .chain(Some("".to_string()))
-        .tuple_windows()
-        .fold((false, None), |(mut verbose, mut logs), (key, value)| {
+    let (verbose, logs) = args().chain(Some("".to_string())).tuple_windows().fold(
+        (false, None),
+        |(mut verbose, mut logs), (key, value)| {
             match key.as_str() {
                 "-" => {
                     logs = Some(
@@ -85,7 +83,8 @@ fn parse_args() -> (bool, Vec<String>) {
                 _ => {}
             };
             (verbose, logs)
-        });
+        },
+    );
     (
         verbose,
         logs.expect("Either \"--log <LOG>\" or \"-\" specified"),

@@ -28,7 +28,7 @@ pub struct ProverState<'a, F: Field> {
     degree: usize,
     sum: F,
     lagranges: HashMap<i32, (usize, F)>,
-    identities: Vec<F>,
+    identity: F,
     eq_xys: Vec<MultilinearPolynomial<F>>,
     polys: Vec<Vec<Cow<'a, MultilinearPolynomial<F>>>>,
     challenges: &'a [F],
@@ -53,18 +53,6 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                 })
                 .collect()
         };
-        let identities = (0..)
-            .map(|idx| F::from(idx << num_vars))
-            .take(
-                virtual_poly
-                    .expression
-                    .used_identity()
-                    .into_iter()
-                    .max()
-                    .unwrap_or_default()
-                    + 1,
-            )
-            .collect_vec();
         let eq_xys = virtual_poly
             .ys
             .iter()
@@ -85,7 +73,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             degree: virtual_poly.expression.degree(),
             sum,
             lagranges,
-            identities,
+            identity: F::ZERO,
             eq_xys,
             polys,
             challenges: virtual_poly.challenges,
@@ -101,6 +89,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
 
     fn next_round(&mut self, sum: F, challenge: &F) {
         self.sum = sum;
+        self.identity += F::from(1 << self.round) * challenge;
         self.lagranges.values_mut().for_each(|(b, value)| {
             if b.is_even() {
                 *value *= &(F::ONE - challenge);
@@ -109,9 +98,6 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             }
             *b >>= 1;
         });
-        self.identities
-            .iter_mut()
-            .for_each(|constant| *constant += F::from(1 << self.round) * challenge);
         self.eq_xys
             .iter_mut()
             .for_each(|eq_xy| eq_xy.fix_var_in_place(challenge, &mut self.buf));

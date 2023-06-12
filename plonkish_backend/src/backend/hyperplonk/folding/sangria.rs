@@ -2,11 +2,11 @@ use crate::{
     backend::{
         hyperplonk::{
             folding::sangria::{
+                preprocessor::batch_size,
                 preprocessor::preprocess,
                 prover::{evaluate_cross_term, lookup_h_polys, SangriaWitness},
                 verifier::SangriaInstance,
             },
-            preprocessor::batch_size,
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_m_polys, permutation_z_polys,
                 prove_zero_check,
@@ -31,8 +31,8 @@ use crate::{
 use rand::RngCore;
 use std::{borrow::BorrowMut, hash::Hash, iter, marker::PhantomData};
 
-mod preprocessor;
-mod prover;
+pub(crate) mod preprocessor;
+pub(crate) mod prover;
 mod verifier;
 
 #[derive(Clone, Debug)]
@@ -520,7 +520,7 @@ pub(crate) mod test {
             PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
         },
         pcs::{
-            multilinear::{MultilinearHyrax, MultilinearIpa, MultilinearKzg, MultilinearSimulator},
+            multilinear::{MultilinearIpa, MultilinearKzg, MultilinearSimulator},
             univariate::UnivariateKzg,
             AdditiveCommitment, PolynomialCommitmentScheme,
         },
@@ -636,7 +636,6 @@ pub(crate) mod test {
         };
     }
 
-    tests!(hyrax, MultilinearHyrax<grumpkin::G1Affine>, 5..16);
     tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
     tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);

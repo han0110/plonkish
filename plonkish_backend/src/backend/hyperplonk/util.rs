@@ -48,9 +48,9 @@ pub fn vanilla_plonk_circuit_info<F: PrimeField>(
     }
 }
 
-pub fn vanilla_plonk_expression<F: PrimeField>() -> Expression<F> {
+pub fn vanilla_plonk_expression<F: PrimeField>(num_vars: usize) -> Expression<F> {
     let circuit_info = vanilla_plonk_circuit_info(
-        0,
+        num_vars,
         0,
         Default::default(),
         vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
@@ -85,9 +85,9 @@ pub fn vanilla_plonk_with_lookup_circuit_info<F: PrimeField>(
     }
 }
 
-pub fn vanilla_plonk_with_lookup_expression<F: PrimeField>() -> Expression<F> {
+pub fn vanilla_plonk_with_lookup_expression<F: PrimeField>(num_vars: usize) -> Expression<F> {
     let circuit_info = vanilla_plonk_with_lookup_circuit_info(
-        0,
+        num_vars,
         0,
         Default::default(),
         vec![vec![(10, 1)], vec![(11, 1)], vec![(12, 1)]],

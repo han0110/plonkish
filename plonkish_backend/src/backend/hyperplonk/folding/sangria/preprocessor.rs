@@ -10,7 +10,8 @@ use crate::{
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::PrimeField,
+        arithmetic::{div_ceil, PrimeField},
+        chain,
         expression::{
             relaxed::{cross_term_expressions, products, relaxed_expression},
             Expression, Query, Rotation,
@@ -21,10 +22,24 @@ use crate::{
 };
 use std::{
     array,
+    borrow::Cow,
     collections::{BTreeSet, HashSet},
     hash::Hash,
     iter,
 };
+
+pub(crate) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -> usize {
+    let num_lookups = circuit_info.lookups.len();
+    let num_permutation_polys = circuit_info.permutation_polys().len();
+    chain![
+        [circuit_info.preprocess_polys.len() + circuit_info.permutation_polys().len()],
+        circuit_info.num_witness_polys.clone(),
+        [num_lookups],
+        [2 * num_lookups + div_ceil(num_permutation_polys, max_degree(circuit_info, None) - 1)],
+        [1],
+    ]
+    .sum()
+}
 
 #[allow(clippy::type_complexity)]
 pub(super) fn preprocess<F, Pcs>(
@@ -149,7 +164,10 @@ where
         alpha,
     );
 
-    let (pp, vp) = HyperPlonk::preprocess(param, circuit_info)?;
+    let (mut pp, mut vp) = HyperPlonk::preprocess(param, circuit_info)?;
+    let (pcs_pp, pcs_vp) = Pcs::trim(param, 1 << circuit_info.k, batch_size(circuit_info))?;
+    pp.pcs = pcs_pp;
+    vp.pcs = pcs_vp;
 
     Ok((
         SangriaProverParam {
@@ -173,7 +191,27 @@ where
     ))
 }
 
-pub(super) fn lookup_constraints<F: PrimeField>(
+pub(crate) fn max_degree<F: PrimeField>(
+    circuit_info: &PlonkishCircuitInfo<F>,
+    lookup_constraints: Option<&[Expression<F>]>,
+) -> usize {
+    let lookup_constraints = lookup_constraints.map(Cow::Borrowed).unwrap_or_else(|| {
+        let n = circuit_info.lookups.iter().map(Vec::len).max().unwrap_or(1);
+        let dummy_challenges = vec![Expression::zero(); n];
+        Cow::Owned(
+            self::lookup_constraints(circuit_info, &dummy_challenges, &dummy_challenges[0]).0,
+        )
+    });
+    iter::empty()
+        .chain(circuit_info.constraints.iter().map(Expression::degree))
+        .chain(lookup_constraints.iter().map(Expression::degree))
+        .chain(circuit_info.max_degree)
+        .chain(Some(2))
+        .max()
+        .unwrap()
+}
+
+pub(crate) fn lookup_constraints<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
     theta_primes: &[Expression<F>],
     beta_prime: &Expression<F>,
@@ -225,7 +263,7 @@ pub(super) fn lookup_constraints<F: PrimeField>(
     (constraints, sum_check)
 }
 
-fn folding_degree<F: PrimeField>(
+pub(crate) fn folding_degree<F: PrimeField>(
     preprocess_polys: &HashSet<usize>,
     expression: &Expression<F>,
 ) -> usize {

@@ -4,7 +4,7 @@ use crate::{
     util::{
         arithmetic::{div_ceil, steps, PrimeField},
         chain,
-        expression::{CommonPolynomial, Expression, Query, Rotation},
+        expression::{Expression, Query, Rotation},
         Itertools,
     },
 };
@@ -19,7 +19,6 @@ pub(super) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -
         [num_lookups],
         [num_lookups + div_ceil(num_permutation_polys, max_degree(circuit_info, None) - 1)],
     ]
-    .into_iter()
     .sum()
 }
 
@@ -126,7 +125,10 @@ pub(super) fn permutation_constraints<F: PrimeField>(
         .map(|idx| Expression::Polynomial(Query::new(*idx, Rotation::cur())))
         .collect_vec();
     let ids = (0..polys.len())
-        .map(|idx| Expression::CommonPolynomial(CommonPolynomial::Identity(idx)))
+        .map(|idx| {
+            let offset = F::from((idx << circuit_info.k) as u64);
+            Expression::Constant(offset) + Expression::identity()
+        })
         .collect_vec();
     let permutations = (permutation_offset..)
         .map(|idx| Expression::Polynomial(Query::new(idx, Rotation::cur())))
@@ -213,7 +215,8 @@ pub(crate) mod test {
 
     #[test]
     fn compose_vanilla_plonk() {
-        let expression = vanilla_plonk_expression();
+        let num_vars = 3;
+        let expression = vanilla_plonk_expression(num_vars);
         assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))
@@ -224,7 +227,9 @@ pub(crate) mod test {
             ]
             .map(Expression::Polynomial);
             let [beta, gamma, alpha] = &array::from_fn(Expression::<Fr>::Challenge);
-            let [id_1, id_2, id_3] = array::from_fn(Expression::identity);
+            let [id_1, id_2, id_3] = array::from_fn(|idx| {
+                Expression::Constant(Fr::from((idx << num_vars) as u64)) + Expression::identity()
+            });
             let l_1 = Expression::<Fr>::lagrange(1);
             let one = Expression::one();
             let constraints = {
@@ -247,7 +252,8 @@ pub(crate) mod test {
 
     #[test]
     fn compose_vanilla_plonk_with_lookup() {
-        let expression = vanilla_plonk_with_lookup_expression();
+        let num_vars = 3;
+        let expression = vanilla_plonk_with_lookup_expression(num_vars);
         assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))
@@ -263,7 +269,9 @@ pub(crate) mod test {
             ]
             .map(Expression::Polynomial);
             let [beta, gamma, alpha] = &array::from_fn(Expression::<Fr>::Challenge);
-            let [id_1, id_2, id_3] = array::from_fn(Expression::identity);
+            let [id_1, id_2, id_3] = array::from_fn(|idx| {
+                Expression::Constant(Fr::from((idx << num_vars) as u64)) + Expression::identity()
+            });
             let l_1 = &Expression::<Fr>::lagrange(1);
             let one = &Expression::one();
             let lookup_input =

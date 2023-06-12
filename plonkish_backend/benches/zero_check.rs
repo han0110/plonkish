@@ -22,7 +22,7 @@ fn run(num_vars: usize, virtual_poly: VirtualPolynomial<Fr>) {
 
 fn zero_check(c: &mut Criterion) {
     let setup = |num_vars: usize| {
-        let expression = vanilla_plonk_expression();
+        let expression = vanilla_plonk_expression(num_vars);
         let (polys, challenges) =
             rand_vanilla_plonk_assignment::<Fr>(num_vars, seeded_std_rng(), seeded_std_rng());
         let ys = [rand_vec(num_vars, seeded_std_rng())];

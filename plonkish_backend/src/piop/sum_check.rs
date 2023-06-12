@@ -66,6 +66,7 @@ pub fn evaluate<F: PrimeField>(
     x: &[F],
 ) -> F {
     assert!(num_vars > 0 && expression.max_used_rotation_distance() <= num_vars);
+    let identity = identity_eval(x);
     let lagranges = {
         let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
         expression
@@ -78,13 +79,12 @@ pub fn evaluate<F: PrimeField>(
             .collect::<HashMap<_, _>>()
     };
     let eq_xys = ys.iter().map(|y| eq_xy_eval(x, y)).collect_vec();
-    let identity = identity_eval(x);
     expression.evaluate(
         &|scalar| scalar,
         &|poly| match poly {
+            CommonPolynomial::Identity => identity,
             CommonPolynomial::Lagrange(i) => lagranges[&i],
             CommonPolynomial::EqXY(idx) => eq_xys[idx],
-            CommonPolynomial::Identity(idx) => F::from((idx << num_vars) as u64) + identity,
         },
         &|query| evals[&query],
         &|idx| challenges[idx],
@@ -309,7 +309,7 @@ pub(super) mod test {
 
                 run_zero_check::<$impl>(
                     2..16,
-                    |_| vanilla_plonk_expression(),
+                    |num_vars| vanilla_plonk_expression(num_vars),
                     |_| ((), ()),
                     |num_vars| {
                         let (polys, challenges) = rand_vanilla_plonk_assignment(
@@ -336,7 +336,7 @@ pub(super) mod test {
 
                 run_zero_check::<$impl>(
                     2..16,
-                    |_| vanilla_plonk_with_lookup_expression(),
+                    |num_vars| vanilla_plonk_with_lookup_expression(num_vars),
                     |_| ((), ()),
                     |num_vars| {
                         let (polys, challenges) = rand_vanilla_plonk_with_lookup_assignment(

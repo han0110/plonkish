@@ -21,6 +21,7 @@ where
     type ProverParam: Debug;
     type VerifierParam: Debug;
     type ProverState: Debug;
+    type VerifierState: Debug;
 
     fn setup(circuit_info: &PlonkishCircuitInfo<F>, rng: impl RngCore)
         -> Result<Pcs::Param, Error>;
@@ -41,6 +42,7 @@ where
 
     fn verify(
         vp: &Self::VerifierParam,
+        state: impl BorrowMut<Self::VerifierState>,
         instances: &[&[F]],
         transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         rng: impl RngCore,

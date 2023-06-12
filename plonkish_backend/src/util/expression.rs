@@ -7,6 +7,9 @@ use std::{
     ops::{Add, Mul, Neg, Sub},
 };
 
+pub(crate) mod evaluator;
+pub mod relaxed;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rotation(pub i32);
 
@@ -56,9 +59,9 @@ impl Query {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommonPolynomial {
+    Identity,
     Lagrange(i32),
     EqXY(usize),
-    Identity(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,16 +78,16 @@ pub enum Expression<F> {
 }
 
 impl<F: Clone> Expression<F> {
+    pub fn identity() -> Self {
+        Expression::CommonPolynomial(CommonPolynomial::Identity)
+    }
+
     pub fn lagrange(i: i32) -> Self {
         Expression::CommonPolynomial(CommonPolynomial::Lagrange(i))
     }
 
     pub fn eq_xy(idx: usize) -> Self {
         Expression::CommonPolynomial(CommonPolynomial::EqXY(idx))
-    }
-
-    pub fn identity(idx: usize) -> Self {
-        Expression::CommonPolynomial(CommonPolynomial::Identity(idx))
     }
 
     pub fn distribute_powers<'a>(
@@ -188,16 +191,6 @@ impl<F: Clone> Expression<F> {
         )
     }
 
-    pub fn used_identity(&self) -> BTreeSet<usize> {
-        self.used_primitive(
-            &|poly| match poly {
-                CommonPolynomial::Identity(idx) => idx.into(),
-                _ => None,
-            },
-            &|_| None,
-        )
-    }
-
     pub fn used_query(&self) -> BTreeSet<Query> {
         self.used_primitive(&|_| None, &|query| query.into())
     }
@@ -257,8 +250,8 @@ impl<F: Clone> Expression<F> {
         match self {
             Expression::Constant(constant) => write!(writer, "{:?}", *constant),
             Expression::CommonPolynomial(poly) => match poly {
+                CommonPolynomial::Identity => write!(writer, "id"),
                 CommonPolynomial::Lagrange(i) => write!(writer, "l_{i}"),
-                CommonPolynomial::Identity(idx) => write!(writer, "id_{idx}"),
                 CommonPolynomial::EqXY(idx) => write!(writer, "eq_{idx}"),
             },
             Expression::Polynomial(query) => {
@@ -331,57 +324,164 @@ impl<F: Field> Expression<F> {
     }
 
     pub fn simplified(&self, challenges: Option<&[F]>) -> Option<Expression<F>> {
-        let combine = |(scalar, expression): (F, Option<Expression<F>>)| {
-            if scalar == F::ZERO {
-                None
-            } else if let Some(expression) = expression {
-                if scalar == F::ONE {
-                    Some(expression)
-                } else if scalar == -F::ONE {
-                    Some(-expression)
-                } else {
-                    Some(expression * scalar)
+        #[derive(Clone)]
+        enum Case<F> {
+            Constant(F),
+            Sum(F, Expression<F>),
+            Scaled(F, F, Expression<F>),
+        }
+
+        impl<F: Field> Case<F> {
+            fn into_simplified(self) -> Self {
+                match self {
+                    Case::Scaled(scalar, constant, expression) => {
+                        if scalar == F::ZERO {
+                            Case::Constant(F::ZERO)
+                        } else if scalar == F::ONE {
+                            Case::Sum(constant, expression)
+                        } else if scalar == -F::ONE {
+                            Case::Sum(-constant, -expression)
+                        } else {
+                            Case::Scaled(scalar, constant, expression)
+                        }
+                    }
+                    rest => rest,
                 }
-            } else {
-                Some(Expression::Constant(scalar))
             }
-        };
-        let output = self.evaluate(
-            &|constant| (constant, None),
-            &|poly| (F::ONE, Some(poly.into())),
-            &|query| (F::ONE, Some(query.into())),
+
+            fn into_expression(self) -> Option<Expression<F>> {
+                match self {
+                    Case::Constant(constant) => Some(Expression::Constant(constant)),
+                    Case::Sum(constant, expression) => {
+                        if constant == F::ZERO {
+                            Some(expression)
+                        } else {
+                            Some(expression + Expression::Constant(constant))
+                        }
+                    }
+                    Case::Scaled(scalar, constant, expression) => {
+                        debug_assert!(![F::ZERO, F::ONE, -F::ONE].contains(&scalar));
+                        Case::Sum(scalar * constant, expression * scalar).into_expression()
+                    }
+                }
+            }
+        }
+
+        impl<F: Field> Add for Case<F> {
+            type Output = Self;
+
+            fn add(self, rhs: Self) -> Self::Output {
+                match (self, rhs) {
+                    (Case::Constant(lhs), Case::Constant(rhs)) => Case::Constant(lhs + rhs),
+                    (Case::Constant(lhs), Case::Sum(rhs, expression))
+                    | (Case::Sum(rhs, expression), Case::Constant(lhs)) => {
+                        Case::Sum(lhs + rhs, expression)
+                    }
+                    (
+                        Case::Sum(lhs_constant, lhs_expression),
+                        Case::Sum(rhs_constant, rhs_expression),
+                    ) => Case::Sum(lhs_constant + rhs_constant, lhs_expression + rhs_expression),
+                    (Case::Constant(lhs), Case::Scaled(scalar, rhs, expression))
+                    | (Case::Scaled(scalar, rhs, expression), Case::Constant(lhs)) => {
+                        Case::Sum(lhs + scalar * rhs, expression * scalar)
+                    }
+                    (
+                        Case::Sum(lhs_constant, lhs_expression),
+                        Case::Scaled(rhs_scalar, rhs_constant, rhs_expression),
+                    )
+                    | (
+                        Case::Scaled(rhs_scalar, rhs_constant, rhs_expression),
+                        Case::Sum(lhs_constant, lhs_expression),
+                    ) => {
+                        let rhs_constant = rhs_scalar * rhs_constant;
+                        let rhs_expression = rhs_expression * rhs_scalar;
+                        Case::Sum(lhs_constant + rhs_constant, lhs_expression + rhs_expression)
+                    }
+                    (
+                        Case::Scaled(lhs_scalar, lhs_constant, lhs_expression),
+                        Case::Scaled(rhs_scalar, rhs_constant, rhs_expression),
+                    ) => {
+                        let lhs_constant = lhs_scalar * lhs_constant;
+                        let lhs_expression = lhs_expression * lhs_scalar;
+                        let rhs_constant = rhs_scalar * rhs_constant;
+                        let rhs_expression = rhs_expression * rhs_scalar;
+                        Case::Sum(lhs_constant + rhs_constant, lhs_expression + rhs_expression)
+                    }
+                }
+            }
+        }
+
+        impl<F: Field> Neg for Case<F> {
+            type Output = Self;
+
+            fn neg(self) -> Self::Output {
+                match self {
+                    Case::Constant(constant) => Case::Constant(-constant),
+                    Case::Sum(constant, expression) => Case::Sum(-constant, -expression),
+                    Case::Scaled(scalar, constant, expression) => {
+                        Case::Scaled(-scalar, constant, expression)
+                    }
+                }
+                .into_simplified()
+            }
+        }
+
+        impl<F: Field> Mul for Case<F> {
+            type Output = Self;
+
+            fn mul(self, rhs: Self) -> Self::Output {
+                match (self, rhs) {
+                    (Case::Constant(lhs), Case::Constant(rhs)) => Case::Constant(lhs * rhs),
+                    (Case::Constant(scalar), Case::Sum(constant, expression))
+                    | (Case::Sum(constant, expression), Case::Constant(scalar)) => {
+                        Case::Scaled(scalar, constant, expression)
+                    }
+                    (Case::Constant(lhs), Case::Scaled(rhs, constant, expression))
+                    | (Case::Scaled(rhs, constant, expression), Case::Constant(lhs)) => {
+                        Case::Scaled(lhs * rhs, constant, expression)
+                    }
+                    (lhs, rhs) => match (lhs.into_expression(), rhs.into_expression()) {
+                        (Some(lhs), Some(rhs)) => Case::Sum(F::ZERO, lhs * rhs),
+                        (Some(expression), None) | (None, Some(expression)) => {
+                            Case::Sum(F::ZERO, expression)
+                        }
+                        (None, None) => Case::Constant(F::ZERO),
+                    },
+                }
+                .into_simplified()
+            }
+        }
+
+        impl<F: Field> Mul<F> for Case<F> {
+            type Output = Self;
+
+            fn mul(self, rhs: F) -> Self::Output {
+                match self {
+                    Case::Constant(lhs) => Case::Constant(lhs * rhs),
+                    Case::Sum(constant, expression) => Case::Scaled(rhs, constant, expression),
+                    Case::Scaled(lhs, constant, expression) => {
+                        Case::Scaled(lhs * rhs, constant, expression)
+                    }
+                }
+                .into_simplified()
+            }
+        }
+
+        self.evaluate(
+            &|constant| Case::Constant(constant),
+            &|poly| Case::Sum(F::ZERO, poly.into()),
+            &|query| Case::Sum(F::ZERO, query.into()),
             &|challenge| {
                 challenges
-                    .map(|challenges| (challenges[challenge], None))
-                    .unwrap_or_else(|| (F::ONE, Some(Expression::Challenge(challenge))))
+                    .map(|challenges| Case::Constant(challenges[challenge]))
+                    .unwrap_or_else(|| Case::Sum(F::ZERO, Expression::Challenge(challenge)))
             },
-            &|(scalar, expression)| match expression {
-                Some(expression) if scalar == F::ONE => (F::ONE, Some(-expression)),
-                _ => (-scalar, expression),
-            },
-            &|lhs, rhs| match (lhs, rhs) {
-                ((lhs, None), (rhs, None)) => (lhs + rhs, None),
-                (lhs, rhs) => {
-                    let output = match (combine(lhs), combine(rhs)) {
-                        (Some(lhs), Some(rhs)) => Some(lhs + rhs),
-                        (Some(expression), None) | (None, Some(expression)) => Some(expression),
-                        (None, None) => None,
-                    };
-                    let scalar = if output.is_some() { F::ONE } else { F::ZERO };
-                    (scalar, output)
-                }
-            },
-            &|(lhs_scalar, lhs_expression), (rhs_scalar, rhs_expression)| {
-                let output = match (lhs_expression, rhs_expression) {
-                    (Some(lhs), Some(rhs)) => Some(lhs * rhs),
-                    (Some(expression), None) | (None, Some(expression)) => Some(expression),
-                    (None, None) => None,
-                };
-                (lhs_scalar * rhs_scalar, output)
-            },
-            &|(lhs, expression), rhs| (lhs * rhs, expression),
-        );
-        combine(output)
+            &|case| -case,
+            &|lhs, rhs| lhs + rhs,
+            &|lhs, rhs| lhs * rhs,
+            &|lhs, rhs| lhs * rhs,
+        )
+        .into_expression()
     }
 }
 
@@ -465,8 +565,8 @@ fn merge_left_right<T: Ord>(
 ) -> Option<BTreeSet<T>> {
     match (lhs, rhs) {
         (Some(lhs), None) | (None, Some(lhs)) => Some(lhs),
-        (Some(mut lhs), Some(rhs)) => {
-            lhs.extend(rhs);
+        (Some(mut lhs), Some(mut rhs)) => {
+            lhs.append(&mut rhs);
             Some(lhs)
         }
         _ => None,

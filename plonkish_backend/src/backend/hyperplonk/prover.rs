@@ -70,28 +70,15 @@ pub(super) fn lookup_compressed_polys<F: PrimeField>(
             .map(|i| (i, bh[i.rem_euclid(1 << num_vars) as usize]))
             .collect::<HashSet<_>>()
     };
-    let identities = {
-        let max_used_identity = expression
-            .used_identity()
-            .into_iter()
-            .max()
-            .unwrap_or_default();
-        (0..=max_used_identity)
-            .map(|idx| (idx as u64) << num_vars)
-            .collect_vec()
-    };
     lookups
         .iter()
-        .map(|lookup| {
-            lookup_compressed_poly(lookup, &lagranges, &identities, polys, challenges, betas)
-        })
+        .map(|lookup| lookup_compressed_poly(lookup, &lagranges, polys, challenges, betas))
         .collect()
 }
 
 pub(super) fn lookup_compressed_poly<F: PrimeField>(
     lookup: &[(Expression<F>, Expression<F>)],
     lagranges: &HashSet<(i32, usize)>,
-    identities: &[u64],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
     betas: &[F],
@@ -109,15 +96,13 @@ pub(super) fn lookup_compressed_poly<F: PrimeField>(
                         *compressed = expression.evaluate(
                             &|constant| constant,
                             &|common_poly| match common_poly {
+                                CommonPolynomial::Identity => F::from(b as u64),
                                 CommonPolynomial::Lagrange(i) => {
                                     if lagranges.contains(&(i, b)) {
                                         F::ONE
                                     } else {
                                         F::ZERO
                                     }
-                                }
-                                CommonPolynomial::Identity(idx) => {
-                                    F::from(b as u64 + identities[idx])
                                 }
                                 CommonPolynomial::EqXY(_) => unreachable!(),
                             },
@@ -368,6 +353,27 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     y: Vec<F>,
     transcript: &mut impl FieldTranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
+    prove_sum_check(
+        num_instance_poly,
+        expression,
+        F::ZERO,
+        polys,
+        challenges,
+        y,
+        transcript,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn prove_sum_check<F: PrimeField>(
+    num_instance_poly: usize,
+    expression: &Expression<F>,
+    sum: F,
+    polys: &[&MultilinearPolynomial<F>],
+    challenges: Vec<F>,
+    y: Vec<F>,
+    transcript: &mut impl FieldTranscriptWrite<F>,
+) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
@@ -375,7 +381,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
         &(),
         num_vars,
         virtual_poly,
-        F::ZERO,
+        sum,
         transcript,
     )?;
 

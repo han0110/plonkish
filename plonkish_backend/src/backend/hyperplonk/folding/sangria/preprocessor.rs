@@ -13,20 +13,14 @@ use crate::{
         arithmetic::{div_ceil, PrimeField},
         chain,
         expression::{
-            relaxed::{cross_term_expressions, products, relaxed_expression},
+            relaxed::{cross_term_expressions, products, relaxed_expression, PolynomialSet},
             Expression, Query, Rotation,
         },
         Itertools,
     },
     Error,
 };
-use std::{
-    array,
-    borrow::Cow,
-    collections::{BTreeSet, HashSet},
-    hash::Hash,
-    iter,
-};
+use std::{array, borrow::Cow, collections::BTreeSet, hash::Hash, iter};
 
 pub(crate) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -> usize {
     let num_lookups = circuit_info.lookups.len();
@@ -71,11 +65,22 @@ where
         .max()
         .unwrap();
 
-    let permutation_polys = circuit_info.permutation_polys();
-    let preprocess_polys = iter::empty()
-        .chain((circuit_info.num_instances.len()..).take(circuit_info.preprocess_polys.len()))
-        .chain((circuit_info.num_poly()..).take(permutation_polys.len()))
-        .collect();
+    let num_witness_polys = circuit_info.num_witness_polys.iter().sum::<usize>();
+    let witness_poly_offset =
+        circuit_info.num_instances.len() + circuit_info.preprocess_polys.len();
+    let builtin_witness_poly_offset =
+        witness_poly_offset + num_witness_polys + circuit_info.permutation_polys().len();
+
+    let poly_set = PolynomialSet {
+        preprocess: iter::empty()
+            .chain((circuit_info.num_instances.len()..).take(circuit_info.preprocess_polys.len()))
+            .collect(),
+        folding: iter::empty()
+            .chain(0..circuit_info.num_instances.len())
+            .chain((witness_poly_offset..).take(num_witness_polys))
+            .chain((builtin_witness_poly_offset..).take(3 * circuit_info.lookups.len()))
+            .collect(),
+    };
 
     let num_constraints = circuit_info.constraints.len() + lookup_constraints.len();
     let num_alpha_primes = num_constraints.checked_sub(1).unwrap_or_default();
@@ -87,7 +92,7 @@ where
             .collect_vec();
         let folding_degrees = constraints
             .iter()
-            .map(|constraint| folding_degree(&preprocess_polys, constraint))
+            .map(|constraint| folding_degree(&poly_set.preprocess, constraint))
             .enumerate()
             .sorted_by(|a, b| b.1.cmp(&a.1))
             .collect_vec();
@@ -106,30 +111,14 @@ where
                     .map(|(constraint, challenge)| constraint * challenge),
             )
             .sum();
-        products(&preprocess_polys, &constraint)
+        products(&poly_set.preprocess, &constraint)
     };
 
-    let num_witness_polys = circuit_info.num_witness_polys.iter().sum::<usize>();
-    let witness_poly_offset =
-        circuit_info.num_instances.len() + circuit_info.preprocess_polys.len();
-    let internal_witness_poly_offset =
-        witness_poly_offset + num_witness_polys + permutation_polys.len();
-
-    let folding_polys = iter::empty()
-        .chain(0..circuit_info.num_instances.len())
-        .chain((witness_poly_offset..).take(num_witness_polys))
-        .chain((internal_witness_poly_offset..).take(3 * circuit_info.lookups.len()))
-        .collect::<BTreeSet<_>>();
     let num_folding_wintess_polys = num_witness_polys + 3 * circuit_info.lookups.len();
     let num_folding_challenges = challenge_offset + num_theta_primes + 1 + num_alpha_primes;
 
-    let cross_term_expressions = cross_term_expressions(
-        circuit_info.num_instances.len(),
-        circuit_info.preprocess_polys.len(),
-        folding_polys,
-        num_folding_challenges,
-        &products,
-    );
+    let cross_term_expressions =
+        cross_term_expressions(&poly_set, &products, num_folding_challenges);
     let num_cross_terms = cross_term_expressions.len();
 
     let [beta, gamma, alpha] =
@@ -144,10 +133,7 @@ where
 
     let relexed_constraint = {
         let u = num_folding_challenges + 3;
-        let e_poly = circuit_info.num_poly()
-            + permutation_polys.len()
-            + circuit_info.lookups.len() * 3
-            + num_chunks;
+        let e_poly = builtin_witness_poly_offset + circuit_info.lookups.len() * 3 + num_chunks;
         relaxed_expression(&products, u)
             - Expression::Polynomial(Query::new(e_poly, Rotation::cur()))
     };
@@ -264,7 +250,7 @@ pub(crate) fn lookup_constraints<F: PrimeField>(
 }
 
 pub(crate) fn folding_degree<F: PrimeField>(
-    preprocess_polys: &HashSet<usize>,
+    preprocess_polys: &BTreeSet<usize>,
     expression: &Expression<F>,
 ) -> usize {
     expression.evaluate(

@@ -4,22 +4,26 @@ use crate::util::{
     BitIndex, Itertools,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     iter,
 };
 
+pub(crate) struct PolynomialSet {
+    pub(crate) preprocess: BTreeSet<usize>,
+    pub(crate) folding: BTreeSet<usize>,
+}
+
 pub(crate) fn cross_term_expressions<F: PrimeField + Ord>(
-    num_instance_polys: usize,
-    num_preprocess_polys: usize,
-    folding_polys: BTreeSet<usize>,
-    num_challenges: usize,
+    poly_set: &PolynomialSet,
     products: &[Product<F>],
+    num_challenges: usize,
 ) -> Vec<Expression<F>> {
     let folding_degree = folding_degree(products);
     let num_ts = folding_degree.checked_sub(1).unwrap_or_default();
     let u = num_challenges;
-    let folding_poly_indices = folding_polys.iter().zip(0..).collect::<BTreeMap<_, _>>();
+    let [preprocess_poly_indices, folding_poly_indices] = [&poly_set.preprocess, &poly_set.folding]
+        .map(|polys| polys.iter().zip(0..).collect::<BTreeMap<_, _>>());
 
     products
         .iter()
@@ -30,7 +34,7 @@ pub(crate) fn cross_term_expressions<F: PrimeField + Ord>(
                     &|constant| (constant, Vec::new()),
                     &|common_poly| (F::ONE, vec![Expression::CommonPolynomial(common_poly)]),
                     &|query| {
-                        let poly = query.poly() - num_instance_polys;
+                        let poly = preprocess_poly_indices[&query.poly()];
                         (
                             F::ONE,
                             vec![Expression::Polynomial(Query::new(poly, query.rotation()))],
@@ -54,11 +58,11 @@ pub(crate) fn cross_term_expressions<F: PrimeField + Ord>(
                             |(mut scalar, mut exprs), (nth, foldee)| {
                                 let (poly_offset, challenge_offset) = if idx.nth_bit(nth) {
                                     (
-                                        num_preprocess_polys + folding_poly_indices.len(),
+                                        preprocess_poly_indices.len() + folding_poly_indices.len(),
                                         num_challenges + 1,
                                     )
                                 } else {
-                                    (num_preprocess_polys, 0)
+                                    (preprocess_poly_indices.len(), 0)
                                 };
                                 match foldee {
                                     None => {
@@ -118,7 +122,7 @@ pub(crate) fn relaxed_expression<F: PrimeField>(
 }
 
 pub(crate) fn products<F: PrimeField>(
-    preprocess_polys: &HashSet<usize>,
+    preprocess_polys: &BTreeSet<usize>,
     constraint: &Expression<F>,
 ) -> Vec<Product<F>> {
     let products = constraint.evaluate(

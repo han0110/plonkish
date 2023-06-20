@@ -113,13 +113,13 @@ pub(super) fn permutation_constraints<F: PrimeField>(
     max_degree: usize,
     beta: &Expression<F>,
     gamma: &Expression<F>,
-    num_lookup_witness_polys: usize,
+    num_builtin_witness_polys: usize,
 ) -> (usize, Vec<Expression<F>>) {
     let permutation_polys = circuit_info.permutation_polys();
     let chunk_size = max_degree - 1;
     let num_chunks = div_ceil(permutation_polys.len(), chunk_size);
     let permutation_offset = circuit_info.num_poly();
-    let z_offset = permutation_offset + permutation_polys.len() + num_lookup_witness_polys;
+    let z_offset = permutation_offset + permutation_polys.len() + num_builtin_witness_polys;
     let polys = permutation_polys
         .iter()
         .map(|idx| Expression::Polynomial(Query::new(*idx, Rotation::cur())))

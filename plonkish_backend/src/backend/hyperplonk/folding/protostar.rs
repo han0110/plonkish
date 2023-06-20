@@ -3,14 +3,17 @@ use crate::{
         hyperplonk::{
             folding::protostar::{
                 preprocessor::{batch_size, preprocess},
-                prover::{evaluate_cross_term, lookup_h_polys, ProtostarWitness},
+                prover::{
+                    evaluate_cross_term_sum, evaluate_zeta_cross_term, lookup_h_polys,
+                    powers_of_zeta_poly, ProtostarWitness,
+                },
                 verifier::ProtostarInstance,
             },
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_m_polys, permutation_z_polys,
-                prove_zero_check,
+                prove_sum_check,
             },
-            verifier::verify_zero_check,
+            verifier::verify_sum_check,
             HyperPlonk, HyperPlonkProverParam, HyperPlonkVerifierParam,
         },
         PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding,
@@ -48,8 +51,9 @@ where
     num_alpha_primes: usize,
     num_folding_wintess_polys: usize,
     num_folding_challenges: usize,
-    cross_term_expressions: Vec<Expression<F>>,
-    zero_check_expression: Expression<F>,
+    compressed_cross_term_expressions: Vec<Expression<F>>,
+    zeta_cross_term_expression: Expression<F>,
+    sum_check_expression: Expression<F>,
 }
 
 impl<F, Pcs> ProtostarProverParam<F, Pcs>
@@ -81,8 +85,8 @@ where
     num_alpha_primes: usize,
     num_folding_wintess_polys: usize,
     num_folding_challenges: usize,
-    num_cross_terms: usize,
-    zero_check_expression: Expression<F>,
+    num_compressed_cross_terms: usize,
+    sum_check_expression: Expression<F>,
 }
 
 impl<F, Pcs> ProtostarVerifierParam<F, Pcs>
@@ -186,8 +190,9 @@ where
             pp,
             num_theta_primes,
             num_alpha_primes,
-            cross_term_expressions,
-            zero_check_expression,
+            compressed_cross_term_expressions,
+            zeta_cross_term_expression,
+            sum_check_expression,
             ..
         } = pp;
         let state = state.borrow_mut();
@@ -204,7 +209,7 @@ where
         let mut witness_polys = Vec::with_capacity(pp.num_witness_polys.iter().sum());
         let mut witness_comms = Vec::with_capacity(witness_polys.len());
         let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>());
-        for (round, (num_witness_polys, num_folding_challenges)) in pp
+        for (round, (num_witness_polys, num_challenges)) in pp
             .num_witness_polys
             .iter()
             .zip_eq(pp.num_challenges.iter())
@@ -221,7 +226,7 @@ where
 
             witness_comms.extend(Pcs::batch_commit_and_write(&pp.pcs, &polys, transcript)?);
             witness_polys.extend(polys);
-            challenges.extend(transcript.squeeze_challenges(*num_folding_challenges));
+            challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
 
         // Round n
@@ -265,6 +270,13 @@ where
 
         // Round n+2
 
+        let zeta = transcript.squeeze_challenge();
+
+        let powers_of_zeta_poly = powers_of_zeta_poly(pp.num_vars, zeta);
+        let powers_of_zeta_comm = Pcs::commit_and_write(&pp.pcs, &powers_of_zeta_poly, transcript)?;
+
+        // Round n+3
+
         let alpha_primes = transcript.squeeze_challenges(*num_alpha_primes);
 
         let incoming = ProtostarWitness::from_committed(
@@ -273,22 +285,28 @@ where
             iter::empty()
                 .chain(witness_polys)
                 .chain(lookup_m_polys)
-                .chain(lookup_h_polys.into_iter().flatten()),
+                .chain(lookup_h_polys.into_iter().flatten())
+                .chain(Some(powers_of_zeta_poly)),
             iter::empty()
                 .chain(witness_comms)
                 .chain(lookup_m_comms)
-                .chain(lookup_h_comms),
+                .chain(lookup_h_comms)
+                .chain(Some(powers_of_zeta_comm)),
             iter::empty()
                 .chain(challenges)
                 .chain(theta_primes)
                 .chain(Some(beta_prime))
+                .chain(Some(zeta))
                 .chain(alpha_primes)
                 .collect(),
         );
 
-        let timer = start_timer(|| format!("cross_term_polys-{}", cross_term_expressions.len()));
-        let cross_term_polys = evaluate_cross_term(
-            cross_term_expressions,
+        let timer = start_timer(|| {
+            let len = compressed_cross_term_expressions.len();
+            format!("compressed_cross_term_polys-{len}",)
+        });
+        let compressed_cross_term_sums = evaluate_cross_term_sum(
+            compressed_cross_term_expressions,
             pp.num_vars,
             &pp.preprocess_polys,
             &state.witness,
@@ -296,16 +314,32 @@ where
         );
         end_timer(timer);
 
-        let cross_term_comms = Pcs::batch_commit_and_write(&pp.pcs, &cross_term_polys, transcript)?;
+        let timer = start_timer(|| "zeta_cross_term_polys");
+        let zeta_cross_term_poly = evaluate_zeta_cross_term(
+            zeta_cross_term_expression,
+            pp.num_vars,
+            &pp.preprocess_polys,
+            &state.witness,
+            &incoming,
+        );
+        end_timer(timer);
 
-        // Round n+3
+        transcript.write_field_elements(&compressed_cross_term_sums)?;
+        let zeta_cross_term_comm =
+            Pcs::commit_and_write(&pp.pcs, &zeta_cross_term_poly, transcript)?;
+
+        // Round n+4
 
         let r = transcript.squeeze_challenge();
 
         let timer = start_timer(|| "fold");
-        state
-            .witness
-            .fold(&incoming, &cross_term_polys, &cross_term_comms, &r);
+        state.witness.fold(
+            &incoming,
+            &compressed_cross_term_sums,
+            &zeta_cross_term_poly,
+            &zeta_cross_term_comm,
+            &r,
+        );
         end_timer(timer);
 
         if !state.is_folding {
@@ -334,7 +368,7 @@ where
             let permutation_z_comms =
                 Pcs::batch_commit_and_write(&pp.pcs, &permutation_z_polys, transcript)?;
 
-            // Round n+4
+            // Round n+5
 
             let alpha = transcript.squeeze_challenge();
             let y = transcript.squeeze_challenges(pp.num_vars);
@@ -343,16 +377,17 @@ where
                 .chain(polys)
                 .chain(&state.witness.witness_polys[builtin_witness_poly_offset..])
                 .chain(permutation_z_polys.iter())
-                .chain(Some(&state.witness.e_poly))
+                .chain(Some(&state.witness.zeta_e_poly))
                 .collect_vec();
             let challenges = iter::empty()
                 .chain(state.witness.instance.challenges.iter().copied())
                 .chain([beta, gamma, alpha, state.witness.instance.u])
                 .collect();
             let (points, evals) = {
-                prove_zero_check(
+                prove_sum_check(
                     pp.num_instances.len(),
-                    zero_check_expression,
+                    sum_check_expression,
+                    state.witness.instance.compressed_e_sum,
                     &polys,
                     challenges,
                     y,
@@ -370,7 +405,7 @@ where
                 .chain(&pp.permutation_comms)
                 .chain(&state.witness.instance.witness_comms[builtin_witness_poly_offset..])
                 .chain(&permutation_z_comms)
-                .chain(Some(&state.witness.instance.e_comm))
+                .chain(Some(&zeta_cross_term_comm))
                 .collect_vec();
             let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
             Pcs::batch_open(&pp.pcs, polys, comms, &points, &evals, transcript)?;
@@ -391,8 +426,8 @@ where
             vp,
             num_theta_primes,
             num_alpha_primes,
-            num_cross_terms,
-            zero_check_expression,
+            num_compressed_cross_terms,
+            sum_check_expression,
             ..
         } = vp;
         let state = state.borrow_mut();
@@ -429,6 +464,12 @@ where
 
         // Round n+2
 
+        let zeta = transcript.squeeze_challenge();
+
+        let powers_of_zeta_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
+
+        // Round n+3
+
         let alpha_primes = transcript.squeeze_challenges(*num_alpha_primes);
 
         let incoming = ProtostarInstance::from_committed(
@@ -436,22 +477,31 @@ where
             iter::empty()
                 .chain(witness_comms)
                 .chain(lookup_m_comms)
-                .chain(lookup_h_comms),
+                .chain(lookup_h_comms)
+                .chain(Some(powers_of_zeta_comm)),
             iter::empty()
                 .chain(challenges)
                 .chain(theta_primes)
                 .chain(Some(beta_prime))
+                .chain(Some(zeta))
                 .chain(alpha_primes)
                 .collect(),
         );
 
-        let cross_term_comms = Pcs::read_commitments(&vp.pcs, *num_cross_terms, transcript)?;
+        let compressed_cross_term_sums =
+            transcript.read_field_elements(*num_compressed_cross_terms)?;
+        let zeta_cross_term_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
 
-        // Round n+3
+        // Round n+4
 
         let r = transcript.squeeze_challenge();
 
-        state.instance.fold(&incoming, &cross_term_comms, &r);
+        state.instance.fold(
+            &incoming,
+            &compressed_cross_term_sums,
+            &zeta_cross_term_comm,
+            &r,
+        );
 
         if !state.is_folding {
             let beta = transcript.squeeze_challenge();
@@ -460,7 +510,7 @@ where
             let permutation_z_comms =
                 Pcs::read_commitments(&vp.pcs, vp.num_permutation_z_polys, transcript)?;
 
-            // Round n+4
+            // Round n+5
 
             let alpha = transcript.squeeze_challenge();
             let y = transcript.squeeze_challenges(vp.num_vars);
@@ -471,9 +521,10 @@ where
                 .chain([beta, gamma, alpha, state.instance.u])
                 .collect_vec();
             let (points, evals) = {
-                verify_zero_check(
+                verify_sum_check(
                     vp.num_vars,
-                    zero_check_expression,
+                    sum_check_expression,
+                    state.instance.compressed_e_sum,
                     &instances,
                     &challenges,
                     &y,
@@ -492,7 +543,7 @@ where
                 .chain(vp.permutation_comms.iter().map(|(_, comm)| comm))
                 .chain(&state.instance.witness_comms[builtin_witness_poly_offset..])
                 .chain(&permutation_z_comms)
-                .chain(Some(&state.instance.e_comm))
+                .chain(Some(&state.instance.zeta_e_comm))
                 .collect_vec();
             Pcs::batch_verify(&vp.pcs, comms, &points, &evals, transcript)?;
         }

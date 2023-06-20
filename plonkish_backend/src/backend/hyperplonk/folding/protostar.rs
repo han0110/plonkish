@@ -21,7 +21,7 @@ use crate::{
     pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::PrimeField,
+        arithmetic::{powers, PrimeField},
         end_timer,
         expression::Expression,
         start_timer,
@@ -231,7 +231,10 @@ where
 
         // Round n
 
-        let theta_primes = transcript.squeeze_challenges(*num_theta_primes);
+        let theta_primes = powers(transcript.squeeze_challenge())
+            .skip(1)
+            .take(*num_theta_primes)
+            .collect_vec();
 
         let timer = start_timer(|| format!("lookup_compressed_polys-{}", pp.lookups.len()));
         let lookup_compressed_polys = {
@@ -277,7 +280,10 @@ where
 
         // Round n+3
 
-        let alpha_primes = transcript.squeeze_challenges(*num_alpha_primes);
+        let alpha_primes = powers(transcript.squeeze_challenge())
+            .skip(1)
+            .take(*num_alpha_primes)
+            .collect_vec();
 
         let incoming = ProtostarWitness::from_committed(
             pp.num_vars,
@@ -452,7 +458,10 @@ where
 
         // Round n
 
-        let theta_primes = transcript.squeeze_challenges(*num_theta_primes);
+        let theta_primes = powers(transcript.squeeze_challenge())
+            .skip(1)
+            .take(*num_theta_primes)
+            .collect_vec();
 
         let lookup_m_comms = Pcs::read_commitments(&vp.pcs, vp.num_lookups, transcript)?;
 
@@ -470,7 +479,10 @@ where
 
         // Round n+3
 
-        let alpha_primes = transcript.squeeze_challenges(*num_alpha_primes);
+        let alpha_primes = powers(transcript.squeeze_challenge())
+            .skip(1)
+            .take(*num_alpha_primes)
+            .collect_vec();
 
         let incoming = ProtostarInstance::from_committed(
             instances,

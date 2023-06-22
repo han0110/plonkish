@@ -4,7 +4,7 @@ use crate::{
             folding::protostar::{
                 preprocessor::{batch_size, preprocess},
                 prover::{
-                    evaluate_cross_term_sum, evaluate_zeta_cross_term, lookup_h_polys,
+                    evaluate_compressed_cross_term_sum, evaluate_zeta_cross_term, lookup_h_polys,
                     powers_of_zeta_poly, ProtostarWitness,
                 },
                 verifier::ProtostarInstance,
@@ -112,7 +112,7 @@ where
     Pcs: PolynomialCommitmentScheme<F>,
 {
     is_folding: bool,
-    witness: ProtostarWitness<F, Pcs>,
+    witness: ProtostarWitness<F, Pcs::Commitment, Pcs::Polynomial>,
 }
 
 impl<F, Pcs> ProtostarProverState<F, Pcs>
@@ -132,7 +132,7 @@ where
     Pcs: PolynomialCommitmentScheme<F>,
 {
     is_folding: bool,
-    instance: ProtostarInstance<F, Pcs>,
+    instance: ProtostarInstance<F, Pcs::Commitment>,
 }
 
 impl<F, Pcs> ProtostarVerifierState<F, Pcs>
@@ -311,7 +311,7 @@ where
             let len = compressed_cross_term_expressions.len();
             format!("compressed_cross_term_polys-{len}",)
         });
-        let compressed_cross_term_sums = evaluate_cross_term_sum(
+        let compressed_cross_term_sums = evaluate_compressed_cross_term_sum(
             compressed_cross_term_expressions,
             pp.num_vars,
             &pp.preprocess_polys,

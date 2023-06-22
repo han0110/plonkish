@@ -1,22 +1,19 @@
 use crate::{
     backend::hyperplonk::{
-        folding::{
-            protostar::verifier::ProtostarInstance,
-            sangria::prover::{evaluate_cross_term_inner, HadamardEvaluator},
-        },
+        folding::{protostar::verifier::ProtostarInstance, sangria::prover::HadamardEvaluator},
         prover::instance_polys,
     },
     pcs::{AdditiveCommitment, Polynomial},
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, powers, BooleanHypercube, PrimeField},
-        expression::Expression,
+        expression::{Expression, Rotation},
         izip, izip_eq,
-        parallel::{num_threads, par_map_collect, parallelize_iter},
+        parallel::{num_threads, par_map_collect, parallelize, parallelize_iter},
         Itertools,
     },
 };
-use std::{borrow::Cow, iter, slice};
+use std::{borrow::Cow, iter};
 
 pub(super) use crate::backend::hyperplonk::folding::sangria::prover::lookup_h_polys;
 
@@ -125,20 +122,47 @@ where
 }
 
 pub(crate) fn evaluate_zeta_cross_term<F: PrimeField, C>(
-    zeta_cross_term_expression: &Expression<F>,
     num_vars: usize,
-    preprocess_polys: &[MultilinearPolynomial<F>],
+    zeta_nth_back: usize,
     folded: &ProtostarWitness<F, C, MultilinearPolynomial<F>>,
     incoming: &ProtostarWitness<F, C, MultilinearPolynomial<F>>,
 ) -> MultilinearPolynomial<F> {
-    let ev = init_hadamard_evaluator(
-        slice::from_ref(zeta_cross_term_expression),
-        num_vars,
-        preprocess_polys,
-        folded,
-        incoming,
-    );
-    evaluate_cross_term_inner(&ev).into_iter().next().unwrap()
+    let [(folded_pow, folded_zeta, folded_u), (incoming_pow, incoming_zeta, incoming_u)] =
+        [folded, incoming].map(|witness| {
+            let pow = witness.witness_polys.last().unwrap();
+            let zeta = witness
+                .instance
+                .challenges
+                .iter()
+                .nth_back(zeta_nth_back)
+                .unwrap();
+            (pow, zeta, witness.instance.u)
+        });
+    assert_eq!(incoming_u, F::ONE);
+
+    let size = 1 << num_vars;
+    let mut cross_term = vec![F::ZERO; size];
+
+    let bh = BooleanHypercube::new(num_vars);
+    let next_map = bh.rotation_map(Rotation::next());
+    parallelize(&mut cross_term, |(cross_term, start)| {
+        cross_term
+            .iter_mut()
+            .zip(start..)
+            .for_each(|(cross_term, b)| {
+                *cross_term = folded_pow[next_map[b]] + folded_u * incoming_pow[next_map[b]]
+                    - (folded_pow[b] * incoming_zeta + incoming_pow[b] * folded_zeta);
+            })
+    });
+    let b_0 = 0;
+    let b_last = bh.rotate(1, Rotation::prev());
+    cross_term[b_0] +=
+        folded_pow[b_0] * incoming_zeta + incoming_pow[b_0] * folded_zeta - folded_u.double();
+    cross_term[b_last] += folded_pow[b_last] * incoming_zeta + incoming_pow[b_last] * folded_zeta
+        - folded_u * incoming_zeta
+        - folded_zeta;
+
+    MultilinearPolynomial::new(cross_term)
 }
 
 fn init_hadamard_evaluator<'a, F: PrimeField, C>(

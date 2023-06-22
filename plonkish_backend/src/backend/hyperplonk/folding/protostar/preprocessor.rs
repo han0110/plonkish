@@ -123,12 +123,6 @@ where
     let compressed_cross_term_expressions =
         cross_term_expressions(&poly_set, &compressed_products, num_folding_challenges);
     let num_compressed_cross_terms = compressed_cross_term_expressions.len();
-    let zeta_cross_term_expression = {
-        let mut zeta_cross_term_expressions =
-            cross_term_expressions(&poly_set, &zeta_products, num_folding_challenges);
-        assert_eq!(zeta_cross_term_expressions.len(), 1);
-        zeta_cross_term_expressions.pop().unwrap()
-    };
 
     let [beta, gamma, alpha] =
         &array::from_fn(|idx| Expression::<F>::Challenge(num_folding_challenges + idx));
@@ -176,7 +170,6 @@ where
             num_folding_wintess_polys,
             num_folding_challenges,
             compressed_cross_term_expressions,
-            zeta_cross_term_expression,
             sum_check_expression: sum_check_expression.clone(),
         },
         ProtostarVerifierParam {
@@ -196,10 +189,10 @@ fn powers_of_zeta_constraint<F: PrimeField>(
     powers_of_zeta: usize,
 ) -> Expression<F> {
     let l_0 = &Expression::<F>::lagrange(0);
-    let l_1 = &Expression::<F>::lagrange(1);
+    let l_last = &Expression::<F>::lagrange(-1);
     let one = &Expression::one();
-    let [powers_of_zeta, powers_of_zeta_prev] = &[Rotation::cur(), Rotation::prev()]
+    let [powers_of_zeta, powers_of_zeta_next] = &[Rotation::cur(), Rotation::next()]
         .map(|rotation| Expression::Polynomial(Query::new(powers_of_zeta, rotation)));
 
-    powers_of_zeta - (l_0 + l_1 * zeta + (one - (l_0 + l_1)) * powers_of_zeta_prev * zeta)
+    powers_of_zeta_next - (l_0 + l_last * zeta + (one - (l_0 + l_last)) * powers_of_zeta * zeta)
 }

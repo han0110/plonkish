@@ -52,7 +52,6 @@ where
     num_folding_wintess_polys: usize,
     num_folding_challenges: usize,
     compressed_cross_term_expressions: Vec<Expression<F>>,
-    zeta_cross_term_expression: Expression<F>,
     sum_check_expression: Expression<F>,
 }
 
@@ -191,7 +190,6 @@ where
             num_theta_primes,
             num_alpha_primes,
             compressed_cross_term_expressions,
-            zeta_cross_term_expression,
             sum_check_expression,
             ..
         } = pp;
@@ -309,7 +307,7 @@ where
 
         let timer = start_timer(|| {
             let len = compressed_cross_term_expressions.len();
-            format!("compressed_cross_term_polys-{len}",)
+            format!("compressed_cross_term_sums-{len}",)
         });
         let compressed_cross_term_sums = evaluate_compressed_cross_term_sum(
             compressed_cross_term_expressions,
@@ -320,14 +318,9 @@ where
         );
         end_timer(timer);
 
-        let timer = start_timer(|| "zeta_cross_term_polys");
-        let zeta_cross_term_poly = evaluate_zeta_cross_term(
-            zeta_cross_term_expression,
-            pp.num_vars,
-            &pp.preprocess_polys,
-            &state.witness,
-            &incoming,
-        );
+        let timer = start_timer(|| "zeta_cross_term_poly");
+        let zeta_cross_term_poly =
+            evaluate_zeta_cross_term(pp.num_vars, *num_alpha_primes, &state.witness, &incoming);
         end_timer(timer);
 
         transcript.write_field_elements(&compressed_cross_term_sums)?;

@@ -1,6 +1,6 @@
 use crate::{
     backend::hyperplonk::{folding::sangria::verifier::SangriaInstance, prover::instance_polys},
-    pcs::{AdditiveCommitment, Polynomial, PolynomialCommitmentScheme},
+    pcs::{AdditiveCommitment, Polynomial},
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, powers, sum, BatchInvert, BooleanHypercube, PrimeField},
@@ -11,23 +11,20 @@ use crate::{
         Itertools,
     },
 };
-use std::{hash::Hash, iter};
+use std::{borrow::Cow, hash::Hash, iter};
 
 #[derive(Debug)]
-pub(crate) struct SangriaWitness<F, Pcs>
-where
-    F: PrimeField,
-    Pcs: PolynomialCommitmentScheme<F>,
-{
-    pub(crate) instance: SangriaInstance<F, Pcs>,
-    pub(crate) witness_polys: Vec<Pcs::Polynomial>,
-    pub(crate) e_poly: Pcs::Polynomial,
+pub(crate) struct SangriaWitness<F, C, P> {
+    pub(crate) instance: SangriaInstance<F, C>,
+    pub(crate) witness_polys: Vec<P>,
+    pub(crate) e_poly: P,
 }
 
-impl<F, Pcs> SangriaWitness<F, Pcs>
+impl<F, C, P> SangriaWitness<F, C, P>
 where
     F: PrimeField,
-    Pcs: PolynomialCommitmentScheme<F>,
+    C: Default,
+    P: Polynomial<F>,
 {
     pub(crate) fn init(
         k: usize,
@@ -35,7 +32,7 @@ where
         num_witness_polys: usize,
         num_challenges: usize,
     ) -> Self {
-        let zero_poly = Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]);
+        let zero_poly = P::from_evals(vec![F::ZERO; 1 << k]);
         Self {
             instance: SangriaInstance::init(num_instances, num_witness_polys, num_challenges),
             witness_polys: iter::repeat_with(|| zero_poly.clone())
@@ -48,29 +45,29 @@ where
     pub(crate) fn from_committed(
         k: usize,
         instances: &[&[F]],
-        witness_polys: impl IntoIterator<Item = Pcs::Polynomial>,
-        witness_comms: impl IntoIterator<Item = Pcs::Commitment>,
+        witness_polys: impl IntoIterator<Item = P>,
+        witness_comms: impl IntoIterator<Item = C>,
         challenges: Vec<F>,
     ) -> Self {
         Self {
             instance: SangriaInstance::from_committed(instances, witness_comms, challenges),
             witness_polys: witness_polys.into_iter().collect(),
-            e_poly: Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            e_poly: P::from_evals(vec![F::ZERO; 1 << k]),
         }
     }
 }
 
-impl<F, Pcs> SangriaWitness<F, Pcs>
+impl<F, C, P> SangriaWitness<F, C, P>
 where
     F: PrimeField,
-    Pcs: PolynomialCommitmentScheme<F>,
-    Pcs::Commitment: AdditiveCommitment<F>,
+    P: Polynomial<F>,
+    C: AdditiveCommitment<F>,
 {
     pub(crate) fn fold(
         &mut self,
         rhs: &Self,
-        cross_term_polys: &[Pcs::Polynomial],
-        cross_term_comms: &[Pcs::Commitment],
+        cross_term_polys: &[P],
+        cross_term_comms: &[C],
         r: &F,
     ) {
         self.instance.fold(&rhs.instance, cross_term_comms, r);
@@ -139,52 +136,35 @@ fn lookup_h_poly<F: PrimeField + Hash>(
     ]
 }
 
-pub(crate) fn evaluate_cross_term<F, Pcs>(
+pub(crate) fn evaluate_cross_term<F: PrimeField, C>(
     cross_term_expressions: &[Expression<F>],
     num_vars: usize,
     preprocess_polys: &[MultilinearPolynomial<F>],
-    folded: &SangriaWitness<F, Pcs>,
-    incoming: &SangriaWitness<F, Pcs>,
-) -> Vec<MultilinearPolynomial<F>>
-where
-    F: PrimeField + Ord,
-    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-{
+    folded: &SangriaWitness<F, C, MultilinearPolynomial<F>>,
+    incoming: &SangriaWitness<F, C, MultilinearPolynomial<F>>,
+) -> Vec<MultilinearPolynomial<F>> {
     if cross_term_expressions.is_empty() {
         return Vec::new();
     }
 
-    let folded_instance_polys = instance_polys(num_vars, &folded.instance.instances);
-    let incoming_instance_polys = instance_polys(num_vars, &incoming.instance.instances);
-    let polys = iter::empty()
-        .chain(preprocess_polys)
-        .chain(&folded_instance_polys)
-        .chain(&folded.witness_polys)
-        .chain(&incoming_instance_polys)
-        .chain(&incoming.witness_polys)
-        .collect_vec();
-    let challenges = iter::empty()
-        .chain(folded.instance.challenges.iter().cloned())
-        .chain(Some(folded.instance.u))
-        .chain(incoming.instance.challenges.iter().cloned())
-        .chain(Some(incoming.instance.u))
-        .collect_vec();
+    let ev = init_hadamard_evaluator(
+        cross_term_expressions,
+        num_vars,
+        preprocess_polys,
+        folded,
+        incoming,
+    );
+    evaluate_cross_term_inner(&ev)
+}
 
-    let cross_term_expressions = cross_term_expressions
-        .iter()
-        .map(|expression| {
-            expression
-                .simplified(Some(&challenges))
-                .unwrap_or_else(Expression::zero)
-        })
-        .collect_vec();
-
-    let ev = HadamardEvaluator::new(num_vars, &cross_term_expressions);
-    let size = 1 << num_vars;
+pub(crate) fn evaluate_cross_term_inner<F: PrimeField>(
+    ev: &HadamardEvaluator<F>,
+) -> Vec<MultilinearPolynomial<F>> {
+    let size = 1 << ev.num_vars;
     let chunk_size = div_ceil(size, num_threads());
-    let num_cross_terms = cross_term_expressions.len();
+    let num_cross_terms = ev.reg.indexed_outputs().len();
 
-    let mut outputs = vec![F::ZERO; num_cross_terms << num_vars];
+    let mut outputs = vec![F::ZERO; num_cross_terms * size];
     parallelize_iter(
         outputs
             .chunks_mut(chunk_size * num_cross_terms)
@@ -192,9 +172,8 @@ where
         |(outputs, start)| {
             let mut data = ev.cache();
             let bs = start..(start + chunk_size).min(size);
-            for (b, outputs) in bs.zip(outputs.chunks_mut(num_cross_terms)) {
-                ev.evaluate(outputs, &mut data, polys.as_slice(), b);
-            }
+            izip!(bs, outputs.chunks_mut(num_cross_terms))
+                .for_each(|(b, outputs)| ev.evaluate(outputs, &mut data, b));
         },
     );
 
@@ -204,15 +183,57 @@ where
         .collect_vec()
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct HadamardEvaluator<F: PrimeField> {
+fn init_hadamard_evaluator<'a, F: PrimeField, C>(
+    expressions: &[Expression<F>],
     num_vars: usize,
-    reg: ExpressionRegistry<F>,
-    lagranges: Vec<usize>,
+    preprocess_polys: &'a [MultilinearPolynomial<F>],
+    folded: &'a SangriaWitness<F, C, MultilinearPolynomial<F>>,
+    incoming: &'a SangriaWitness<F, C, MultilinearPolynomial<F>>,
+) -> HadamardEvaluator<'a, F> {
+    assert!(!expressions.is_empty());
+
+    let folded_instance_polys = instance_polys(num_vars, &folded.instance.instances);
+    let incoming_instance_polys = instance_polys(num_vars, &incoming.instance.instances);
+    let polys = iter::empty()
+        .chain(preprocess_polys.iter().map(Cow::Borrowed))
+        .chain(folded_instance_polys.into_iter().map(Cow::Owned))
+        .chain(folded.witness_polys.iter().map(Cow::Borrowed))
+        .chain(incoming_instance_polys.into_iter().map(Cow::Owned))
+        .chain(incoming.witness_polys.iter().map(Cow::Borrowed))
+        .collect_vec();
+    let challenges = iter::empty()
+        .chain(folded.instance.challenges.iter().cloned())
+        .chain(Some(folded.instance.u))
+        .chain(incoming.instance.challenges.iter().cloned())
+        .chain(Some(incoming.instance.u))
+        .collect_vec();
+
+    let expressions = expressions
+        .iter()
+        .map(|expression| {
+            expression
+                .simplified(Some(&challenges))
+                .unwrap_or_else(Expression::zero)
+        })
+        .collect_vec();
+
+    HadamardEvaluator::new(num_vars, &expressions, polys)
 }
 
-impl<F: PrimeField> HadamardEvaluator<F> {
-    pub(crate) fn new(num_vars: usize, expressions: &[Expression<F>]) -> Self {
+#[derive(Clone, Debug)]
+pub(crate) struct HadamardEvaluator<'a, F: PrimeField> {
+    pub(crate) num_vars: usize,
+    pub(crate) reg: ExpressionRegistry<F>,
+    lagranges: Vec<usize>,
+    polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
+}
+
+impl<'a, F: PrimeField> HadamardEvaluator<'a, F> {
+    pub(crate) fn new(
+        num_vars: usize,
+        expressions: &[Expression<F>],
+        polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
+    ) -> Self {
         let mut reg = ExpressionRegistry::new();
         for expression in expressions.iter() {
             reg.register(expression);
@@ -230,6 +251,7 @@ impl<F: PrimeField> HadamardEvaluator<F> {
             num_vars,
             reg,
             lagranges,
+            polys,
         }
     }
 
@@ -237,13 +259,17 @@ impl<F: PrimeField> HadamardEvaluator<F> {
         self.reg.cache()
     }
 
-    pub(crate) fn evaluate(
-        &self,
-        evals: &mut [F],
-        cache: &mut [F],
-        polys: &[&MultilinearPolynomial<F>],
-        b: usize,
-    ) {
+    pub(crate) fn evaluate(&self, evals: &mut [F], cache: &mut [F], b: usize) {
+        self.evaluate_calculations(cache, b);
+        izip_eq!(evals, self.reg.indexed_outputs()).for_each(|(eval, idx)| *eval = cache[*idx])
+    }
+
+    pub(crate) fn evaluate_and_sum(&self, sums: &mut [F], cache: &mut [F], b: usize) {
+        self.evaluate_calculations(cache, b);
+        izip_eq!(sums, self.reg.indexed_outputs()).for_each(|(sum, idx)| *sum += cache[*idx])
+    }
+
+    fn evaluate_calculations(&self, cache: &mut [F], b: usize) {
         let bh = BooleanHypercube::new(self.num_vars);
         if self.reg.has_identity() {
             cache[self.reg.offsets().identity()] = F::from(b as u64);
@@ -256,16 +282,12 @@ impl<F: PrimeField> HadamardEvaluator<F> {
             .iter_mut()
             .zip(self.reg.polys())
             .for_each(|(value, (query, _))| {
-                *value = polys[query.poly()][bh.rotate(b, query.rotation())]
+                *value = self.polys[query.poly()][bh.rotate(b, query.rotation())]
             });
         self.reg
             .indexed_calculations()
             .iter()
             .zip(self.reg.offsets().calculations()..)
             .for_each(|(calculation, idx)| calculation.calculate(cache, idx));
-        evals
-            .iter_mut()
-            .zip(self.reg.indexed_outputs())
-            .for_each(|(eval, idx)| *eval = cache[*idx])
     }
 }

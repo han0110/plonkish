@@ -109,7 +109,7 @@ where
     Pcs: PolynomialCommitmentScheme<F>,
 {
     is_folding: bool,
-    witness: SangriaWitness<F, Pcs>,
+    witness: SangriaWitness<F, Pcs::Commitment, Pcs::Polynomial>,
 }
 
 impl<F, Pcs> SangriaProverState<F, Pcs>
@@ -129,7 +129,7 @@ where
     Pcs: PolynomialCommitmentScheme<F>,
 {
     is_folding: bool,
-    instance: SangriaInstance<F, Pcs>,
+    instance: SangriaInstance<F, Pcs::Commitment>,
 }
 
 impl<F, Pcs> SangriaVerifierState<F, Pcs>

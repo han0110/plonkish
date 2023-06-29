@@ -7,8 +7,11 @@ use crate::{
 };
 use std::{fmt::Debug, iter};
 
-#[derive(Debug)]
-pub(crate) struct ProtostarInstance<F, C> {
+#[cfg(feature = "frontend-halo2")]
+pub mod halo2;
+
+#[derive(Clone, Debug)]
+pub struct ProtostarInstance<F, C> {
     pub(crate) instances: Vec<Vec<F>>,
     pub(crate) witness_comms: Vec<C>,
     pub(crate) challenges: Vec<F>,

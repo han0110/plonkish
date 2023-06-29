@@ -18,7 +18,7 @@ use crate::{
         expression::Expression,
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -37,7 +37,7 @@ pub mod util;
 #[derive(Clone, Debug)]
 pub struct HyperPlonk<Pcs>(PhantomData<Pcs>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperPlonkProverParam<F, Pcs>
 where
     F: PrimeField,
@@ -57,7 +57,7 @@ where
     permutation_comms: Vec<Pcs::Commitment>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperPlonkVerifierParam<F, Pcs>
 where
     F: PrimeField,
@@ -77,7 +77,7 @@ where
 
 impl<F, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
 where
-    F: PrimeField + Hash,
+    F: PrimeField + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
@@ -400,7 +400,7 @@ pub(crate) mod test {
             transcript::{
                 InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
             },
-            Itertools,
+            DeserializeOwned, Itertools, Serialize,
         },
     };
     use halo2_curves::{
@@ -413,7 +413,7 @@ pub(crate) mod test {
         num_vars_range: Range<usize>,
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, C),
     ) where
-        F: PrimeField + Hash,
+        F: PrimeField + Hash + Serialize + DeserializeOwned,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::CommitmentChunk, F>
             + TranscriptWrite<Pcs::CommitmentChunk, F>

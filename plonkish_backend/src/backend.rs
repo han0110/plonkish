@@ -4,7 +4,7 @@ use crate::{
         arithmetic::Field,
         expression::Expression,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -18,8 +18,8 @@ where
     F: Field,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    type ProverParam: Debug;
-    type VerifierParam: Debug;
+    type ProverParam: Debug + Serialize + DeserializeOwned;
+    type VerifierParam: Debug + Serialize + DeserializeOwned;
     type ProverState: Debug;
     type VerifierState: Debug;
 
@@ -49,7 +49,7 @@ where
     ) -> Result<(), Error>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlonkishCircuitInfo<F> {
     /// 2^k is the size of the circuit
     pub k: usize,
@@ -136,6 +136,8 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
 }
 
 pub trait PlonkishCircuit<F> {
+    fn circuit_info_without_preprocess(&self) -> Result<PlonkishCircuitInfo<F>, Error>;
+
     fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, Error>;
 
     fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error>;
@@ -153,6 +155,10 @@ mod test {
     };
 
     impl<F: Clone> PlonkishCircuit<F> for Vec<Vec<F>> {
+        fn circuit_info_without_preprocess(&self) -> Result<PlonkishCircuitInfo<F>, Error> {
+            unreachable!()
+        }
+
         fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, Error> {
             unreachable!()
         }

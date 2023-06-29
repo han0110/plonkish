@@ -14,7 +14,7 @@ use crate::{
         hash::{Hash, Output},
         parallel::{num_threads, parallelize, parallelize_iter},
         transcript::{FieldTranscript, TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -30,7 +30,7 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> Clone for MultilinearBrakedown<F,
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearBrakedownParams<F: PrimeField> {
     num_vars: usize,
     num_rows: usize,
@@ -51,8 +51,9 @@ impl<F: PrimeField> MultilinearBrakedownParams<F> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct MultilinearBrakedownCommitment<F: PrimeField, H: Hash> {
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(bound(serialize = "F: Serialize", deserialize = "F: DeserializeOwned"))]
+pub struct MultilinearBrakedownCommitment<F, H: Hash> {
     rows: Vec<F>,
     intermediate_hashes: Vec<Output<H>>,
     root: Output<H>,
@@ -85,15 +86,18 @@ impl<F: PrimeField, H: Hash> AsRef<[Output<H>]> for MultilinearBrakedownCommitme
     }
 }
 
-impl<F: PrimeField, H: Hash, S: BrakedownSpec> PolynomialCommitmentScheme<F>
-    for MultilinearBrakedown<F, H, S>
+impl<F, H, S> PolynomialCommitmentScheme<F> for MultilinearBrakedown<F, H, S>
+where
+    F: PrimeField + Serialize + DeserializeOwned,
+    H: Hash,
+    S: BrakedownSpec,
 {
     type Param = MultilinearBrakedownParams<F>;
     type ProverParam = MultilinearBrakedownParams<F>;
     type VerifierParam = MultilinearBrakedownParams<F>;
     type Polynomial = MultilinearPolynomial<F>;
-    type CommitmentChunk = Output<H>;
     type Commitment = MultilinearBrakedownCommitment<F, H>;
+    type CommitmentChunk = Output<H>;
 
     fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());

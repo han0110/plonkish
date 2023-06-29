@@ -12,7 +12,7 @@ use crate::{
         arithmetic::{div_ceil, variable_base_msm, Curve, CurveAffine, Group},
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -23,7 +23,7 @@ use std::{borrow::Cow, iter, marker::PhantomData};
 #[derive(Clone, Debug)]
 pub struct MultilinearHyrax<C: CurveAffine>(PhantomData<C>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearHyraxParams<C: CurveAffine> {
     num_vars: usize,
     batch_num_vars: usize,
@@ -61,7 +61,7 @@ impl<C: CurveAffine> MultilinearHyraxParams<C> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultilinearHyraxCommitment<C: CurveAffine>(pub Vec<C>);
 
 impl<C: CurveAffine> Default for MultilinearHyraxCommitment<C> {
@@ -106,13 +106,17 @@ impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearHyraxCommitmen
     }
 }
 
-impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearHyrax<C> {
+impl<C> PolynomialCommitmentScheme<C::Scalar> for MultilinearHyrax<C>
+where
+    C: CurveAffine + Serialize + DeserializeOwned,
+    C::ScalarExt: Serialize + DeserializeOwned,
+{
     type Param = MultilinearHyraxParams<C>;
     type ProverParam = MultilinearHyraxParams<C>;
     type VerifierParam = MultilinearHyraxParams<C>;
     type Polynomial = MultilinearPolynomial<C::Scalar>;
-    type CommitmentChunk = C;
     type Commitment = MultilinearHyraxCommitment<C>;
+    type CommitmentChunk = C;
 
     fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());

@@ -18,7 +18,7 @@ use crate::{
             relaxed::{cross_term_expressions, products, relaxed_expression, PolynomialSet},
             Expression, Query, Rotation,
         },
-        Itertools,
+        DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -32,7 +32,7 @@ pub(super) fn preprocess<F, Pcs>(
     circuit_info: &PlonkishCircuitInfo<F>,
 ) -> Result<(ProtostarProverParam<F, Pcs>, ProtostarVerifierParam<F, Pcs>), Error>
 where
-    F: PrimeField + Ord + Hash,
+    F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
     let challenge_offset = circuit_info.num_challenges.iter().sum::<usize>();
@@ -117,7 +117,7 @@ where
     };
     let zeta_products = products(&poly_set.preprocess, &powers_of_zeta_constraint);
 
-    let num_folding_wintess_polys = num_witness_polys + num_builtin_witness_polys;
+    let num_folding_witness_polys = num_witness_polys + num_builtin_witness_polys;
     let num_folding_challenges = alpha_prime_offset + num_alpha_primes;
 
     let compressed_cross_term_expressions =
@@ -167,7 +167,7 @@ where
             pp,
             num_theta_primes,
             num_alpha_primes,
-            num_folding_wintess_polys,
+            num_folding_witness_polys,
             num_folding_challenges,
             compressed_cross_term_expressions,
             sum_check_expression: sum_check_expression.clone(),
@@ -176,7 +176,7 @@ where
             vp,
             num_theta_primes,
             num_alpha_primes,
-            num_folding_wintess_polys,
+            num_folding_witness_polys,
             num_folding_challenges,
             num_compressed_cross_terms,
             sum_check_expression,

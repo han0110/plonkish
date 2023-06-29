@@ -4,7 +4,7 @@ use crate::{
         arithmetic::{div_ceil, horner, powers, Field},
         impl_index,
         parallel::{num_threads, parallelize, parallelize_iter},
-        Itertools,
+        Deserialize, Itertools, Serialize,
     },
 };
 use rand::RngCore;
@@ -19,12 +19,12 @@ use std::{
 
 pub trait Basis: Clone + Copy + Debug {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoefficientBasis;
 
 impl Basis for CoefficientBasis {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnivariatePolynomial<F, B> {
     values: Vec<F>,
     _marker: PhantomData<B>,

@@ -24,7 +24,7 @@ use crate::{
         expression::Expression,
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -38,7 +38,11 @@ mod verifier;
 #[derive(Clone, Debug)]
 pub struct Sangria<Pb>(PhantomData<Pb>);
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: Serialize, HyperPlonkProverParam<F, Pcs>: Serialize",
+    deserialize = "F: DeserializeOwned, HyperPlonkProverParam<F, Pcs>: DeserializeOwned"
+))]
 pub struct SangriaProverParam<F, Pcs>
 where
     F: PrimeField,
@@ -47,7 +51,7 @@ where
     pp: HyperPlonkProverParam<F, Pcs>,
     num_theta_primes: usize,
     num_alpha_primes: usize,
-    num_folding_wintess_polys: usize,
+    num_folding_witness_polys: usize,
     num_folding_challenges: usize,
     cross_term_expressions: Vec<Expression<F>>,
     zero_check_expression: Expression<F>,
@@ -64,14 +68,18 @@ where
             witness: SangriaWitness::init(
                 self.pp.num_vars,
                 &self.pp.num_instances,
-                self.num_folding_wintess_polys,
+                self.num_folding_witness_polys,
                 self.num_folding_challenges,
             ),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: Serialize, HyperPlonkProverParam<F, Pcs>: Serialize",
+    deserialize = "F: DeserializeOwned, HyperPlonkProverParam<F, Pcs>: DeserializeOwned"
+))]
 pub struct SangriaVerifierParam<F, Pcs>
 where
     F: PrimeField,
@@ -80,7 +88,7 @@ where
     vp: HyperPlonkVerifierParam<F, Pcs>,
     num_theta_primes: usize,
     num_alpha_primes: usize,
-    num_folding_wintess_polys: usize,
+    num_folding_witness_polys: usize,
     num_folding_challenges: usize,
     num_cross_terms: usize,
     zero_check_expression: Expression<F>,
@@ -96,7 +104,7 @@ where
             is_folding: true,
             instance: SangriaInstance::init(
                 &self.vp.num_instances,
-                self.num_folding_wintess_polys,
+                self.num_folding_witness_polys,
                 self.num_folding_challenges,
             ),
         }
@@ -144,7 +152,7 @@ where
 
 impl<F, Pcs> PlonkishBackend<F, Pcs> for Sangria<HyperPlonk<Pcs>>
 where
-    F: PrimeField + Ord + Hash,
+    F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     Pcs::Commitment: AdditiveCommitment<F>,
     Pcs::CommitmentChunk: AdditiveCommitment<F>,
@@ -532,7 +540,7 @@ pub(crate) mod test {
             transcript::{
                 InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
             },
-            Itertools,
+            DeserializeOwned, Itertools, Serialize,
         },
     };
     use halo2_curves::{bn256::Bn256, grumpkin};
@@ -542,7 +550,7 @@ pub(crate) mod test {
         num_vars_range: Range<usize>,
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<Vec<F>>>, Vec<C>),
     ) where
-        F: PrimeField + Ord + Hash,
+        F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         Pcs::Commitment: AdditiveCommitment<F>,
         Pcs::CommitmentChunk: AdditiveCommitment<F>,

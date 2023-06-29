@@ -1,6 +1,6 @@
 use crate::{
     util::{
-        arithmetic::{fe_from_bytes_le, Coordinates, CurveAffine, PrimeField},
+        arithmetic::{fe_mod_from_le_bytes, Coordinates, CurveAffine, PrimeField},
         hash::{Hash, Keccak256, Output, Update},
     },
     Error,
@@ -98,9 +98,9 @@ impl<H: Hash> InMemoryTranscript for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
 
 impl<H: Hash, F: PrimeField, S> FieldTranscript<F> for FiatShamirTranscript<H, S> {
     fn squeeze_challenge(&mut self) -> F {
-        let challenge = self.state.finalize_fixed_reset();
-        self.state.update(&challenge);
-        fe_from_bytes_le(&challenge)
+        let hash = self.state.finalize_fixed_reset();
+        self.state.update(&hash);
+        fe_mod_from_le_bytes(hash)
     }
 
     fn common_field_element(&mut self, fe: &F) -> Result<(), Error> {

@@ -5,7 +5,7 @@ use crate::{
         expression::Rotation,
         impl_index,
         parallel::{num_threads, parallelize, parallelize_iter},
-        BitIndex, Itertools,
+        BitIndex, Deserialize, Itertools, Serialize,
     },
 };
 use num_integer::Integer;
@@ -17,7 +17,7 @@ use std::{
     ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearPolynomial<F> {
     evals: Vec<F>,
     num_vars: usize,

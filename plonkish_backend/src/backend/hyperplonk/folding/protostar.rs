@@ -26,7 +26,7 @@ use crate::{
         expression::Expression,
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -35,12 +35,16 @@ use std::{borrow::BorrowMut, hash::Hash, iter, marker::PhantomData};
 
 mod preprocessor;
 mod prover;
-mod verifier;
+pub(super) mod verifier;
 
 #[derive(Clone, Debug)]
 pub struct Protostar<Pb>(PhantomData<Pb>);
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: Serialize, HyperPlonkProverParam<F, Pcs>: Serialize",
+    deserialize = "F: DeserializeOwned, HyperPlonkProverParam<F, Pcs>: DeserializeOwned"
+))]
 pub struct ProtostarProverParam<F, Pcs>
 where
     F: PrimeField,
@@ -49,7 +53,7 @@ where
     pp: HyperPlonkProverParam<F, Pcs>,
     num_theta_primes: usize,
     num_alpha_primes: usize,
-    num_folding_wintess_polys: usize,
+    num_folding_witness_polys: usize,
     num_folding_challenges: usize,
     compressed_cross_term_expressions: Vec<Expression<F>>,
     sum_check_expression: Expression<F>,
@@ -66,14 +70,18 @@ where
             witness: ProtostarWitness::init(
                 self.pp.num_vars,
                 &self.pp.num_instances,
-                self.num_folding_wintess_polys,
+                self.num_folding_witness_polys,
                 self.num_folding_challenges,
             ),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: Serialize, HyperPlonkProverParam<F, Pcs>: Serialize",
+    deserialize = "F: DeserializeOwned, HyperPlonkProverParam<F, Pcs>: DeserializeOwned"
+))]
 pub struct ProtostarVerifierParam<F, Pcs>
 where
     F: PrimeField,
@@ -82,7 +90,7 @@ where
     vp: HyperPlonkVerifierParam<F, Pcs>,
     num_theta_primes: usize,
     num_alpha_primes: usize,
-    num_folding_wintess_polys: usize,
+    num_folding_witness_polys: usize,
     num_folding_challenges: usize,
     num_compressed_cross_terms: usize,
     sum_check_expression: Expression<F>,
@@ -98,13 +106,14 @@ where
             is_folding: true,
             instance: ProtostarInstance::init(
                 &self.vp.num_instances,
-                self.num_folding_wintess_polys,
+                self.num_folding_witness_polys,
                 self.num_folding_challenges,
             ),
         }
     }
 }
-#[derive(Debug)]
+
+#[derive(Clone, Debug)]
 pub struct ProtostarProverState<F, Pcs>
 where
     F: PrimeField,
@@ -124,7 +133,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ProtostarVerifierState<F, Pcs>
 where
     F: PrimeField,
@@ -144,9 +153,22 @@ where
     }
 }
 
+impl<F, Pcs> From<ProtostarProverState<F, Pcs>> for ProtostarVerifierState<F, Pcs>
+where
+    F: PrimeField,
+    Pcs: PolynomialCommitmentScheme<F>,
+{
+    fn from(state: ProtostarProverState<F, Pcs>) -> Self {
+        Self {
+            is_folding: state.is_folding,
+            instance: state.witness.instance,
+        }
+    }
+}
+
 impl<F, Pcs> PlonkishBackend<F, Pcs> for Protostar<HyperPlonk<Pcs>>
 where
-    F: PrimeField + Ord + Hash,
+    F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     Pcs::Commitment: AdditiveCommitment<F>,
     Pcs::CommitmentChunk: AdditiveCommitment<F>,
@@ -404,7 +426,7 @@ where
                 .chain(&pp.permutation_comms)
                 .chain(&state.witness.instance.witness_comms[builtin_witness_poly_offset..])
                 .chain(&permutation_z_comms)
-                .chain(Some(&zeta_cross_term_comm))
+                .chain(Some(&state.witness.instance.zeta_e_comm))
                 .collect_vec();
             let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
             Pcs::batch_open(&pp.pcs, polys, comms, &points, &evals, transcript)?;
@@ -587,7 +609,7 @@ pub(crate) mod test {
             transcript::{
                 InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
             },
-            Itertools,
+            DeserializeOwned, Itertools, Serialize,
         },
     };
     use halo2_curves::{bn256::Bn256, grumpkin};
@@ -597,7 +619,7 @@ pub(crate) mod test {
         num_vars_range: Range<usize>,
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<Vec<F>>>, Vec<C>),
     ) where
-        F: PrimeField + Ord + Hash,
+        F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         Pcs::Commitment: AdditiveCommitment<F>,
         Pcs::CommitmentChunk: AdditiveCommitment<F>,

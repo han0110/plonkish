@@ -25,11 +25,18 @@ pub mod circuit;
 mod test;
 
 pub trait CircuitExt<F: Field>: Circuit<F> {
-    fn rand(k: usize, rng: impl RngCore) -> Self;
-
-    fn num_instances() -> Vec<usize>;
+    fn rand(_k: usize, _rng: impl RngCore) -> Self
+    where
+        Self: Sized,
+    {
+        unimplemented!()
+    }
 
     fn instances(&self) -> Vec<Vec<F>>;
+
+    fn num_instances(&self) -> Vec<usize> {
+        self.instances().iter().map(Vec::len).collect()
+    }
 }
 
 pub struct Halo2Circuit<F: Field, C: Circuit<F>> {
@@ -73,12 +80,21 @@ impl<F: Field, C: CircuitExt<F>> Halo2Circuit<F, C> {
         }
     }
 
+    pub fn circuit(&self) -> &C {
+        &self.circuit
+    }
+
     pub fn instance_slices(&self) -> Vec<&[F]> {
         self.instances.iter().map(Vec::as_slice).collect()
     }
 
     pub fn instances(&self) -> Vec<Vec<F>> {
         self.instances.clone()
+    }
+
+    pub fn update_witness(&mut self, f: impl FnOnce(&mut C)) {
+        f(&mut self.circuit);
+        self.instances = self.circuit.instances();
     }
 }
 
@@ -89,16 +105,12 @@ impl<F: Field, C: Circuit<F>> AsRef<C> for Halo2Circuit<F, C> {
 }
 
 impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
-    fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, crate::Error> {
+    fn circuit_info_without_preprocess(&self) -> Result<PlonkishCircuitInfo<F>, crate::Error> {
         let Self {
             k,
             instances,
             cs,
-            config,
-            circuit,
-            constants,
             challenge_idx,
-            row_mapping,
             ..
         } = self;
         let advice_idx = advice_idx(cs);
@@ -130,6 +142,46 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             .collect();
 
         let num_instances = instances.iter().map(Vec::len).collect_vec();
+        let preprocess_polys =
+            vec![vec![F::ZERO; 1 << k]; cs.num_selectors() + cs.num_fixed_columns()];
+        let column_idx = column_idx(cs);
+        let permutations = cs
+            .permutation()
+            .get_columns()
+            .iter()
+            .map(|column| {
+                let key = (*column.column_type(), column.index());
+                vec![(column_idx[&key], 1)]
+            })
+            .collect_vec();
+
+        Ok(PlonkishCircuitInfo {
+            k: *k as usize,
+            num_instances,
+            preprocess_polys,
+            num_witness_polys: num_by_phase(&cs.advice_column_phase()),
+            num_challenges: num_by_phase(&cs.challenge_phase()),
+            constraints,
+            lookups,
+            permutations,
+            max_degree: Some(cs.degree::<false>()),
+        })
+    }
+
+    fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, crate::Error> {
+        let Self {
+            k,
+            instances,
+            cs,
+            config,
+            circuit,
+            constants,
+            row_mapping,
+            ..
+        } = self;
+        let mut circuit_info = self.circuit_info_without_preprocess()?;
+
+        let num_instances = instances.iter().map(Vec::len).collect_vec();
         let column_idx = column_idx(cs);
         let permutation_column_idx = cs
             .permutation()
@@ -142,7 +194,7 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             .collect();
         let mut preprocess_collector = PreprocessCollector {
             k: *k,
-            num_instances: num_instances.clone(),
+            num_instances,
             fixeds: vec![vec![F::ZERO.into(); 1 << k]; cs.num_fixed_columns()],
             permutation: Permutation::new(permutation_column_idx),
             selectors: vec![vec![false; 1 << k]; cs.num_selectors()],
@@ -157,7 +209,7 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
         )
         .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
 
-        let preprocess_polys = iter::empty()
+        circuit_info.preprocess_polys = iter::empty()
             .chain(batch_invert_assigned(preprocess_collector.fixeds))
             .chain(preprocess_collector.selectors.into_iter().map(|selectors| {
                 selectors
@@ -166,19 +218,9 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
                     .collect()
             }))
             .collect();
-        let permutations = preprocess_collector.permutation.into_cycles();
+        circuit_info.permutations = preprocess_collector.permutation.into_cycles();
 
-        Ok(PlonkishCircuitInfo {
-            k: *k as usize,
-            num_instances,
-            preprocess_polys,
-            num_witness_polys: num_by_phase(&cs.advice_column_phase()),
-            num_challenges: num_by_phase(&cs.challenge_phase()),
-            constraints,
-            lookups,
-            permutations,
-            max_degree: Some(cs.degree::<false>()),
-        })
+        Ok(circuit_info)
     }
 
     fn synthesize(&self, phase: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, crate::Error> {

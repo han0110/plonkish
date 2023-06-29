@@ -17,7 +17,7 @@ use std::{borrow::Cow, iter};
 
 pub(super) use crate::backend::hyperplonk::folding::sangria::prover::lookup_h_polys;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ProtostarWitness<F, C, P> {
     pub(crate) instance: ProtostarInstance<F, C>,
     pub(crate) witness_polys: Vec<P>,

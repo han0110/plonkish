@@ -116,10 +116,6 @@ mod vanilla_plonk {
             Self(k, values)
         }
 
-        fn num_instances() -> Vec<usize> {
-            vec![1]
-        }
-
         fn instances(&self) -> Vec<Vec<F>> {
             let [q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] = self.1[0];
             let pi = (-(q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c)).evaluate();

@@ -6,14 +6,14 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            div_ceil, fixed_base_msm, variable_base_msm, window_size, window_table, Curve, Field,
-            MultiMillerLoop, PrimeCurveAffine,
+            div_ceil, fixed_base_msm, variable_base_msm, window_size, window_table, Curve,
+            CurveAffine, Field, MultiMillerLoop, PrimeCurveAffine,
         },
         end_timer,
         parallel::{num_threads, parallelize, parallelize_iter},
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -24,7 +24,7 @@ use std::{iter, marker::PhantomData, ops::Neg, slice};
 #[derive(Clone, Debug)]
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearKzgParams<M: MultiMillerLoop> {
     g1: M::G1Affine,
     eqs: Vec<Vec<M::G1Affine>>,
@@ -54,7 +54,7 @@ impl<M: MultiMillerLoop> MultilinearKzgParams<M> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearKzgProverParams<M: MultiMillerLoop> {
     g1: M::G1Affine,
     eqs: Vec<Vec<M::G1Affine>>,
@@ -78,7 +78,7 @@ impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearKzgVerifierParams<M: MultiMillerLoop> {
     g1: M::G1Affine,
     g2: M::G2Affine,
@@ -103,32 +103,44 @@ impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MultilinearKzgCommitment<M: MultiMillerLoop>(pub M::G1Affine);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MultilinearKzgCommitment<C: CurveAffine>(pub C);
 
-impl<M: MultiMillerLoop> Default for MultilinearKzgCommitment<M> {
+impl<C: CurveAffine> Default for MultilinearKzgCommitment<C> {
     fn default() -> Self {
-        Self(M::G1Affine::identity())
+        Self(C::identity())
     }
 }
 
-impl<M: MultiMillerLoop> PartialEq for MultilinearKzgCommitment<M> {
+impl<C: CurveAffine> PartialEq for MultilinearKzgCommitment<C> {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq(&other.0)
     }
 }
 
-impl<M: MultiMillerLoop> Eq for MultilinearKzgCommitment<M> {}
+impl<C: CurveAffine> Eq for MultilinearKzgCommitment<C> {}
 
-impl<M: MultiMillerLoop> AsRef<[M::G1Affine]> for MultilinearKzgCommitment<M> {
-    fn as_ref(&self) -> &[M::G1Affine] {
+impl<C: CurveAffine> AsRef<[C]> for MultilinearKzgCommitment<C> {
+    fn as_ref(&self) -> &[C] {
         slice::from_ref(&self.0)
     }
 }
 
-impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for MultilinearKzgCommitment<M> {
+impl<C: CurveAffine> AsRef<C> for MultilinearKzgCommitment<C> {
+    fn as_ref(&self) -> &C {
+        &self.0
+    }
+}
+
+impl<C: CurveAffine> From<C> for MultilinearKzgCommitment<C> {
+    fn from(comm: C) -> Self {
+        Self(comm)
+    }
+}
+
+impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearKzgCommitment<C> {
     fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a M::Scalar> + 'a,
+        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
         bases: impl IntoIterator<Item = &'a Self> + 'a,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
@@ -139,13 +151,19 @@ impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for MultilinearKzgCommitm
     }
 }
 
-impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for MultilinearKzg<M> {
+impl<M> PolynomialCommitmentScheme<M::Scalar> for MultilinearKzg<M>
+where
+    M: MultiMillerLoop,
+    M::Scalar: Serialize + DeserializeOwned,
+    M::G1Affine: Serialize + DeserializeOwned,
+    M::G2Affine: Serialize + DeserializeOwned,
+{
     type Param = MultilinearKzgParams<M>;
     type ProverParam = MultilinearKzgProverParams<M>;
     type VerifierParam = MultilinearKzgVerifierParams<M>;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
+    type Commitment = MultilinearKzgCommitment<M::G1Affine>;
     type CommitmentChunk = M::G1Affine;
-    type Commitment = MultilinearKzgCommitment<M>;
 
     fn setup(poly_size: usize, _: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());

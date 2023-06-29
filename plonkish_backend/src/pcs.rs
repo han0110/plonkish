@@ -2,7 +2,7 @@ use crate::{
     util::{
         arithmetic::{variable_base_msm, Curve, CurveAffine, Field},
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -27,11 +27,16 @@ pub trait Polynomial<F: Field>: Clone + Debug + for<'a> AddAssign<(&'a F, &'a Se
 pub type Point<F, P> = <P as Polynomial<F>>::Point;
 
 pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
-    type Param: Debug;
-    type ProverParam: Debug;
-    type VerifierParam: Debug;
-    type Polynomial: Polynomial<F>;
-    type Commitment: Clone + Debug + Default + AsRef<[Self::CommitmentChunk]>;
+    type Param: Debug + Serialize + DeserializeOwned;
+    type ProverParam: Debug + Serialize + DeserializeOwned;
+    type VerifierParam: Debug + Serialize + DeserializeOwned;
+    type Polynomial: Polynomial<F> + Serialize + DeserializeOwned;
+    type Commitment: Clone
+        + Debug
+        + Default
+        + AsRef<[Self::CommitmentChunk]>
+        + Serialize
+        + DeserializeOwned;
     type CommitmentChunk: Clone + Debug + Default;
 
     fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error>;

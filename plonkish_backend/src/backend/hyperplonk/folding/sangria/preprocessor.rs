@@ -16,7 +16,7 @@ use crate::{
             relaxed::{cross_term_expressions, products, relaxed_expression, PolynomialSet},
             Expression, Query, Rotation,
         },
-        Itertools,
+        DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -41,7 +41,7 @@ pub(super) fn preprocess<F, Pcs>(
     circuit_info: &PlonkishCircuitInfo<F>,
 ) -> Result<(SangriaProverParam<F, Pcs>, SangriaVerifierParam<F, Pcs>), Error>
 where
-    F: PrimeField + Ord + Hash,
+    F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
     let challenge_offset = circuit_info.num_challenges.iter().sum::<usize>();
@@ -114,7 +114,7 @@ where
         products(&poly_set.preprocess, &constraint)
     };
 
-    let num_folding_wintess_polys = num_witness_polys + 3 * circuit_info.lookups.len();
+    let num_folding_witness_polys = num_witness_polys + 3 * circuit_info.lookups.len();
     let num_folding_challenges = challenge_offset + num_theta_primes + 1 + num_alpha_primes;
 
     let cross_term_expressions =
@@ -160,7 +160,7 @@ where
             pp,
             num_theta_primes,
             num_alpha_primes,
-            num_folding_wintess_polys,
+            num_folding_witness_polys,
             num_folding_challenges,
             cross_term_expressions,
             zero_check_expression: zero_check_expression.clone(),
@@ -169,7 +169,7 @@ where
             vp,
             num_theta_primes,
             num_alpha_primes,
-            num_folding_wintess_polys,
+            num_folding_witness_polys,
             num_folding_challenges,
             num_cross_terms,
             zero_check_expression,

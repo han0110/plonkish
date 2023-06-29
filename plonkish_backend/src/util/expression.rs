@@ -1,4 +1,4 @@
-use crate::util::{arithmetic::Field, izip, Itertools};
+use crate::util::{arithmetic::Field, izip, Deserialize, Itertools, Serialize};
 use std::{
     collections::BTreeSet,
     fmt::Debug,
@@ -10,7 +10,7 @@ use std::{
 pub(crate) mod evaluator;
 pub mod relaxed;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Rotation(pub i32);
 
 impl Rotation {
@@ -37,7 +37,7 @@ impl From<i32> for Rotation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Query {
     poly: usize,
     rotation: Rotation,
@@ -57,14 +57,14 @@ impl Query {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CommonPolynomial {
     Identity,
     Lagrange(i32),
     EqXY(usize),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Expression<F> {
     Constant(F),
     CommonPolynomial(CommonPolynomial),

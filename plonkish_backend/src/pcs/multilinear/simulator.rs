@@ -12,7 +12,7 @@ use crate::{
         arithmetic::{Field, MultiMillerLoop},
         chain,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -25,14 +25,17 @@ pub struct MultilinearSimulator<Pcs>(PhantomData<Pcs>);
 impl<M> PolynomialCommitmentScheme<M::Scalar> for MultilinearSimulator<UnivariateKzg<M>>
 where
     M: MultiMillerLoop,
+    M::Scalar: Serialize + DeserializeOwned,
+    M::G1Affine: Serialize + DeserializeOwned,
+    M::G2Affine: Serialize + DeserializeOwned,
 {
     type Param = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::Param;
     type ProverParam = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::ProverParam;
     type VerifierParam = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::VerifierParam;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
+    type Commitment = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::Commitment;
     type CommitmentChunk =
         <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::CommitmentChunk;
-    type Commitment = <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::Commitment;
 
     fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         UnivariateKzg::<M>::setup(poly_size, batch_size, rng)

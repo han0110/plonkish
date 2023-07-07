@@ -3,8 +3,8 @@ use crate::{
         folding::{protostar::verifier::ProtostarInstance, sangria::prover::HadamardEvaluator},
         prover::instance_polys,
     },
-    pcs::{AdditiveCommitment, Polynomial},
-    poly::multilinear::MultilinearPolynomial,
+    pcs::AdditiveCommitment,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, powers, BooleanHypercube, PrimeField},
         expression::{Expression, Rotation},
@@ -48,7 +48,7 @@ where
 
     pub(crate) fn from_committed(
         k: usize,
-        instances: &[&[F]],
+        instances: &[Vec<F>],
         witness_polys: impl IntoIterator<Item = P>,
         witness_comms: impl IntoIterator<Item = C>,
         challenges: Vec<F>,

@@ -1,5 +1,5 @@
 use crate::{
-    pcs::Polynomial,
+    poly::Polynomial,
     util::{
         arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field},
         expression::Rotation,
@@ -626,8 +626,10 @@ pub(crate) use zip_self;
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::Polynomial,
-        poly::multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
+        poly::{
+            multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
+            Polynomial,
+        },
         util::{
             arithmetic::{BooleanHypercube, Field},
             expression::Rotation,

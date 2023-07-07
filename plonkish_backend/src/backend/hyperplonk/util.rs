@@ -7,10 +7,10 @@ use crate::{
                 permutation_z_polys,
             },
         },
+        test::MockCircuit,
         PlonkishCircuit, PlonkishCircuitInfo,
     },
-    pcs::Polynomial,
-    poly::multilinear::MultilinearPolynomial,
+    poly::{Polynomial, multilinear::MultilinearPolynomial},
     util::{
         arithmetic::{powers, BooleanHypercube, PrimeField},
         expression::{Expression, Query, Rotation},
@@ -101,7 +101,7 @@ pub fn rand_vanilla_plonk_circuit<F: PrimeField>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
-) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, impl PlonkishCircuit<F>) {
+) -> (PlonkishCircuitInfo<F>, impl PlonkishCircuit<F>) {
     let size = 1 << num_vars;
     let mut polys = [(); 9].map(|_| vec![F::ZERO; size]);
 
@@ -162,7 +162,10 @@ pub fn rand_vanilla_plonk_circuit<F: PrimeField>(
         [q_l, q_r, q_m, q_o, q_c],
         permutation.into_cycles(),
     );
-    (circuit_info, vec![instances], vec![w_l, w_r, w_o])
+    (
+        circuit_info,
+        MockCircuit::new(vec![instances], vec![w_l, w_r, w_o]),
+    )
 }
 
 pub fn rand_vanilla_plonk_assignment<F: PrimeField>(
@@ -171,11 +174,11 @@ pub fn rand_vanilla_plonk_assignment<F: PrimeField>(
     mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, circuit) =
+        let (circuit_info, circuit) =
             rand_vanilla_plonk_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
-            .chain(instance_polys(num_vars, &instances))
+            .chain(instance_polys(num_vars, circuit.instances()))
             .chain(
                 iter::empty()
                     .chain(circuit_info.preprocess_polys)
@@ -214,7 +217,7 @@ pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
-) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, impl PlonkishCircuit<F>) {
+) -> (PlonkishCircuitInfo<F>, impl PlonkishCircuit<F>) {
     let size = 1 << num_vars;
     let mut polys = [(); 13].map(|_| vec![F::ZERO; size]);
 
@@ -306,7 +309,10 @@ pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
         [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o],
         permutation.into_cycles(),
     );
-    (circuit_info, vec![instances], vec![w_l, w_r, w_o])
+    (
+        circuit_info,
+        MockCircuit::new(vec![instances], vec![w_l, w_r, w_o]),
+    )
 }
 
 pub fn rand_vanilla_plonk_with_lookup_assignment<F: PrimeField + Hash>(
@@ -315,11 +321,11 @@ pub fn rand_vanilla_plonk_with_lookup_assignment<F: PrimeField + Hash>(
     mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, instances, circuit) =
+        let (circuit_info, circuit) =
             rand_vanilla_plonk_with_lookup_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
         let polys = iter::empty()
-            .chain(instance_polys(num_vars, &instances))
+            .chain(instance_polys(num_vars, circuit.instances()))
             .chain(
                 iter::empty()
                     .chain(circuit_info.preprocess_polys)

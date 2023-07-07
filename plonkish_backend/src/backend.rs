@@ -1,5 +1,5 @@
 use crate::{
-    pcs::PolynomialCommitmentScheme,
+    pcs::{CommitmentChunk, PolynomialCommitmentScheme},
     util::{
         arithmetic::Field,
         expression::Expression,
@@ -13,38 +13,36 @@ use std::{borrow::BorrowMut, collections::BTreeSet, fmt::Debug, iter};
 
 pub mod hyperplonk;
 
-pub trait PlonkishBackend<F, Pcs>: Clone + Debug
-where
-    F: Field,
-    Pcs: PolynomialCommitmentScheme<F>,
-{
+pub trait PlonkishBackend<F: Field>: Clone + Debug {
+    type Pcs: PolynomialCommitmentScheme<F>;
     type ProverParam: Debug + Serialize + DeserializeOwned;
     type VerifierParam: Debug + Serialize + DeserializeOwned;
     type ProverState: Debug;
     type VerifierState: Debug;
 
-    fn setup(circuit_info: &PlonkishCircuitInfo<F>, rng: impl RngCore)
-        -> Result<Pcs::Param, Error>;
+    fn setup(
+        circuit_info: &PlonkishCircuitInfo<F>,
+        rng: impl RngCore,
+    ) -> Result<<Self::Pcs as PolynomialCommitmentScheme<F>>::Param, Error>;
 
     fn preprocess(
-        param: &Pcs::Param,
+        param: &<Self::Pcs as PolynomialCommitmentScheme<F>>::Param,
         circuit_info: &PlonkishCircuitInfo<F>,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error>;
 
     fn prove(
         pp: &Self::ProverParam,
         state: impl BorrowMut<Self::ProverState>,
-        instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
-        transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
+        transcript: &mut impl TranscriptWrite<CommitmentChunk<F, Self::Pcs>, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 
     fn verify(
         vp: &Self::VerifierParam,
         state: impl BorrowMut<Self::VerifierState>,
-        instances: &[&[F]],
-        transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
+        instances: &[Vec<F>],
+        transcript: &mut impl TranscriptRead<CommitmentChunk<F, Self::Pcs>, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
 }
@@ -140,6 +138,8 @@ pub trait PlonkishCircuit<F> {
 
     fn circuit_info(&self) -> Result<PlonkishCircuitInfo<F>, Error>;
 
+    fn instances(&self) -> &[Vec<F>];
+
     fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error>;
 }
 
@@ -154,7 +154,21 @@ mod test {
         Error,
     };
 
-    impl<F: Clone> PlonkishCircuit<F> for Vec<Vec<F>> {
+    pub(crate) struct MockCircuit<F> {
+        instances: Vec<Vec<F>>,
+        witnesses: Vec<Vec<F>>,
+    }
+
+    impl<F> MockCircuit<F> {
+        pub(crate) fn new(instances: Vec<Vec<F>>, witnesses: Vec<Vec<F>>) -> Self {
+            Self {
+                instances,
+                witnesses,
+            }
+        }
+    }
+
+    impl<F: Clone> PlonkishCircuit<F> for MockCircuit<F> {
         fn circuit_info_without_preprocess(&self) -> Result<PlonkishCircuitInfo<F>, Error> {
             unreachable!()
         }
@@ -163,9 +177,13 @@ mod test {
             unreachable!()
         }
 
+        fn instances(&self) -> &[Vec<F>] {
+            &self.instances
+        }
+
         fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error> {
             assert!(round == 0 && challenges.is_empty());
-            Ok(self.to_vec())
+            Ok(self.witnesses.clone())
         }
     }
 }

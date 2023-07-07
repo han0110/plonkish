@@ -2165,7 +2165,6 @@ mod test {
         for _ in 0..num_steps - 1 {
             {
                 let primary_state = primary_prover_state.witness.instance.clone();
-                let instnaces = primary.instance_slices();
 
                 let timer = start_timer(|| format!("prove-primary-{num_vars}"));
                 let proof = {
@@ -2173,7 +2172,6 @@ mod test {
                     Protostar::<HyperPlonk<P1>>::prove(
                         &primary_pp,
                         &mut primary_prover_state,
-                        &instnaces,
                         &primary,
                         &mut transcript,
                         seeded_std_rng(),
@@ -2187,14 +2185,13 @@ mod test {
                     circuit.update(
                         primary_state,
                         primary_prover_state.witness.instance.clone(),
-                        [instnaces[0][0], instnaces[0][1]],
+                        primary.instances()[0].clone().try_into().unwrap(),
                         proof,
                     );
                 });
             }
             {
                 let secondary_state = secondary_prover_state.witness.instance.clone();
-                let instnaces = secondary.instance_slices();
 
                 let timer = start_timer(|| format!("prove-secondary-{num_vars}"));
                 let proof = {
@@ -2202,7 +2199,6 @@ mod test {
                     Protostar::<HyperPlonk<P2>>::prove(
                         &secondary_pp,
                         &mut secondary_prover_state,
-                        &instnaces,
                         &secondary,
                         &mut transcript,
                         seeded_std_rng(),
@@ -2216,7 +2212,7 @@ mod test {
                     circuit.update(
                         secondary_state,
                         secondary_prover_state.witness.instance.clone(),
-                        [instnaces[0][0], instnaces[0][1]],
+                        secondary.instances()[0].clone().try_into().unwrap(),
                         proof,
                     );
                 });
@@ -2230,15 +2226,12 @@ mod test {
             let primary_verifier_state = ProtostarVerifierState::from(primary_prover_state.clone());
             let primary_state = primary_prover_state.witness.instance.clone();
 
-            let instnaces = primary.instance_slices();
-
             let timer = start_timer(|| format!("prove-primary-{num_vars}"));
             let proof = {
                 let mut transcript = PoseidonTranscript::new(num_limb_bits);
                 Protostar::<HyperPlonk<P1>>::prove(
                     &primary_pp,
                     &mut primary_prover_state,
-                    &instnaces,
                     &primary,
                     &mut transcript,
                     seeded_std_rng(),
@@ -2255,7 +2248,7 @@ mod test {
                 Protostar::<HyperPlonk<P1>>::verify(
                     &primary_vp,
                     primary_verifier_state,
-                    &instnaces,
+                    primary.instances(),
                     &mut transcript,
                     seeded_std_rng(),
                 )
@@ -2267,7 +2260,7 @@ mod test {
                 circuit.update(
                     primary_state,
                     primary_prover_state.witness.instance.clone(),
-                    [instnaces[0][0], instnaces[0][1]],
+                    primary.instances()[0].clone().try_into().unwrap(),
                     proof,
                 );
             });
@@ -2279,15 +2272,12 @@ mod test {
             let secondary_verifier_state =
                 ProtostarVerifierState::from(secondary_prover_state.clone());
 
-            let instnaces = secondary.instance_slices();
-
             let timer = start_timer(|| format!("prove-secondary-{num_vars}"));
             let proof = {
                 let mut transcript = PoseidonTranscript::new(num_limb_bits);
                 Protostar::<HyperPlonk<P2>>::prove(
                     &secondary_pp,
                     &mut secondary_prover_state,
-                    &instnaces,
                     &secondary,
                     &mut transcript,
                     seeded_std_rng(),
@@ -2305,7 +2295,7 @@ mod test {
                     StepCircuit::<C::Secondary>::output(&primary.circuit().step_circuit),
                     &secondary_verifier_state.instance
                 ),
-                fe_to_fe(instnaces[0][0]),
+                fe_to_fe(secondary.instances()[0][0]),
             );
             assert_eq!(
                 secondary.circuit().chips.hash_chip().hash_state(
@@ -2315,7 +2305,7 @@ mod test {
                     StepCircuit::<C::Primary>::output(&secondary.circuit().step_circuit),
                     &primary_state
                 ),
-                instnaces[0][1],
+                secondary.instances()[0][1],
             );
 
             let timer = start_timer(|| format!("verify-secondary-{num_vars}"));
@@ -2325,7 +2315,7 @@ mod test {
                 Protostar::<HyperPlonk<P2>>::verify(
                     &secondary_vp,
                     secondary_verifier_state,
-                    &instnaces,
+                    secondary.instances(),
                     &mut transcript,
                     seeded_std_rng(),
                 )

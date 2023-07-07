@@ -84,14 +84,6 @@ impl<F: Field, C: CircuitExt<F>> Halo2Circuit<F, C> {
         &self.circuit
     }
 
-    pub fn instance_slices(&self) -> Vec<&[F]> {
-        self.instances.iter().map(Vec::as_slice).collect()
-    }
-
-    pub fn instances(&self) -> Vec<Vec<F>> {
-        self.instances.clone()
-    }
-
     pub fn update_witness(&mut self, f: impl FnOnce(&mut C)) {
         f(&mut self.circuit);
         self.instances = self.circuit.instances();
@@ -221,6 +213,10 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
         circuit_info.permutations = preprocess_collector.permutation.into_cycles();
 
         Ok(circuit_info)
+    }
+
+    fn instances(&self) -> &[Vec<F>] {
+        &self.instances
     }
 
     fn synthesize(&self, phase: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, crate::Error> {

@@ -38,7 +38,7 @@ where
     }
 
     pub(crate) fn from_committed(
-        instances: &[&[F]],
+        instances: &[Vec<F>],
         witness_comms: impl IntoIterator<Item = C>,
         challenges: Vec<F>,
     ) -> Self {
@@ -54,8 +54,8 @@ where
         }
     }
 
-    pub(crate) fn instance_slices(&self) -> Vec<&[F]> {
-        self.instances.iter().map(Vec::as_slice).collect()
+    pub(crate) fn instances(&self) -> &[Vec<F>] {
+        &self.instances
     }
 }
 

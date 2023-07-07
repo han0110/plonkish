@@ -6,12 +6,12 @@ use crate::{
         },
         WitnessEncoding,
     },
-    pcs::{Evaluation, Polynomial},
+    pcs::Evaluation,
     piop::sum_check::{
         classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, steps_by, sum, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,

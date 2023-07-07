@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap};
 pub(super) fn verify_zero_check<F: PrimeField>(
     num_vars: usize,
     expression: &Expression<F>,
-    instances: &[&[F]],
+    instances: &[Vec<F>],
     challenges: &[F],
     y: &[F],
     transcript: &mut impl FieldTranscriptRead<F>,
@@ -40,7 +40,7 @@ pub(super) fn verify_sum_check<F: PrimeField>(
     num_vars: usize,
     expression: &Expression<F>,
     sum: F,
-    instances: &[&[F]],
+    instances: &[Vec<F>],
     challenges: &[F],
     y: &[F],
     transcript: &mut impl FieldTranscriptRead<F>,
@@ -92,7 +92,7 @@ pub(super) fn verify_sum_check<F: PrimeField>(
 fn instance_evals<F: PrimeField>(
     num_vars: usize,
     expression: &Expression<F>,
-    instances: &[&[F]],
+    instances: &[Vec<F>],
     x: &[F],
 ) -> Vec<(Query, F)> {
     let mut instance_query = expression.used_query();
@@ -136,7 +136,7 @@ fn instance_evals<F: PrimeField>(
                     .collect_vec()
             };
             let eval = inner_product(
-                instances[query.poly()],
+                &instances[query.poly()],
                 is.iter().map(|i| lagrange_evals.get(i).unwrap()),
             );
             (query, eval)

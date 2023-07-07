@@ -1,5 +1,5 @@
 use crate::{
-    pcs::Polynomial,
+    poly::Polynomial,
     util::{
         arithmetic::{div_ceil, horner, powers, Field},
         impl_index,

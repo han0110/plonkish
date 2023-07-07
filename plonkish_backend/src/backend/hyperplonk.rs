@@ -75,11 +75,12 @@ where
     permutation_comms: Vec<(usize, Pcs::Commitment)>,
 }
 
-impl<F, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
+impl<F, Pcs> PlonkishBackend<F> for HyperPlonk<Pcs>
 where
     F: PrimeField + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
+    type Pcs = Pcs;
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
     type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
     type ProverState = ();
@@ -167,18 +168,20 @@ where
     fn prove(
         pp: &Self::ProverParam,
         _: impl BorrowMut<Self::ProverState>,
-        instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
-        for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
-            assert_eq!(instances.len(), *num_instances);
-            for instance in instances.iter() {
-                transcript.common_field_element(instance)?;
+        let instance_polys = {
+            let instances = circuit.instances();
+            for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
+                assert_eq!(instances.len(), *num_instances);
+                for instance in instances.iter() {
+                    transcript.common_field_element(instance)?;
+                }
             }
-        }
-        let instance_polys = instance_polys(pp.num_vars, instances.iter().cloned());
+            instance_polys(pp.num_vars, instances)
+        };
 
         // Round 0..n
 
@@ -295,7 +298,7 @@ where
     fn verify(
         vp: &Self::VerifierParam,
         _: impl BorrowMut<Self::VerifierState>,
-        instances: &[&[F]],
+        instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
@@ -400,7 +403,7 @@ pub(crate) mod test {
             transcript::{
                 InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
             },
-            DeserializeOwned, Itertools, Serialize,
+            DeserializeOwned, Serialize,
         },
     };
     use halo2_curves::{
@@ -411,7 +414,7 @@ pub(crate) mod test {
 
     pub(crate) fn run_hyperplonk<F, Pcs, T, C>(
         num_vars_range: Range<usize>,
-        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, C),
+        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, C),
     ) where
         F: PrimeField + Hash + Serialize + DeserializeOwned,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
@@ -421,8 +424,8 @@ pub(crate) mod test {
         C: PlonkishCircuit<F>,
     {
         for num_vars in num_vars_range {
-            let (circuit_info, instances, circuit) = circuit_fn(num_vars);
-            let instances = instances.iter().map(Vec::as_slice).collect_vec();
+            let (circuit_info, circuit) = circuit_fn(num_vars);
+            let instances = circuit.instances();
 
             let timer = start_timer(|| format!("setup-{num_vars}"));
             let param = HyperPlonk::<Pcs>::setup(&circuit_info, seeded_std_rng()).unwrap();
@@ -435,15 +438,8 @@ pub(crate) mod test {
             let timer = start_timer(|| format!("prove-{num_vars}"));
             let proof = {
                 let mut transcript = T::default();
-                HyperPlonk::<Pcs>::prove(
-                    &pp,
-                    (),
-                    &instances,
-                    &circuit,
-                    &mut transcript,
-                    seeded_std_rng(),
-                )
-                .unwrap();
+                HyperPlonk::<Pcs>::prove(&pp, (), &circuit, &mut transcript, seeded_std_rng())
+                    .unwrap();
                 transcript.into_proof()
             };
             end_timer(timer);
@@ -451,7 +447,7 @@ pub(crate) mod test {
             let timer = start_timer(|| format!("verify-{num_vars}"));
             let result = {
                 let mut transcript = T::from_proof(proof.as_slice());
-                HyperPlonk::<Pcs>::verify(&vp, (), &instances, &mut transcript, seeded_std_rng())
+                HyperPlonk::<Pcs>::verify(&vp, (), instances, &mut transcript, seeded_std_rng())
             };
             assert_eq!(result, Ok(()));
             end_timer(timer);

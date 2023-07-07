@@ -150,13 +150,14 @@ where
     }
 }
 
-impl<F, Pcs> PlonkishBackend<F, Pcs> for Sangria<HyperPlonk<Pcs>>
+impl<F, Pcs> PlonkishBackend<F> for Sangria<HyperPlonk<Pcs>>
 where
     F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     Pcs::Commitment: AdditiveCommitment<F>,
     Pcs::CommitmentChunk: AdditiveCommitment<F>,
 {
+    type Pcs = Pcs;
     type ProverParam = SangriaProverParam<F, Pcs>;
     type VerifierParam = SangriaVerifierParam<F, Pcs>;
     type ProverState = SangriaProverState<F, Pcs>;
@@ -186,7 +187,6 @@ where
     fn prove(
         pp: &Self::ProverParam,
         mut state: impl BorrowMut<Self::ProverState>,
-        instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
@@ -201,6 +201,7 @@ where
         } = pp;
         let state = state.borrow_mut();
 
+        let instances = circuit.instances();
         for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
             assert_eq!(instances.len(), *num_instances);
             for instance in instances.iter() {
@@ -239,7 +240,7 @@ where
 
         let timer = start_timer(|| format!("lookup_compressed_polys-{}", pp.lookups.len()));
         let lookup_compressed_polys = {
-            let instance_polys = instance_polys(pp.num_vars, instances.iter().cloned());
+            let instance_polys = instance_polys(pp.num_vars, instances);
             let polys = iter::empty()
                 .chain(instance_polys.iter())
                 .chain(pp.preprocess_polys.iter())
@@ -392,7 +393,7 @@ where
     fn verify(
         vp: &Self::VerifierParam,
         mut state: impl BorrowMut<Self::VerifierState>,
-        instances: &[&[F]],
+        instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
@@ -474,7 +475,7 @@ where
             let alpha = transcript.squeeze_challenge();
             let y = transcript.squeeze_challenges(vp.num_vars);
 
-            let instances = state.instance.instance_slices();
+            let instances = state.instance.instances();
             let challenges = iter::empty()
                 .chain(state.instance.challenges.iter().copied())
                 .chain([beta, gamma, alpha, state.instance.u])
@@ -483,7 +484,7 @@ where
                 verify_zero_check(
                     vp.num_vars,
                     zero_check_expression,
-                    &instances,
+                    instances,
                     &challenges,
                     &y,
                     transcript,
@@ -548,7 +549,7 @@ pub(crate) mod test {
 
     pub(crate) fn run_sangria_hyperplonk<F, Pcs, T, C>(
         num_vars_range: Range<usize>,
-        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<Vec<F>>>, Vec<C>),
+        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<C>),
     ) where
         F: PrimeField + Ord + Hash + Serialize + DeserializeOwned,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
@@ -560,7 +561,7 @@ pub(crate) mod test {
         C: PlonkishCircuit<F>,
     {
         for num_vars in num_vars_range {
-            let (circuit_info, instances, circuits) = circuit_fn(num_vars);
+            let (circuit_info, circuits) = circuit_fn(num_vars);
 
             let timer = start_timer(|| format!("setup-{num_vars}"));
             let param = Sangria::<HyperPlonk<Pcs>>::setup(&circuit_info, seeded_std_rng()).unwrap();
@@ -571,10 +572,9 @@ pub(crate) mod test {
             end_timer(timer);
 
             let (mut prover_state, mut verifier_state) = (pp.init(), vp.init());
-            for (idx, (instances, circuit)) in instances.iter().zip_eq(circuits.iter()).enumerate()
-            {
+            for (idx, circuit) in circuits.iter().enumerate() {
                 let is_folding = idx != circuits.len() - 1;
-                let instances = instances.iter().map(Vec::as_slice).collect_vec();
+                let instances = circuit.instances();
 
                 let timer = start_timer(|| format!("prove-{num_vars}"));
                 let proof = {
@@ -583,7 +583,6 @@ pub(crate) mod test {
                     Sangria::<HyperPlonk<Pcs>>::prove(
                         &pp,
                         &mut prover_state,
-                        &instances,
                         circuit,
                         &mut transcript,
                         seeded_std_rng(),
@@ -600,7 +599,7 @@ pub(crate) mod test {
                     Sangria::<HyperPlonk<Pcs>>::verify(
                         &vp,
                         &mut verifier_state,
-                        &instances,
+                        instances,
                         &mut transcript,
                         seeded_std_rng(),
                     )
@@ -617,24 +616,24 @@ pub(crate) mod test {
                 #[test]
                 fn [<$name _hyperplonk_sangria_vanilla_plonk>]() {
                     run_sangria_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        let (circuit_info, _, _) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
-                        let (instances, circuits) = iter::repeat_with(|| {
-                            let (_, instances, circuit) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
-                            (instances, circuit)
-                        }).take(3).unzip();
-                        (circuit_info, instances, circuits)
+                        let (circuit_info, _) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
+                        let circuits = iter::repeat_with(|| {
+                            let (_,  circuit) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
+                            circuit
+                        }).take(3).collect_vec();
+                        (circuit_info,  circuits)
                     });
                 }
 
                 #[test]
                 fn [<$name _hyperplonk_sangria_vanilla_plonk_with_lookup>]() {
                     run_sangria_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        let (circuit_info, _, _) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
-                        let (instances, circuits) = iter::repeat_with(|| {
-                            let (_, instances, circuit) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
-                            (instances, circuit)
-                        }).take(3).unzip();
-                        (circuit_info, instances, circuits)
+                        let (circuit_info, _) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
+                        let circuits = iter::repeat_with(|| {
+                            let (_, circuit) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
+                            circuit
+                        }).take(3).collect_vec();
+                        (circuit_info,  circuits)
                     });
                 }
             }

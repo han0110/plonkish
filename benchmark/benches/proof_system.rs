@@ -50,8 +50,8 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
 
     let circuit = C::rand(k, std_rng());
     let circuit = Halo2Circuit::new::<HyperPlonk>(k, circuit);
-    let instances = circuit.instance_slices();
     let circuit_info = circuit.circuit_info().unwrap();
+    let instances = circuit.instances();
 
     let timer = start_timer(|| format!("hyperplonk_setup-{k}"));
     let param = HyperPlonk::setup(&circuit_info, std_rng()).unwrap();
@@ -64,14 +64,14 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     let proof = sample(System::HyperPlonk, k, || {
         let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let mut transcript = Keccak256Transcript::default();
-        HyperPlonk::prove(&pp, (), &instances, &circuit, &mut transcript, std_rng()).unwrap();
+        HyperPlonk::prove(&pp, (), &circuit, &mut transcript, std_rng()).unwrap();
         transcript.into_proof()
     });
 
     let _timer = start_timer(|| format!("hyperplonk_verify-{k}"));
     let accept = {
         let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
-        HyperPlonk::verify(&vp, (), &instances, &mut transcript, std_rng()).is_ok()
+        HyperPlonk::verify(&vp, (), instances, &mut transcript, std_rng()).is_ok()
     };
     assert!(accept);
 }

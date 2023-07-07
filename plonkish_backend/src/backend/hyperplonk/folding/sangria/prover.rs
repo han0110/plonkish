@@ -1,7 +1,7 @@
 use crate::{
     backend::hyperplonk::{folding::sangria::verifier::SangriaInstance, prover::instance_polys},
-    pcs::{AdditiveCommitment, Polynomial},
-    poly::multilinear::MultilinearPolynomial,
+    pcs::AdditiveCommitment,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, powers, sum, BatchInvert, BooleanHypercube, PrimeField},
         chain,
@@ -44,7 +44,7 @@ where
 
     pub(crate) fn from_committed(
         k: usize,
-        instances: &[&[F]],
+        instances: &[Vec<F>],
         witness_polys: impl IntoIterator<Item = P>,
         witness_comms: impl IntoIterator<Item = C>,
         challenges: Vec<F>,

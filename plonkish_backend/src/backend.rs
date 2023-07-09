@@ -9,16 +9,14 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{borrow::BorrowMut, collections::BTreeSet, fmt::Debug, iter};
+use std::{collections::BTreeSet, fmt::Debug, iter};
 
 pub mod hyperplonk;
 
 pub trait PlonkishBackend<F: Field>: Clone + Debug {
     type Pcs: PolynomialCommitmentScheme<F>;
-    type ProverParam: Debug + Serialize + DeserializeOwned;
-    type VerifierParam: Debug + Serialize + DeserializeOwned;
-    type ProverState: Debug;
-    type VerifierState: Debug;
+    type ProverParam: Clone + Debug + Serialize + DeserializeOwned;
+    type VerifierParam: Clone + Debug + Serialize + DeserializeOwned;
 
     fn setup(
         circuit_info: &PlonkishCircuitInfo<F>,
@@ -32,7 +30,6 @@ pub trait PlonkishBackend<F: Field>: Clone + Debug {
 
     fn prove(
         pp: &Self::ProverParam,
-        state: impl BorrowMut<Self::ProverState>,
         circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<CommitmentChunk<F, Self::Pcs>, F>,
         rng: impl RngCore,
@@ -40,7 +37,6 @@ pub trait PlonkishBackend<F: Field>: Clone + Debug {
 
     fn verify(
         vp: &Self::VerifierParam,
-        state: impl BorrowMut<Self::VerifierState>,
         instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<CommitmentChunk<F, Self::Pcs>, F>,
         rng: impl RngCore,
@@ -148,7 +144,7 @@ pub trait WitnessEncoding {
 }
 
 #[cfg(any(test, feature = "benchmark"))]
-mod test {
+mod mock {
     use crate::{
         backend::{PlonkishCircuit, PlonkishCircuitInfo},
         Error,
@@ -184,6 +180,63 @@ mod test {
         fn synthesize(&self, round: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, Error> {
             assert!(round == 0 && challenges.is_empty());
             Ok(self.witnesses.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use crate::{
+        backend::{PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo},
+        pcs::PolynomialCommitmentScheme,
+        util::{
+            arithmetic::PrimeField,
+            end_timer, start_timer,
+            test::seeded_std_rng,
+            transcript::{InMemoryTranscript, TranscriptRead, TranscriptWrite},
+            DeserializeOwned, Serialize,
+        },
+    };
+    use std::{hash::Hash, ops::Range};
+
+    pub fn run_plonkish_backend<F, Pb, T, C>(
+        num_vars_range: Range<usize>,
+        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, C),
+    ) where
+        F: PrimeField + Hash + Serialize + DeserializeOwned,
+        Pb: PlonkishBackend<F>,
+        T: TranscriptRead<<Pb::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
+            + TranscriptWrite<<Pb::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
+            + InMemoryTranscript,
+        C: PlonkishCircuit<F>,
+    {
+        for num_vars in num_vars_range {
+            let (circuit_info, circuit) = circuit_fn(num_vars);
+            let instances = circuit.instances();
+
+            let timer = start_timer(|| format!("setup-{num_vars}"));
+            let param = Pb::setup(&circuit_info, seeded_std_rng()).unwrap();
+            end_timer(timer);
+
+            let timer = start_timer(|| format!("preprocess-{num_vars}"));
+            let (pp, vp) = Pb::preprocess(&param, &circuit_info).unwrap();
+            end_timer(timer);
+
+            let timer = start_timer(|| format!("prove-{num_vars}"));
+            let proof = {
+                let mut transcript = T::default();
+                Pb::prove(&pp, &circuit, &mut transcript, seeded_std_rng()).unwrap();
+                transcript.into_proof()
+            };
+            end_timer(timer);
+
+            let timer = start_timer(|| format!("verify-{num_vars}"));
+            let result = {
+                let mut transcript = T::from_proof(proof.as_slice());
+                Pb::verify(&vp, instances, &mut transcript, seeded_std_rng())
+            };
+            assert_eq!(result, Ok(()));
+            end_timer(timer);
         }
     }
 }

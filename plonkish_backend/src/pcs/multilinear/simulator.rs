@@ -2,11 +2,12 @@ use crate::{
     pcs::{
         multilinear::additive,
         univariate::{UnivariateKzg, UnivariateKzgCommitment},
-        Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
+        Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::{
         multilinear::{merge_into, MultilinearPolynomial},
         univariate::UnivariatePolynomial,
+        Polynomial,
     },
     util::{
         arithmetic::{Field, MultiMillerLoop},

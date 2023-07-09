@@ -2,6 +2,7 @@ use crate::{
     util::{
         arithmetic::{fe_mod_from_le_bytes, Coordinates, CurveAffine, PrimeField},
         hash::{Hash, Keccak256, Output, Update},
+        Itertools,
     },
     Error,
 };
@@ -16,6 +17,12 @@ pub trait FieldTranscript<F> {
     }
 
     fn common_field_element(&mut self, fe: &F) -> Result<(), Error>;
+
+    fn common_field_elements(&mut self, fes: &[F]) -> Result<(), Error> {
+        fes.iter()
+            .map(|fe| self.common_field_element(fe))
+            .try_collect()
+    }
 }
 
 pub trait FieldTranscriptRead<F>: FieldTranscript<F> {
@@ -45,6 +52,13 @@ pub trait FieldTranscriptWrite<F>: FieldTranscript<F> {
 
 pub trait Transcript<C, F>: FieldTranscript<F> {
     fn common_commitment(&mut self, comm: &C) -> Result<(), Error>;
+
+    fn common_commitments(&mut self, comms: &[C]) -> Result<(), Error> {
+        comms
+            .iter()
+            .map(|comm| self.common_commitment(comm))
+            .try_collect()
+    }
 }
 
 pub trait TranscriptRead<C, F>: Transcript<C, F> + FieldTranscriptRead<F> {

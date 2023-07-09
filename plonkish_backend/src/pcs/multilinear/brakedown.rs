@@ -6,8 +6,8 @@
 //! [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
 
 use crate::{
-    pcs::{multilinear::validate_input, Evaluation, Point, Polynomial, PolynomialCommitmentScheme},
-    poly::multilinear::MultilinearPolynomial,
+    pcs::{multilinear::validate_input, Evaluation, Point, PolynomialCommitmentScheme},
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, inner_product, PrimeField},
         code::{Brakedown, BrakedownSpec, LinearCodes},

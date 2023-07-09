@@ -64,14 +64,14 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
     let proof = sample(System::HyperPlonk, k, || {
         let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
         let mut transcript = Keccak256Transcript::default();
-        HyperPlonk::prove(&pp, (), &circuit, &mut transcript, std_rng()).unwrap();
+        HyperPlonk::prove(&pp, &circuit, &mut transcript, std_rng()).unwrap();
         transcript.into_proof()
     });
 
     let _timer = start_timer(|| format!("hyperplonk_verify-{k}"));
     let accept = {
         let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
-        HyperPlonk::verify(&vp, (), instances, &mut transcript, std_rng()).is_ok()
+        HyperPlonk::verify(&vp, instances, &mut transcript, std_rng()).is_ok()
     };
     assert!(accept);
 }

@@ -36,7 +36,7 @@ pub(super) fn verify_zero_check<F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn verify_sum_check<F: PrimeField>(
+pub(crate) fn verify_sum_check<F: PrimeField>(
     num_vars: usize,
     expression: &Expression<F>,
     sum: F,

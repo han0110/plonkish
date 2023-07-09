@@ -29,7 +29,7 @@ use std::{
     iter,
 };
 
-pub(super) fn instance_polys<'a, F: PrimeField>(
+pub(crate) fn instance_polys<'a, F: PrimeField>(
     num_vars: usize,
     instances: impl IntoIterator<Item = impl IntoIterator<Item = &'a F>>,
 ) -> Vec<MultilinearPolynomial<F>> {
@@ -47,7 +47,7 @@ pub(super) fn instance_polys<'a, F: PrimeField>(
         .collect()
 }
 
-pub(super) fn lookup_compressed_polys<F: PrimeField>(
+pub(crate) fn lookup_compressed_polys<F: PrimeField>(
     lookups: &[Vec<(Expression<F>, Expression<F>)>],
     polys: &[&MultilinearPolynomial<F>],
     challenges: &[F],
@@ -136,7 +136,7 @@ pub(super) fn lookup_compressed_poly<F: PrimeField>(
     [compressed_input_poly, compressed_table_poly]
 }
 
-pub(super) fn lookup_m_polys<F: PrimeField + Hash>(
+pub(crate) fn lookup_m_polys<F: PrimeField + Hash>(
     compressed_polys: &[[MultilinearPolynomial<F>; 2]],
 ) -> Result<Vec<MultilinearPolynomial<F>>, Error> {
     compressed_polys.iter().map(lookup_m_poly).try_collect()
@@ -249,7 +249,7 @@ pub(super) fn lookup_h_poly<F: PrimeField + Hash>(
     MultilinearPolynomial::new(h_input)
 }
 
-pub(super) fn permutation_z_polys<F: PrimeField>(
+pub(crate) fn permutation_z_polys<F: PrimeField>(
     num_chunks: usize,
     permutation_polys: &[(usize, MultilinearPolynomial<F>)],
     polys: &[&MultilinearPolynomial<F>],
@@ -365,7 +365,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn prove_sum_check<F: PrimeField>(
+pub(crate) fn prove_sum_check<F: PrimeField>(
     num_instance_poly: usize,
     expression: &Expression<F>,
     sum: F,

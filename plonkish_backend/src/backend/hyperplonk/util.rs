@@ -7,10 +7,10 @@ use crate::{
                 permutation_z_polys,
             },
         },
-        test::MockCircuit,
+        mock::MockCircuit,
         PlonkishCircuit, PlonkishCircuitInfo,
     },
-    poly::{Polynomial, multilinear::MultilinearPolynomial},
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{powers, BooleanHypercube, PrimeField},
         expression::{Expression, Query, Rotation},

@@ -20,9 +20,9 @@ pub type Commitment<F, Pcs> = <Pcs as PolynomialCommitmentScheme<F>>::Commitment
 pub type CommitmentChunk<F, Pcs> = <Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk;
 
 pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
-    type Param: Debug + Serialize + DeserializeOwned;
-    type ProverParam: Debug + Serialize + DeserializeOwned;
-    type VerifierParam: Debug + Serialize + DeserializeOwned;
+    type Param: Clone + Debug + Serialize + DeserializeOwned;
+    type ProverParam: Clone + Debug + Serialize + DeserializeOwned;
+    type VerifierParam: Clone + Debug + Serialize + DeserializeOwned;
     type Polynomial: Polynomial<F> + Serialize + DeserializeOwned;
     type Commitment: Clone
         + Debug

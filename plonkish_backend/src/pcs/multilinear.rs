@@ -70,14 +70,14 @@ fn err_too_many_variates(function: &str, upto: usize, got: usize) -> Error {
 mod additive {
     use crate::{
         pcs::{
-            multilinear::validate_input, AdditiveCommitment, Evaluation, Point, Polynomial,
+            multilinear::validate_input, AdditiveCommitment, Evaluation, Point,
             PolynomialCommitmentScheme,
         },
         piop::sum_check::{
             classic::{ClassicSumCheck, CoefficientsProver},
             eq_xy_eval, SumCheck as _, VirtualPolynomial,
         },
-        poly::multilinear::MultilinearPolynomial,
+        poly::{multilinear::MultilinearPolynomial, Polynomial},
         util::{
             arithmetic::{inner_product, PrimeField},
             end_timer,

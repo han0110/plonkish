@@ -5,9 +5,9 @@ use crate::{
             ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParams},
             validate_input,
         },
-        AdditiveCommitment, Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
+        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, variable_base_msm, Curve, CurveAffine, Group},
         parallel::parallelize,

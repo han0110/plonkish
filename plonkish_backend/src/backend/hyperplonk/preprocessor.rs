@@ -108,7 +108,7 @@ pub(super) fn lookup_constraints<F: PrimeField>(
     (constraints, sum_check)
 }
 
-pub(super) fn permutation_constraints<F: PrimeField>(
+pub(crate) fn permutation_constraints<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
     max_degree: usize,
     beta: &Expression<F>,

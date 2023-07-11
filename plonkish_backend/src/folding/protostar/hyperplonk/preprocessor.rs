@@ -23,8 +23,9 @@ use crate::{
 };
 use std::{array, borrow::Cow, collections::BTreeSet, hash::Hash, iter};
 
-pub(crate) fn batch_size<F: PrimeField, const STRATEGY: usize>(
+pub(crate) fn batch_size<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
+    strategy: ProtostarStrategy,
 ) -> usize {
     let num_lookups = circuit_info.lookups.len();
     let num_permutation_polys = circuit_info.permutation_polys().len();
@@ -32,7 +33,7 @@ pub(crate) fn batch_size<F: PrimeField, const STRATEGY: usize>(
         [circuit_info.preprocess_polys.len() + circuit_info.permutation_polys().len()],
         circuit_info.num_witness_polys.clone(),
         [num_lookups],
-        match ProtostarStrategy::from(STRATEGY) {
+        match strategy {
             NoCompressing => {
                 vec![]
             }
@@ -47,13 +48,14 @@ pub(crate) fn batch_size<F: PrimeField, const STRATEGY: usize>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn preprocess<F, Pcs, const STRATEGY: usize>(
+pub(super) fn preprocess<F, Pcs>(
     param: &Pcs::Param,
     circuit_info: &PlonkishCircuitInfo<F>,
+    strategy: ProtostarStrategy,
 ) -> Result<
     (
-        ProtostarProverParam<F, HyperPlonk<Pcs>, STRATEGY>,
-        ProtostarVerifierParam<F, HyperPlonk<Pcs>, STRATEGY>,
+        ProtostarProverParam<F, HyperPlonk<Pcs>>,
+        ProtostarVerifierParam<F, HyperPlonk<Pcs>>,
     ),
     Error,
 >
@@ -89,7 +91,7 @@ where
         cross_term_expressions,
         sum_check,
         zero_check_on_every_row,
-    ) = match ProtostarStrategy::from(STRATEGY) {
+    ) = match strategy {
         NoCompressing => {
             let alpha_prime_offset = challenge_offset + num_theta_primes + 1;
             let num_builtin_witness_polys = 3 * circuit_info.lookups.len();
@@ -269,7 +271,7 @@ where
 
     let (pp, vp) = {
         let (mut pp, mut vp) = HyperPlonk::preprocess(param, circuit_info)?;
-        let batch_size = batch_size::<_, STRATEGY>(circuit_info);
+        let batch_size = batch_size(circuit_info, strategy);
         let (pcs_pp, pcs_vp) = Pcs::trim(param, 1 << circuit_info.k, batch_size)?;
         pp.pcs = pcs_pp;
         vp.pcs = pcs_vp;
@@ -285,6 +287,7 @@ where
     Ok((
         ProtostarProverParam {
             pp,
+            strategy,
             num_theta_primes,
             num_alpha_primes,
             num_folding_witness_polys,
@@ -293,6 +296,7 @@ where
         },
         ProtostarVerifierParam {
             vp,
+            strategy,
             num_theta_primes,
             num_alpha_primes,
             num_folding_witness_polys,

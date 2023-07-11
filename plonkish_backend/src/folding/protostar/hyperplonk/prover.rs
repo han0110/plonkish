@@ -80,12 +80,12 @@ pub(super) fn powers_of_zeta_poly<F: PrimeField>(
     MultilinearPolynomial::new(par_map_collect(&nth_map, |b| powers_of_zeta[*b]))
 }
 
-pub(crate) fn evaluate_cross_term_polys<F, Pcs, const STRATEGY: usize>(
+pub(crate) fn evaluate_cross_term_polys<F, Pcs>(
     cross_term_expressions: &[Expression<F>],
     num_vars: usize,
     preprocess_polys: &[MultilinearPolynomial<F>],
-    folded: &ProtostarAccumulator<F, Pcs, STRATEGY>,
-    incoming: &ProtostarAccumulator<F, Pcs, STRATEGY>,
+    folded: &ProtostarAccumulator<F, Pcs>,
+    incoming: &ProtostarAccumulator<F, Pcs>,
 ) -> Vec<MultilinearPolynomial<F>>
 where
     F: PrimeField,
@@ -126,12 +126,12 @@ where
         .collect_vec()
 }
 
-pub(super) fn evaluate_compressed_cross_term_sums<F, Pcs, const STRATEGY: usize>(
+pub(super) fn evaluate_compressed_cross_term_sums<F, Pcs>(
     cross_term_expressions: &[Expression<F>],
     num_vars: usize,
     preprocess_polys: &[MultilinearPolynomial<F>],
-    accumulator: &ProtostarAccumulator<F, Pcs, STRATEGY>,
-    incoming: &ProtostarAccumulator<F, Pcs, STRATEGY>,
+    accumulator: &ProtostarAccumulator<F, Pcs>,
+    incoming: &ProtostarAccumulator<F, Pcs>,
 ) -> Vec<F>
 where
     F: PrimeField,
@@ -173,11 +173,11 @@ where
         .unwrap()
 }
 
-pub(crate) fn evaluate_zeta_cross_term_poly<F, Pcs, const STRATEGY: usize>(
+pub(crate) fn evaluate_zeta_cross_term_poly<F, Pcs>(
     num_vars: usize,
     zeta_nth_back: usize,
-    accumulator: &ProtostarAccumulator<F, Pcs, STRATEGY>,
-    incoming: &ProtostarAccumulator<F, Pcs, STRATEGY>,
+    accumulator: &ProtostarAccumulator<F, Pcs>,
+    incoming: &ProtostarAccumulator<F, Pcs>,
 ) -> MultilinearPolynomial<F>
 where
     F: PrimeField,
@@ -221,12 +221,12 @@ where
     MultilinearPolynomial::new(cross_term)
 }
 
-fn init_hadamard_evaluator<'a, F, Pcs, const STRATEGY: usize>(
+fn init_hadamard_evaluator<'a, F, Pcs>(
     expressions: &[Expression<F>],
     num_vars: usize,
     preprocess_polys: &'a [MultilinearPolynomial<F>],
-    accumulator: &'a ProtostarAccumulator<F, Pcs, STRATEGY>,
-    incoming: &'a ProtostarAccumulator<F, Pcs, STRATEGY>,
+    accumulator: &'a ProtostarAccumulator<F, Pcs>,
+    incoming: &'a ProtostarAccumulator<F, Pcs>,
 ) -> HadamardEvaluator<'a, F>
 where
     F: PrimeField,

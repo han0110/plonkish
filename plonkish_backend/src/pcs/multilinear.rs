@@ -257,7 +257,7 @@ mod test {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::CommitmentChunk, F>
             + TranscriptWrite<Pcs::CommitmentChunk, F>
-            + InMemoryTranscript,
+            + InMemoryTranscript<Param = ()>,
     {
         for num_vars in 3..16 {
             // Setup
@@ -269,7 +269,7 @@ mod test {
             };
             // Commit and open
             let proof = {
-                let mut transcript = T::default();
+                let mut transcript = T::new(());
                 let poly = MultilinearPolynomial::rand(num_vars, OsRng);
                 let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
                 let point = transcript.squeeze_challenges(num_vars);
@@ -280,7 +280,7 @@ mod test {
             };
             // Verify
             let result = {
-                let mut transcript = T::from_proof(proof.as_slice());
+                let mut transcript = T::from_proof((), proof.as_slice());
                 Pcs::verify(
                     &vp,
                     &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
@@ -299,7 +299,7 @@ mod test {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::CommitmentChunk, F>
             + TranscriptWrite<Pcs::CommitmentChunk, F>
-            + InMemoryTranscript,
+            + InMemoryTranscript<Param = ()>,
     {
         for num_vars in 3..16 {
             let batch_size = 8;
@@ -321,7 +321,7 @@ mod test {
             .unique()
             .collect_vec();
             let proof = {
-                let mut transcript = T::default();
+                let mut transcript = T::new(());
                 let polys = iter::repeat_with(|| MultilinearPolynomial::rand(num_vars, OsRng))
                     .take(batch_size)
                     .collect_vec();
@@ -346,7 +346,7 @@ mod test {
             };
             // Batch verify
             let result = {
-                let mut transcript = T::from_proof(proof.as_slice());
+                let mut transcript = T::from_proof((), proof.as_slice());
                 Pcs::batch_verify(
                     &vp,
                     &Pcs::read_commitments(&vp, batch_size, &mut transcript).unwrap(),

@@ -7,7 +7,10 @@ use crate::{
     Error,
 };
 use halo2_curves::{bn256, grumpkin, pasta};
-use std::io::{self, Cursor};
+use std::{
+    fmt::Debug,
+    io::{self, Cursor},
+};
 
 pub trait FieldTranscript<F> {
     fn squeeze_challenge(&mut self) -> F;
@@ -83,10 +86,14 @@ pub trait TranscriptWrite<C, F>: Transcript<C, F> + FieldTranscriptWrite<F> {
     }
 }
 
-pub trait InMemoryTranscript: Default {
+pub trait InMemoryTranscript {
+    type Param: Clone + Debug;
+
+    fn new(param: Self::Param) -> Self;
+
     fn into_proof(self) -> Vec<u8>;
 
-    fn from_proof(proof: &[u8]) -> Self;
+    fn from_proof(param: Self::Param, proof: &[u8]) -> Self;
 }
 
 pub type Keccak256Transcript<S> = FiatShamirTranscript<Keccak256, S>;
@@ -98,11 +105,17 @@ pub struct FiatShamirTranscript<H, S> {
 }
 
 impl<H: Hash> InMemoryTranscript for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+    type Param = ();
+
+    fn new(_: Self::Param) -> Self {
+        Self::default()
+    }
+
     fn into_proof(self) -> Vec<u8> {
         self.stream.into_inner()
     }
 
-    fn from_proof(proof: &[u8]) -> Self {
+    fn from_proof(_: Self::Param, proof: &[u8]) -> Self {
         Self {
             state: H::default(),
             stream: Cursor::new(proof.to_vec()),

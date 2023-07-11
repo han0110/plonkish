@@ -70,7 +70,7 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
 
     let _timer = start_timer(|| format!("hyperplonk_verify-{k}"));
     let accept = {
-        let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+        let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
         HyperPlonk::verify(&vp, instances, &mut transcript, std_rng()).is_ok()
     };
     assert!(accept);

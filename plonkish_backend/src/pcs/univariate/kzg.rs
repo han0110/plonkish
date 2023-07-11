@@ -577,7 +577,7 @@ mod test {
             };
             // Verify
             let result = {
-                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
                 Pcs::verify(
                     &vp,
                     &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
@@ -635,7 +635,7 @@ mod test {
             };
             // Batch verify
             let result = {
-                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
                 Pcs::batch_verify(
                     &vp,
                     &Pcs::read_commitments(&vp, batch_size, &mut transcript).unwrap(),

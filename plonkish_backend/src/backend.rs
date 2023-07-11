@@ -207,7 +207,7 @@ pub(crate) mod test {
         Pb: PlonkishBackend<F>,
         T: TranscriptRead<<Pb::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
             + TranscriptWrite<<Pb::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
-            + InMemoryTranscript,
+            + InMemoryTranscript<Param = ()>,
         C: PlonkishCircuit<F>,
     {
         for num_vars in num_vars_range {
@@ -224,7 +224,7 @@ pub(crate) mod test {
 
             let timer = start_timer(|| format!("prove-{num_vars}"));
             let proof = {
-                let mut transcript = T::default();
+                let mut transcript = T::new(());
                 Pb::prove(&pp, &circuit, &mut transcript, seeded_std_rng()).unwrap();
                 transcript.into_proof()
             };
@@ -232,7 +232,7 @@ pub(crate) mod test {
 
             let timer = start_timer(|| format!("verify-{num_vars}"));
             let result = {
-                let mut transcript = T::from_proof(proof.as_slice());
+                let mut transcript = T::from_proof((), proof.as_slice());
                 Pb::verify(&vp, instances, &mut transcript, seeded_std_rng())
             };
             assert_eq!(result, Ok(()));

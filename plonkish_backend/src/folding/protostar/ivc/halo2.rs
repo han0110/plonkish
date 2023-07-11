@@ -1,20 +1,33 @@
 use crate::{
-    backend::hyperplonk::folding::{protostar::ProtostarInstance, ProtostarVerifierParam},
-    frontend::halo2::CircuitExt,
-    pcs::PolynomialCommitmentScheme,
+    backend::{hyperplonk::HyperPlonk, PlonkishBackend, PlonkishCircuit},
+    folding::{
+        protostar::{
+            ivc::ProtostarAccumulationVerifierParam,
+            PlonkishNarkInstance, Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance,
+            ProtostarProverParam,
+            ProtostarStrategy::{Compressing, NoCompressing},
+            ProtostarVerifierParam,
+        },
+        FoldingScheme,
+    },
+    frontend::halo2::{CircuitExt, Halo2Circuit},
+    pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
+    poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{fe_mod_from_le_bytes, fe_to_fe, CurveAffine, Field, PrimeField},
-        hash::{Hash, Keccak256},
-        izip_eq, Itertools, Serialize,
+        arithmetic::{fe_to_fe, CurveAffine, CurveCycle, Field, PrimeField},
+        izip_eq,
+        transcript::{InMemoryTranscript, TranscriptRead, TranscriptWrite},
+        DeserializeOwned, Itertools, Serialize,
     },
 };
 use halo2_proofs::{
     circuit::{AssignedCell, Cell, Layouter, Value},
     plonk::{Circuit, ConstraintSystem, Error},
 };
-use std::{fmt::Debug, iter, marker::PhantomData};
+use rand::RngCore;
+use std::{borrow::Cow, fmt::Debug, hash::Hash, iter, marker::PhantomData};
 
-type AssignedProtostarInstance<C, EccChip, ScalarChip> = ProtostarInstance<
+type AssignedPlonkishNarkInstance<C, EccChip, ScalarChip> = PlonkishNarkInstance<
     <ScalarChip as FieldInstruction<
         <C as CurveAffine>::ScalarExt,
         <C as CurveAffine>::Base,
@@ -22,516 +35,13 @@ type AssignedProtostarInstance<C, EccChip, ScalarChip> = ProtostarInstance<
     <EccChip as NativeEccInstruction<C>>::Assigned,
 >;
 
-type AssignedCommittedPlonkish<C, EccChip, ScalarChip> = CommittedPlonkish<
+type AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip> = ProtostarAccumulatorInstance<
     <ScalarChip as FieldInstruction<
         <C as CurveAffine>::ScalarExt,
         <C as CurveAffine>::Base,
     >>::Assigned,
     <EccChip as NativeEccInstruction<C>>::Assigned,
 >;
-
-type AssignedFoldingProof<C, EccChip, ScalarChip> = FoldingProof<
-    <ScalarChip as FieldInstruction<
-        <C as CurveAffine>::ScalarExt,
-        <C as CurveAffine>::Base,
-    >>::Assigned,
-    <EccChip as NativeEccInstruction<C>>::Assigned,
->;
-
-#[derive(Clone, Debug, Default)]
-pub struct ProtostarFoldingVerifierParam<F> {
-    vp_digest: F,
-    num_instances: Vec<usize>,
-    num_witness_polys: Vec<usize>,
-    num_challenges: Vec<usize>,
-    num_lookups: usize,
-    num_theta_primes: usize,
-    num_alpha_primes: usize,
-    num_folding_witness_polys: usize,
-    num_folding_challenges: usize,
-    num_compressed_cross_terms: usize,
-}
-
-impl<F, N, Pcs> From<&ProtostarVerifierParam<F, Pcs>> for ProtostarFoldingVerifierParam<N>
-where
-    F: PrimeField + Serialize,
-    N: PrimeField,
-    Pcs: PolynomialCommitmentScheme<F>,
-{
-    fn from(vp: &ProtostarVerifierParam<F, Pcs>) -> Self {
-        let vp_digest = fe_mod_from_le_bytes(Keccak256::digest(bincode::serialize(vp).unwrap()));
-        Self {
-            vp_digest,
-            num_instances: vp.vp.num_instances.clone(),
-            num_witness_polys: vp.vp.num_witness_polys.clone(),
-            num_challenges: vp.vp.num_challenges.clone(),
-            num_lookups: vp.vp.num_lookups,
-            num_theta_primes: vp.num_theta_primes,
-            num_alpha_primes: vp.num_alpha_primes,
-            num_folding_witness_polys: vp.num_folding_witness_polys,
-            num_folding_challenges: vp.num_folding_challenges,
-            num_compressed_cross_terms: vp.num_compressed_cross_terms,
-        }
-    }
-}
-
-impl<N: PrimeField> ProtostarFoldingVerifierParam<N> {
-    pub fn dummy_h(&self) -> N {
-        N::ZERO
-    }
-
-    pub fn dummy_protostar_instance<F: PrimeField, Comm: Default>(
-        &self,
-    ) -> ProtostarInstance<F, Comm> {
-        ProtostarInstance::init(
-            &self.num_instances,
-            self.num_folding_witness_polys,
-            self.num_folding_challenges,
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct CommittedPlonkish<F, C> {
-    instances: Vec<Vec<F>>,
-    witness_comms: Vec<C>,
-    challenges: Vec<F>,
-}
-
-#[derive(Clone, Debug)]
-pub struct FoldingProof<F, C> {
-    compressed_cross_term_sums: Vec<F>,
-    zeta_cross_term_comm: C,
-}
-
-pub struct ProtostarFoldingVerifier<C: CurveAffine, EccChip, ScalarChip, TranscriptChip> {
-    ecc_chip: EccChip,
-    scalar_chip: ScalarChip,
-    transcript_chip: TranscriptChip,
-    fvp: ProtostarFoldingVerifierParam<C::Base>,
-    _marker: PhantomData<C>,
-}
-
-impl<C, EccChip, ScalarChip, TranscriptChip>
-    ProtostarFoldingVerifier<C, EccChip, ScalarChip, TranscriptChip>
-where
-    C: CurveAffine,
-    EccChip: NativeEccInstruction<C>,
-    ScalarChip: FieldInstruction<C::Scalar, C::Base>,
-    TranscriptChip: TranscriptInstruction<C, EccChip, ScalarChip>,
-{
-    pub fn new(
-        ecc_chip: EccChip,
-        scalar_chip: ScalarChip,
-        transcript_chip: TranscriptChip,
-        fvp: ProtostarFoldingVerifierParam<C::Base>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            ecc_chip,
-            scalar_chip,
-            transcript_chip,
-            fvp,
-            _marker: PhantomData,
-        })
-    }
-
-    pub fn assign_default_accumulator(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-    ) -> Result<AssignedProtostarInstance<C, EccChip, ScalarChip>, Error> {
-        let Self {
-            ecc_chip,
-            scalar_chip,
-            ..
-        } = self;
-        let ProtostarFoldingVerifierParam {
-            num_instances,
-            num_folding_witness_polys,
-            num_folding_challenges,
-            ..
-        } = &self.fvp;
-
-        let instances = num_instances
-            .iter()
-            .map(|num_instances| {
-                iter::repeat_with(|| scalar_chip.assign_constant(layouter, C::Scalar::ZERO))
-                    .take(*num_instances)
-                    .try_collect::<_, Vec<_>, _>()
-            })
-            .try_collect::<_, Vec<_>, _>()?;
-        let witness_comms = iter::repeat_with(|| ecc_chip.assign_constant(layouter, C::identity()))
-            .take(*num_folding_witness_polys)
-            .try_collect::<_, Vec<_>, _>()?;
-        let challenges =
-            iter::repeat_with(|| scalar_chip.assign_constant(layouter, C::Scalar::ZERO))
-                .take(*num_folding_challenges)
-                .try_collect::<_, Vec<_>, _>()?;
-        let u = scalar_chip.assign_constant(layouter, C::Scalar::ZERO)?;
-        let compressed_e_sum = scalar_chip.assign_constant(layouter, C::Scalar::ZERO)?;
-        let zeta_e_comm = ecc_chip.assign_constant(layouter, C::identity())?;
-        Ok(ProtostarInstance {
-            instances,
-            witness_comms,
-            challenges,
-            u,
-            compressed_e_sum,
-            zeta_e_comm,
-        })
-    }
-
-    pub fn assign_accumulator<Comm: AsRef<C>>(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-        acc: Value<&ProtostarInstance<C::Scalar, Comm>>,
-    ) -> Result<AssignedProtostarInstance<C, EccChip, ScalarChip>, Error> {
-        let Self {
-            ecc_chip,
-            scalar_chip,
-            ..
-        } = self;
-        let ProtostarFoldingVerifierParam {
-            num_instances,
-            num_folding_witness_polys,
-            num_folding_challenges,
-            ..
-        } = &self.fvp;
-
-        let instances = num_instances
-            .iter()
-            .zip(
-                acc.map(|acc| &acc.instances)
-                    .transpose_vec(num_instances.len()),
-            )
-            .map(|(num_instances, instances)| {
-                instances
-                    .transpose_vec(*num_instances)
-                    .into_iter()
-                    .map(|instance| scalar_chip.assign_witness(layouter, instance.copied()))
-                    .try_collect::<_, Vec<_>, _>()
-            })
-            .try_collect::<_, Vec<_>, _>()?;
-        let witness_comms = acc
-            .map(|acc| &acc.witness_comms)
-            .transpose_vec(*num_folding_witness_polys)
-            .into_iter()
-            .map(|witness_comm| {
-                ecc_chip.assign_witness(layouter, witness_comm.map(|comm| *comm.as_ref()))
-            })
-            .try_collect::<_, Vec<_>, _>()?;
-        let challenges = acc
-            .map(|acc| &acc.challenges)
-            .transpose_vec(*num_folding_challenges)
-            .into_iter()
-            .map(|challenge| scalar_chip.assign_witness(layouter, challenge.copied()))
-            .try_collect::<_, Vec<_>, _>()?;
-        let u = scalar_chip.assign_witness(layouter, acc.map(|acc| &acc.u).copied())?;
-        let compressed_e_sum =
-            scalar_chip.assign_witness(layouter, acc.map(|acc| &acc.compressed_e_sum).copied())?;
-        let zeta_e_comm =
-            ecc_chip.assign_witness(layouter, acc.map(|acc| *acc.zeta_e_comm.as_ref()))?;
-        Ok(ProtostarInstance {
-            instances,
-            witness_comms,
-            challenges,
-            u,
-            compressed_e_sum,
-            zeta_e_comm,
-        })
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn assign_incoming(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-        incoming_instances: [Value<&C::Scalar>; 2],
-        incoming_proof: Value<&[u8]>,
-    ) -> Result<
-        (
-            AssignedCommittedPlonkish<C, EccChip, ScalarChip>,
-            AssignedFoldingProof<C, EccChip, ScalarChip>,
-            TranscriptChip::Challenge,
-        ),
-        Error,
-    > {
-        let Self { scalar_chip, .. } = self;
-        let ProtostarFoldingVerifierParam {
-            num_witness_polys,
-            num_challenges,
-            num_lookups,
-            num_theta_primes,
-            num_alpha_primes,
-            num_compressed_cross_terms,
-            ..
-        } = &self.fvp;
-
-        let mut transcript = self.transcript_chip.init(incoming_proof);
-
-        let instances = incoming_instances
-            .into_iter()
-            .map(|instance| scalar_chip.assign_witness(layouter, instance.copied()))
-            .try_collect::<_, Vec<_>, _>()?;
-        for instance in instances.iter() {
-            transcript.common_field_element(instance)?;
-        }
-
-        // Round 0..n
-
-        let mut witness_comms = Vec::with_capacity(num_witness_polys.iter().sum());
-        let mut challenges = Vec::with_capacity(num_challenges.iter().sum::<usize>() + 4);
-        for (num_polys, num_challenges) in num_witness_polys.iter().zip_eq(num_challenges.iter()) {
-            witness_comms.extend(transcript.read_commitments(layouter, *num_polys)?);
-            challenges.extend(transcript.squeeze_challenges(layouter, *num_challenges)?);
-        }
-
-        // Round n
-
-        let theta_prime = transcript.squeeze_challenge(layouter)?;
-        let theta_primes = scalar_chip
-            .powers(layouter, theta_prime.as_ref(), *num_theta_primes + 1)?
-            .into_iter()
-            .skip(1)
-            .collect_vec();
-
-        let lookup_m_comms = transcript.read_commitments(layouter, *num_lookups)?;
-
-        // Round n+1
-
-        let beta_prime = transcript.squeeze_challenge(layouter)?;
-
-        let lookup_h_comms = transcript.read_commitments(layouter, 2 * num_lookups)?;
-
-        // Round n+2
-
-        let zeta = transcript.squeeze_challenge(layouter)?;
-
-        let powers_of_zeta_comm = transcript.read_commitment(layouter)?;
-
-        // Round n+3
-
-        let alpha_prime = transcript.squeeze_challenge(layouter)?;
-        let alpha_primes = scalar_chip
-            .powers(layouter, alpha_prime.as_ref(), *num_alpha_primes + 1)?
-            .into_iter()
-            .skip(1)
-            .collect_vec();
-
-        let compressed_cross_term_sums =
-            transcript.read_field_elements(layouter, *num_compressed_cross_terms)?;
-        let zeta_cross_term_comm = transcript.read_commitment(layouter)?;
-
-        // Round n+4
-
-        let r = transcript.squeeze_challenge(layouter)?;
-
-        let committed_plonkish = AssignedCommittedPlonkish::<_, EccChip, ScalarChip> {
-            instances: vec![instances],
-            witness_comms: iter::empty()
-                .chain(witness_comms)
-                .chain(lookup_m_comms)
-                .chain(lookup_h_comms)
-                .chain(Some(powers_of_zeta_comm))
-                .collect(),
-            challenges: iter::empty()
-                .chain(challenges.iter().map(AsRef::as_ref).cloned())
-                .chain(theta_primes)
-                .chain(Some(beta_prime.as_ref().clone()))
-                .chain(Some(zeta.as_ref().clone()))
-                .chain(alpha_primes)
-                .collect(),
-        };
-        let folding_proof = AssignedFoldingProof::<_, EccChip, ScalarChip> {
-            compressed_cross_term_sums,
-            zeta_cross_term_comm,
-        };
-
-        Ok((committed_plonkish, folding_proof, r))
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn fold(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-        acc: &AssignedProtostarInstance<C, EccChip, ScalarChip>,
-        committed_plonkish: &AssignedCommittedPlonkish<C, EccChip, ScalarChip>,
-        folding_proof: &AssignedFoldingProof<C, EccChip, ScalarChip>,
-        r: &TranscriptChip::Challenge,
-    ) -> Result<
-        (
-            AssignedProtostarInstance<C, EccChip, ScalarChip>,
-            AssignedProtostarInstance<C, EccChip, ScalarChip>,
-        ),
-        Error,
-    > {
-        let Self {
-            ecc_chip,
-            scalar_chip,
-            transcript_chip,
-            ..
-        } = self;
-        let num_compressed_cross_terms = self.fvp.num_compressed_cross_terms;
-
-        let r_le_bits = transcript_chip.challenge_to_le_bits(layouter, r)?;
-        let r = r.as_ref();
-
-        let incoming = {
-            let powers_of_r = scalar_chip.powers(layouter, r, num_compressed_cross_terms + 1)?;
-
-            let instances = committed_plonkish
-                .instances
-                .iter()
-                .map(|instances| {
-                    instances
-                        .iter()
-                        .map(|instance| scalar_chip.mul(layouter, r, instance))
-                        .try_collect::<_, Vec<_>, _>()
-                })
-                .try_collect::<_, Vec<_>, _>()?;
-            let witness_comms = committed_plonkish
-                .witness_comms
-                .iter()
-                .map(|comm| ecc_chip.mul(layouter, comm, &r_le_bits))
-                .try_collect::<_, Vec<_>, _>()?;
-            let challenges = committed_plonkish
-                .challenges
-                .iter()
-                .map(|challenge| scalar_chip.mul(layouter, r, challenge))
-                .try_collect::<_, Vec<_>, _>()?;
-            let u = r.clone();
-            let compressed_e_sum = scalar_chip.inner_product(
-                layouter,
-                &powers_of_r[1..],
-                &folding_proof.compressed_cross_term_sums,
-            )?;
-            let zeta_e_comm =
-                ecc_chip.mul(layouter, &folding_proof.zeta_cross_term_comm, &r_le_bits)?;
-
-            ProtostarInstance {
-                instances,
-                witness_comms,
-                challenges,
-                u,
-                compressed_e_sum,
-                zeta_e_comm,
-            }
-        };
-
-        let folded = {
-            let instances = izip_eq!(&acc.instances, &incoming.instances)
-                .map(|(lhs, rhs)| {
-                    izip_eq!(lhs, rhs)
-                        .map(|(lhs, rhs)| scalar_chip.add(layouter, lhs, rhs))
-                        .try_collect::<_, Vec<_>, _>()
-                })
-                .try_collect::<_, Vec<_>, _>()?;
-            let witness_comms = izip_eq!(&acc.witness_comms, &incoming.witness_comms)
-                .map(|(lhs, rhs)| ecc_chip.add(layouter, lhs, rhs))
-                .try_collect::<_, Vec<_>, _>()?;
-            let challenges = izip_eq!(&acc.challenges, &incoming.challenges)
-                .map(|(lhs, rhs)| scalar_chip.add(layouter, lhs, rhs))
-                .try_collect::<_, Vec<_>, _>()?;
-            let u = { scalar_chip.add(layouter, &acc.u, &incoming.u)? };
-            let compressed_e_sum =
-                scalar_chip.add(layouter, &acc.compressed_e_sum, &incoming.compressed_e_sum)?;
-            let zeta_e_comm = ecc_chip.add(layouter, &acc.zeta_e_comm, &incoming.zeta_e_comm)?;
-
-            ProtostarInstance {
-                instances,
-                witness_comms,
-                challenges,
-                u,
-                compressed_e_sum,
-                zeta_e_comm,
-            }
-        };
-
-        Ok((incoming, folded))
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn assign_incoming_and_fold(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-        acc: &AssignedProtostarInstance<C, EccChip, ScalarChip>,
-        incoming_instances: [Value<&C::Scalar>; 2],
-        incoming_proof: Value<&[u8]>,
-    ) -> Result<
-        (
-            AssignedCell<C::Base, C::Base>,
-            AssignedCell<C::Base, C::Base>,
-            AssignedProtostarInstance<C, EccChip, ScalarChip>,
-            AssignedProtostarInstance<C, EccChip, ScalarChip>,
-        ),
-        Error,
-    > {
-        let (committed_plonkish, folding_proof, r) =
-            self.assign_incoming(layouter, incoming_instances, incoming_proof)?;
-        let h_from_incoming = self
-            .scalar_chip
-            .fit_in_native(layouter, &committed_plonkish.instances[0][0])?;
-        let h_ohs_from_incoming = self
-            .scalar_chip
-            .fit_in_native(layouter, &committed_plonkish.instances[0][1])?;
-        let (incoming, folded) =
-            self.fold(layouter, acc, &committed_plonkish, &folding_proof, &r)?;
-        Ok((h_from_incoming, h_ohs_from_incoming, incoming, folded))
-    }
-
-    fn select_accumulator(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-        condition: &AssignedCell<C::Base, C::Base>,
-        when_true: &AssignedProtostarInstance<C, EccChip, ScalarChip>,
-        when_false: &AssignedProtostarInstance<C, EccChip, ScalarChip>,
-    ) -> Result<AssignedProtostarInstance<C, EccChip, ScalarChip>, Error> {
-        let Self {
-            ecc_chip,
-            scalar_chip,
-            ..
-        } = self;
-
-        let instances = izip_eq!(&when_true.instances, &when_false.instances)
-            .map(|(when_true, when_false)| {
-                izip_eq!(when_true, when_false)
-                    .map(|(when_true, when_false)| {
-                        scalar_chip.select(layouter, condition, when_true, when_false)
-                    })
-                    .try_collect()
-            })
-            .try_collect()?;
-        let witness_comms = izip_eq!(&when_true.witness_comms, &when_false.witness_comms)
-            .map(|(when_true, when_false)| {
-                ecc_chip.select(layouter, condition, when_true, when_false)
-            })
-            .try_collect()?;
-        let challenges = izip_eq!(&when_true.challenges, &when_false.challenges)
-            .map(|(when_true, when_false)| {
-                scalar_chip.select(layouter, condition, when_true, when_false)
-            })
-            .try_collect()?;
-        let u = scalar_chip.select(layouter, condition, &when_true.u, &when_false.u)?;
-        let compressed_e_sum = scalar_chip.select(
-            layouter,
-            condition,
-            &when_true.compressed_e_sum,
-            &when_false.compressed_e_sum,
-        )?;
-        let zeta_e_comm = ecc_chip.select(
-            layouter,
-            condition,
-            &when_true.zeta_e_comm,
-            &when_false.zeta_e_comm,
-        )?;
-
-        Ok(ProtostarInstance {
-            instances,
-            witness_comms,
-            challenges,
-            u,
-            compressed_e_sum,
-            zeta_e_comm,
-        })
-    }
-}
 
 pub trait NativeEccInstruction<C: CurveAffine>: Clone + Debug {
     type Assigned: Clone + Debug + AsRef<[AssignedCell<C::Base, C::Base>]>;
@@ -666,23 +176,30 @@ where
 {
     type Challenge: Clone + Debug + AsRef<ScalarChip::Assigned>;
 
-    fn dummy_proof(fvp: &ProtostarFoldingVerifierParam<C::Base>) -> Vec<u8> {
+    fn dummy_proof(avp: &ProtostarAccumulationVerifierParam<C::Base>) -> Vec<u8> {
         let g = C::generator().coordinates().unwrap();
         let g_x = g.x().to_repr();
         let g_y = g.y().to_repr();
         let zero = C::Scalar::ZERO.to_repr();
         iter::empty()
             .chain(
-                iter::repeat_with(|| iter::empty().chain(g_x.as_ref()).chain(g_y.as_ref()))
-                    .take(fvp.num_folding_witness_polys)
+                iter::repeat_with(|| [g_x.as_ref(), g_y.as_ref()])
+                    .take(avp.num_folding_witness_polys())
+                    .flatten()
                     .flatten(),
             )
-            .chain(
-                iter::repeat(zero.as_ref())
-                    .take(fvp.num_compressed_cross_terms)
-                    .flatten(),
-            )
-            .chain(iter::empty().chain(g_x.as_ref()).chain(g_y.as_ref()))
+            .chain(match avp.strategy {
+                NoCompressing => iter::empty()
+                    .chain(iter::repeat([g_x.as_ref(), g_y.as_ref()]).take(avp.num_cross_terms))
+                    .flatten()
+                    .flatten()
+                    .collect_vec(),
+                Compressing => iter::empty()
+                    .chain([g_x.as_ref(), g_y.as_ref()])
+                    .chain(iter::repeat(zero.as_ref()).take(avp.num_cross_terms))
+                    .flatten()
+                    .collect_vec(),
+            })
             .copied()
             .collect()
     }
@@ -711,6 +228,10 @@ where
 
     fn common_field_element(&mut self, fe: &ScalarChip::Assigned) -> Result<(), Error>;
 
+    fn common_field_elements(&mut self, fes: &[ScalarChip::Assigned]) -> Result<(), Error> {
+        fes.iter().try_for_each(|fe| self.common_field_element(fe))
+    }
+
     fn read_field_element(
         &mut self,
         layouter: &mut impl Layouter<C::Base>,
@@ -726,6 +247,12 @@ where
 
     fn common_commitment(&mut self, comm: &EccChip::Assigned) -> Result<(), Error>;
 
+    fn common_commitments(&mut self, comms: &[EccChip::Assigned]) -> Result<(), Error> {
+        comms
+            .iter()
+            .try_for_each(|comm| self.common_commitment(comm))
+    }
+
     fn read_commitment(
         &mut self,
         layouter: &mut impl Layouter<C::Base>,
@@ -738,16 +265,37 @@ where
     ) -> Result<Vec<EccChip::Assigned>, Error> {
         (0..n).map(|_| self.read_commitment(layouter)).collect()
     }
+
+    fn absorb_accumulator(
+        &mut self,
+        acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+    ) -> Result<(), Error> {
+        acc.instances
+            .iter()
+            .try_for_each(|instances| self.common_field_elements(instances))?;
+        self.common_commitments(&acc.witness_comms)?;
+        self.common_field_elements(&acc.challenges)?;
+        self.common_field_element(&acc.u)?;
+        self.common_commitment(&acc.e_comm)?;
+        if let Some(compressed_e_sum) = acc.compressed_e_sum.as_ref() {
+            self.common_field_element(compressed_e_sum)?;
+        }
+        Ok(())
+    }
 }
 
 pub trait HashInstruction<C: CurveAffine>: Clone + Debug {
+    type Param: Clone + Debug;
+
+    fn param(&self) -> Self::Param;
+
     fn hash_state<Comm: AsRef<C>>(
-        &self,
+        param: Self::Param,
         vp_digest: C::Base,
         step_idx: usize,
         initial_input: &[C::Base],
         output: &[C::Base],
-        acc: &ProtostarInstance<C::Scalar, Comm>,
+        acc: &ProtostarAccumulatorInstance<C::Scalar, Comm>,
     ) -> C::Base;
 
     fn hash_assigned_state<EccChip, ScalarChip>(
@@ -757,7 +305,7 @@ pub trait HashInstruction<C: CurveAffine>: Clone + Debug {
         step_idx: &AssignedCell<C::Base, C::Base>,
         initial_input: &[AssignedCell<C::Base, C::Base>],
         output: &[AssignedCell<C::Base, C::Base>],
-        acc: &AssignedProtostarInstance<C, EccChip, ScalarChip>,
+        acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
     ) -> Result<AssignedCell<C::Base, C::Base>, Error>
     where
         EccChip: NativeEccInstruction<C>,
@@ -880,8 +428,416 @@ pub trait StepCircuit<C: CurveAffine>: Clone + Debug + CircuitExt<C::Base> {
     >;
 }
 
-#[derive(Debug, Default)]
-pub struct RecursiveCircuit<C, Comm, Sc>
+pub struct ProtostarAccumulationVerifier<C, EccChip, ScalarChip>
+where
+    C: CurveAffine,
+{
+    ecc_chip: EccChip,
+    scalar_chip: ScalarChip,
+    avp: ProtostarAccumulationVerifierParam<C::Base>,
+    _marker: PhantomData<C>,
+}
+
+impl<C, EccChip, ScalarChip> ProtostarAccumulationVerifier<C, EccChip, ScalarChip>
+where
+    C: CurveAffine,
+    EccChip: NativeEccInstruction<C>,
+    ScalarChip: FieldInstruction<C::Scalar, C::Base>,
+{
+    pub fn new(
+        ecc_chip: EccChip,
+        scalar_chip: ScalarChip,
+        avp: ProtostarAccumulationVerifierParam<C::Base>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            ecc_chip,
+            scalar_chip,
+            avp,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn assign_default_accumulator(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+    ) -> Result<AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>, Error> {
+        let Self {
+            ecc_chip,
+            scalar_chip,
+            ..
+        } = self;
+        let ProtostarAccumulationVerifierParam { num_instances, .. } = &self.avp;
+
+        let instances = num_instances
+            .iter()
+            .map(|num_instances| {
+                iter::repeat_with(|| scalar_chip.assign_constant(layouter, C::Scalar::ZERO))
+                    .take(*num_instances)
+                    .try_collect::<_, Vec<_>, _>()
+            })
+            .try_collect::<_, Vec<_>, _>()?;
+        let witness_comms = iter::repeat_with(|| ecc_chip.assign_constant(layouter, C::identity()))
+            .take(self.avp.num_folding_witness_polys())
+            .try_collect::<_, Vec<_>, _>()?;
+        let challenges =
+            iter::repeat_with(|| scalar_chip.assign_constant(layouter, C::Scalar::ZERO))
+                .take(self.avp.num_folding_challenges())
+                .try_collect::<_, Vec<_>, _>()?;
+        let u = scalar_chip.assign_constant(layouter, C::Scalar::ZERO)?;
+        let e_comm = ecc_chip.assign_constant(layouter, C::identity())?;
+        let compressed_e_sum = match self.avp.strategy {
+            NoCompressing => None,
+            Compressing => Some(scalar_chip.assign_constant(layouter, C::Scalar::ZERO)?),
+        };
+
+        Ok(ProtostarAccumulatorInstance {
+            instances,
+            witness_comms,
+            challenges,
+            u,
+            e_comm,
+            compressed_e_sum,
+        })
+    }
+
+    pub fn assign_accumulator(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+        acc: Value<&ProtostarAccumulatorInstance<C::Scalar, C>>,
+    ) -> Result<AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>, Error> {
+        let Self {
+            ecc_chip,
+            scalar_chip,
+            ..
+        } = self;
+        let ProtostarAccumulationVerifierParam { num_instances, .. } = &self.avp;
+
+        let instances = num_instances
+            .iter()
+            .zip(
+                acc.map(|acc| &acc.instances)
+                    .transpose_vec(num_instances.len()),
+            )
+            .map(|(num_instances, instances)| {
+                instances
+                    .transpose_vec(*num_instances)
+                    .into_iter()
+                    .map(|instance| scalar_chip.assign_witness(layouter, instance.copied()))
+                    .try_collect::<_, Vec<_>, _>()
+            })
+            .try_collect::<_, Vec<_>, _>()?;
+        let witness_comms = acc
+            .map(|acc| &acc.witness_comms)
+            .transpose_vec(self.avp.num_folding_witness_polys())
+            .into_iter()
+            .map(|witness_comm| ecc_chip.assign_witness(layouter, witness_comm.copied()))
+            .try_collect::<_, Vec<_>, _>()?;
+        let challenges = acc
+            .map(|acc| &acc.challenges)
+            .transpose_vec(self.avp.num_folding_challenges())
+            .into_iter()
+            .map(|challenge| scalar_chip.assign_witness(layouter, challenge.copied()))
+            .try_collect::<_, Vec<_>, _>()?;
+        let u = scalar_chip.assign_witness(layouter, acc.map(|acc| &acc.u).copied())?;
+        let e_comm = ecc_chip.assign_witness(layouter, acc.map(|acc| acc.e_comm))?;
+        let compressed_e_sum = match self.avp.strategy {
+            NoCompressing => None,
+            Compressing => Some(
+                scalar_chip
+                    .assign_witness(layouter, acc.map(|acc| acc.compressed_e_sum.unwrap()))?,
+            ),
+        };
+
+        Ok(ProtostarAccumulatorInstance {
+            instances,
+            witness_comms,
+            challenges,
+            u,
+            e_comm,
+            compressed_e_sum,
+        })
+    }
+
+    fn assign_accumulator_from_r_nark(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+        r: &ScalarChip::Assigned,
+        r_nark: AssignedPlonkishNarkInstance<C, EccChip, ScalarChip>,
+    ) -> Result<AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>, Error> {
+        let Self {
+            ecc_chip,
+            scalar_chip,
+            ..
+        } = self;
+        let AssignedPlonkishNarkInstance::<C, EccChip, ScalarChip> {
+            instances,
+            challenges,
+            witness_comms,
+        } = r_nark;
+        let u = r.clone();
+        let e_comm = ecc_chip.assign_constant(layouter, C::identity())?;
+        let compressed_e_sum = match self.avp.strategy {
+            NoCompressing => None,
+            Compressing => Some(scalar_chip.assign_constant(layouter, C::Scalar::ZERO)?),
+        };
+
+        Ok(ProtostarAccumulatorInstance {
+            instances,
+            witness_comms,
+            challenges,
+            u,
+            e_comm,
+            compressed_e_sum,
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn verify_accumulation_from_nark(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+        acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+        instances: [Value<&C::Scalar>; 2],
+        transcript: &mut impl TranscriptInstruction<C, EccChip, ScalarChip>,
+    ) -> Result<
+        (
+            AssignedPlonkishNarkInstance<C, EccChip, ScalarChip>,
+            AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+            AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+        ),
+        Error,
+    > {
+        let Self { scalar_chip, .. } = self;
+        let ProtostarAccumulationVerifierParam {
+            strategy,
+            num_witness_polys,
+            num_challenges,
+            num_cross_terms,
+            ..
+        } = &self.avp;
+
+        let instances = instances
+            .into_iter()
+            .map(|instance| scalar_chip.assign_witness(layouter, instance.copied()))
+            .try_collect::<_, Vec<_>, _>()?;
+        for instance in instances.iter() {
+            transcript.common_field_element(instance)?;
+        }
+
+        let mut witness_comms = Vec::with_capacity(self.avp.num_folding_witness_polys());
+        let mut challenges = Vec::with_capacity(self.avp.num_folding_challenges());
+        for (num_witness_polys, num_powers_of_challenge) in
+            num_witness_polys.iter().zip_eq(num_challenges.iter())
+        {
+            witness_comms.extend(transcript.read_commitments(layouter, *num_witness_polys)?);
+            for num_powers in num_powers_of_challenge.iter() {
+                let challenge = transcript.squeeze_challenge(layouter)?;
+                let powers_of_challenges =
+                    scalar_chip.powers(layouter, challenge.as_ref(), *num_powers + 1)?;
+                challenges.extend(powers_of_challenges.into_iter().skip(1));
+            }
+        }
+
+        let nark = PlonkishNarkInstance::new(vec![instances], challenges, witness_comms);
+        transcript.absorb_accumulator(acc)?;
+
+        let (cross_term_comms, compressed_cross_term_sums) = match strategy {
+            NoCompressing => {
+                let cross_term_comms = transcript.read_commitments(layouter, *num_cross_terms)?;
+
+                (cross_term_comms, None)
+            }
+            Compressing => {
+                let zeta_cross_term_comm = vec![transcript.read_commitment(layouter)?];
+                let compressed_cross_term_sums =
+                    transcript.read_field_elements(layouter, *num_cross_terms)?;
+
+                (zeta_cross_term_comm, Some(compressed_cross_term_sums))
+            }
+        };
+
+        let r = transcript.squeeze_challenge(layouter)?;
+        let r_le_bits = transcript.challenge_to_le_bits(layouter, &r)?;
+
+        let (r_nark, acc_prime) = self.fold_accumulator_from_nark(
+            layouter,
+            acc,
+            &nark,
+            &cross_term_comms,
+            compressed_cross_term_sums.as_deref(),
+            r.as_ref(),
+            &r_le_bits,
+        )?;
+        let acc_r_nark = self.assign_accumulator_from_r_nark(layouter, r.as_ref(), r_nark)?;
+
+        Ok((nark, acc_r_nark, acc_prime))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    fn fold_accumulator_from_nark(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+        acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+        nark: &AssignedPlonkishNarkInstance<C, EccChip, ScalarChip>,
+        cross_term_comms: &[EccChip::Assigned],
+        compressed_cross_term_sums: Option<&[ScalarChip::Assigned]>,
+        r: &ScalarChip::Assigned,
+        r_le_bits: &[AssignedCell<C::Base, C::Base>],
+    ) -> Result<
+        (
+            AssignedPlonkishNarkInstance<C, EccChip, ScalarChip>,
+            AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+        ),
+        Error,
+    > {
+        let Self {
+            ecc_chip,
+            scalar_chip,
+            ..
+        } = self;
+        let ProtostarAccumulationVerifierParam {
+            strategy,
+            num_cross_terms,
+            ..
+        } = self.avp;
+
+        let powers_of_r = scalar_chip.powers(layouter, r, num_cross_terms + 1)?;
+
+        let r_nark = {
+            let instances = nark
+                .instances
+                .iter()
+                .map(|instances| {
+                    instances
+                        .iter()
+                        .map(|instance| scalar_chip.mul(layouter, r, instance))
+                        .try_collect::<_, Vec<_>, _>()
+                })
+                .try_collect::<_, Vec<_>, _>()?;
+            let witness_comms = nark
+                .witness_comms
+                .iter()
+                .map(|comm| ecc_chip.mul(layouter, comm, r_le_bits))
+                .try_collect::<_, Vec<_>, _>()?;
+            let challenges = nark
+                .challenges
+                .iter()
+                .map(|challenge| scalar_chip.mul(layouter, r, challenge))
+                .try_collect::<_, Vec<_>, _>()?;
+            AssignedPlonkishNarkInstance::<C, EccChip, ScalarChip> {
+                instances,
+                challenges,
+                witness_comms,
+            }
+        };
+
+        let acc_prime = {
+            let instances = izip_eq!(&acc.instances, &r_nark.instances)
+                .map(|(lhs, rhs)| {
+                    izip_eq!(lhs, rhs)
+                        .map(|(lhs, rhs)| scalar_chip.add(layouter, lhs, rhs))
+                        .try_collect::<_, Vec<_>, _>()
+                })
+                .try_collect::<_, Vec<_>, _>()?;
+            let witness_comms = izip_eq!(&acc.witness_comms, &r_nark.witness_comms)
+                .map(|(lhs, rhs)| ecc_chip.add(layouter, lhs, rhs))
+                .try_collect::<_, Vec<_>, _>()?;
+            let challenges = izip_eq!(&acc.challenges, &r_nark.challenges)
+                .map(|(lhs, rhs)| scalar_chip.add(layouter, lhs, rhs))
+                .try_collect::<_, Vec<_>, _>()?;
+            let u = scalar_chip.add(layouter, &acc.u, r)?;
+            let e_comm = if cross_term_comms.is_empty() {
+                acc.e_comm.clone()
+            } else {
+                let mut e_comm = cross_term_comms.last().unwrap().clone();
+                for item in cross_term_comms.iter().rev().skip(1).chain([&acc.e_comm]) {
+                    e_comm = ecc_chip.mul(layouter, &e_comm, r_le_bits)?;
+                    e_comm = ecc_chip.add(layouter, &e_comm, item)?;
+                }
+                e_comm
+            };
+            let compressed_e_sum = match strategy {
+                NoCompressing => None,
+                Compressing => {
+                    let rhs = scalar_chip.inner_product(
+                        layouter,
+                        &powers_of_r[1..],
+                        compressed_cross_term_sums.unwrap(),
+                    )?;
+                    Some(scalar_chip.add(layouter, acc.compressed_e_sum.as_ref().unwrap(), &rhs)?)
+                }
+            };
+
+            ProtostarAccumulatorInstance {
+                instances,
+                witness_comms,
+                challenges,
+                u,
+                e_comm,
+                compressed_e_sum,
+            }
+        };
+
+        Ok((r_nark, acc_prime))
+    }
+
+    fn select_accumulator(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+        condition: &AssignedCell<C::Base, C::Base>,
+        when_true: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+        when_false: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+    ) -> Result<AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>, Error> {
+        let Self {
+            ecc_chip,
+            scalar_chip,
+            ..
+        } = self;
+
+        let instances = izip_eq!(&when_true.instances, &when_false.instances)
+            .map(|(when_true, when_false)| {
+                izip_eq!(when_true, when_false)
+                    .map(|(when_true, when_false)| {
+                        scalar_chip.select(layouter, condition, when_true, when_false)
+                    })
+                    .try_collect()
+            })
+            .try_collect()?;
+        let witness_comms = izip_eq!(&when_true.witness_comms, &when_false.witness_comms)
+            .map(|(when_true, when_false)| {
+                ecc_chip.select(layouter, condition, when_true, when_false)
+            })
+            .try_collect()?;
+        let challenges = izip_eq!(&when_true.challenges, &when_false.challenges)
+            .map(|(when_true, when_false)| {
+                scalar_chip.select(layouter, condition, when_true, when_false)
+            })
+            .try_collect()?;
+        let u = scalar_chip.select(layouter, condition, &when_true.u, &when_false.u)?;
+        let e_comm = ecc_chip.select(layouter, condition, &when_true.e_comm, &when_false.e_comm)?;
+        let compressed_e_sum = match self.avp.strategy {
+            NoCompressing => None,
+            Compressing => Some(scalar_chip.select(
+                layouter,
+                condition,
+                when_true.compressed_e_sum.as_ref().unwrap(),
+                when_false.compressed_e_sum.as_ref().unwrap(),
+            )?),
+        };
+
+        Ok(ProtostarAccumulatorInstance {
+            instances,
+            witness_comms,
+            challenges,
+            u,
+            e_comm,
+            compressed_e_sum,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct RecursiveCircuit<C, Sc>
 where
     C: CurveAffine,
     Sc: StepCircuit<C>,
@@ -890,58 +846,53 @@ where
     step_circuit: Sc,
     config: Sc::Config,
     chips: Sc::Chips,
-    fvp: ProtostarFoldingVerifierParam<C::Base>,
+    hp: <<Sc::Chips as Chips<C>>::HashChip as HashInstruction<C>>::Param,
+    avp: ProtostarAccumulationVerifierParam<C::Base>,
     h_prime: Value<C::Base>,
-    acc: Value<ProtostarInstance<C::Scalar, Comm>>,
-    acc_prime: Value<ProtostarInstance<C::Scalar, Comm>>,
+    acc: Value<ProtostarAccumulatorInstance<C::Scalar, C>>,
+    acc_prime: Value<ProtostarAccumulatorInstance<C::Scalar, C>>,
     incoming_instances: [Value<C::Scalar>; 2],
     incoming_proof: Value<Vec<u8>>,
 }
 
-impl<C, Comm, Sc> RecursiveCircuit<C, Comm, Sc>
+impl<C, Sc> RecursiveCircuit<C, Sc>
 where
     C: CurveAffine,
-    Comm: AsRef<C>,
     Sc: StepCircuit<C>,
 {
+    pub const DUMMY_H: C::Base = C::Base::ZERO;
+
     pub fn new(
         is_primary: bool,
-        fvp: ProtostarFoldingVerifierParam<C::Base>,
         step_circuit: Sc,
-    ) -> Self
-    where
-        Comm: Default,
-    {
+        avp: Option<ProtostarAccumulationVerifierParam<C::Base>>,
+    ) -> Self {
         let config = Self::configure(&mut Default::default());
         let chips = step_circuit.chips(config.clone());
+        let hp = chips.hash_chip().param();
         let mut circuit = Self {
             is_primary,
             step_circuit,
             config,
             chips,
-            fvp,
+            hp,
+            avp: Default::default(),
             h_prime: Value::unknown(),
             acc: Value::unknown(),
             acc_prime: Value::unknown(),
             incoming_instances: [Value::unknown(); 2],
             incoming_proof: Value::unknown(),
         };
-        if circuit.fvp.vp_digest != C::Base::ZERO {
-            assert_eq!(&circuit.fvp.num_instances, &[2]);
-            circuit.update(
-                circuit.fvp.dummy_protostar_instance(),
-                circuit.fvp.dummy_protostar_instance(),
-                [circuit.fvp.dummy_h(); 2].map(fe_to_fe),
-                <Sc::Chips as Chips<_>>::TranscriptChip::dummy_proof(&circuit.fvp),
-            );
+        if let Some(avp) = avp {
+            circuit.init(avp);
         }
         circuit
     }
 
-    pub fn update(
+    pub fn update<Comm: AsRef<C>>(
         &mut self,
-        acc: ProtostarInstance<C::Scalar, Comm>,
-        acc_prime: ProtostarInstance<C::Scalar, Comm>,
+        acc: ProtostarAccumulatorInstance<C::Scalar, Comm>,
+        acc_prime: ProtostarAccumulatorInstance<C::Scalar, Comm>,
         incoming_instances: [C::Scalar; 2],
         incoming_proof: Vec<u8>,
     ) {
@@ -950,17 +901,40 @@ where
         {
             self.step_circuit.next();
         }
-        self.h_prime = Value::known(self.chips.hash_chip().hash_state(
-            self.fvp.vp_digest,
+        self.h_prime = Value::known(<Sc::Chips as Chips<_>>::HashChip::hash_state(
+            self.hp.clone(),
+            self.avp.vp_digest,
             self.step_circuit.step_idx() + 1,
             self.step_circuit.initial_input(),
             self.step_circuit.output(),
             &acc_prime,
         ));
-        self.acc = Value::known(acc);
-        self.acc_prime = Value::known(acc_prime);
+        let convert =
+            |acc: ProtostarAccumulatorInstance<C::Scalar, Comm>| ProtostarAccumulatorInstance {
+                instances: acc.instances,
+                witness_comms: iter::empty()
+                    .chain(acc.witness_comms.iter().map(AsRef::as_ref).copied())
+                    .collect(),
+                challenges: acc.challenges,
+                u: acc.u,
+                e_comm: *acc.e_comm.as_ref(),
+                compressed_e_sum: acc.compressed_e_sum,
+            };
+        self.acc = Value::known(convert(acc));
+        self.acc_prime = Value::known(convert(acc_prime));
         self.incoming_instances = incoming_instances.map(Value::known);
         self.incoming_proof = Value::known(incoming_proof);
+    }
+
+    fn init(&mut self, avp: ProtostarAccumulationVerifierParam<C::Base>) {
+        assert_eq!(&avp.num_instances, &[2]);
+        self.avp = avp;
+        self.update::<Cow<C>>(
+            self.avp.init_accumulator(),
+            self.avp.init_accumulator(),
+            [Self::DUMMY_H; 2].map(fe_to_fe),
+            <Sc::Chips as Chips<_>>::TranscriptChip::dummy_proof(&self.avp),
+        );
     }
 
     fn check_initial_condition(
@@ -993,7 +967,7 @@ where
         step_idx: &AssignedCell<C::Base, C::Base>,
         initial_input: &[AssignedCell<C::Base, C::Base>],
         output: &[AssignedCell<C::Base, C::Base>],
-        accumulator: &AssignedProtostarInstance<
+        acc: &AssignedProtostarAccumulatorInstance<
             C,
             <Sc::Chips as Chips<C>>::EccChip,
             <Sc::Chips as Chips<C>>::ScalarChip,
@@ -1008,10 +982,10 @@ where
             step_idx,
             initial_input,
             output,
-            accumulator,
+            acc,
         )?;
         let rhs = if let Some(is_base_case) = is_base_case {
-            let dummy_h = util_chip.assign_constant(layouter, self.fvp.dummy_h())?;
+            let dummy_h = util_chip.assign_constant(layouter, Self::DUMMY_H)?;
             util_chip.select(layouter, is_base_case, &dummy_h, &rhs)?
         } else {
             rhs
@@ -1026,58 +1000,62 @@ where
         input: &[AssignedCell<C::Base, C::Base>],
         output: &[AssignedCell<C::Base, C::Base>],
     ) -> Result<(), Error> {
+        let layouter = &mut layouter;
+
         let ecc_chip = self.chips.ecc_chip();
         let scalar_chip = self.chips.scalar_chip();
         let transcript_chip = self.chips.transcript_chip();
         let util_chip = self.chips.util_chip();
 
-        let verifier = ProtostarFoldingVerifier::new(
+        let verifier = ProtostarAccumulationVerifier::new(
             ecc_chip.clone(),
             scalar_chip.clone(),
-            transcript_chip.clone(),
-            self.fvp.clone(),
+            self.avp.clone(),
         )?;
 
-        let zero = util_chip.assign_constant(&mut layouter, C::Base::ZERO)?;
-        let one = util_chip.assign_constant(&mut layouter, C::Base::ONE)?;
-        let vp_digest =
-            util_chip.assign_witness(&mut layouter, Value::known(self.fvp.vp_digest))?;
+        let zero = util_chip.assign_constant(layouter, C::Base::ZERO)?;
+        let one = util_chip.assign_constant(layouter, C::Base::ONE)?;
+        let vp_digest = util_chip.assign_witness(layouter, Value::known(self.avp.vp_digest))?;
         let step_idx = util_chip.assign_witness(
-            &mut layouter,
+            layouter,
             Value::known(C::Base::from(self.step_circuit.step_idx() as u64)),
         )?;
-        let step_idx_plus_one = util_chip.add(&mut layouter, &step_idx, &one)?;
+        let step_idx_plus_one = util_chip.add(layouter, &step_idx, &one)?;
         let initial_input = self
             .step_circuit
             .initial_input()
             .iter()
-            .map(|value| util_chip.assign_witness(&mut layouter, Value::known(*value)))
+            .map(|value| util_chip.assign_witness(layouter, Value::known(*value)))
             .try_collect::<_, Vec<_>, _>()?;
 
-        let is_base_case = util_chip.is_equal(&mut layouter, &step_idx, &zero)?;
-        let h_prime = util_chip.assign_witness(&mut layouter, self.h_prime)?;
+        let is_base_case = util_chip.is_equal(layouter, &step_idx, &zero)?;
+        let h_prime = util_chip.assign_witness(layouter, self.h_prime)?;
 
-        self.check_initial_condition(&mut layouter, &is_base_case, &initial_input, input)?;
+        self.check_initial_condition(layouter, &is_base_case, &initial_input, input)?;
 
-        let acc = verifier.assign_accumulator(&mut layouter, self.acc.as_ref())?;
+        let acc = verifier.assign_accumulator(layouter, self.acc.as_ref())?;
 
-        let (h_from_incoming, h_ohs_from_incoming, incoming, folded) = verifier
-            .assign_incoming_and_fold(
-                &mut layouter,
-                &acc,
-                [&self.incoming_instances[0], &self.incoming_instances[1]].map(Value::as_ref),
-                self.incoming_proof.as_ref().map(Vec::as_slice),
-            )?;
+        let (nark, acc_r_nark, acc_prime) = verifier.verify_accumulation_from_nark(
+            layouter,
+            &acc,
+            [&self.incoming_instances[0], &self.incoming_instances[1]].map(Value::as_ref),
+            &mut transcript_chip.init(self.incoming_proof.as_ref().map(Vec::as_slice)),
+        )?;
 
-        let acc_prime = if self.is_primary {
-            let acc_default = verifier.assign_default_accumulator(&mut layouter)?;
-            verifier.select_accumulator(&mut layouter, &is_base_case, &acc_default, &folded)?
-        } else {
-            verifier.select_accumulator(&mut layouter, &is_base_case, &incoming, &folded)?
+        let acc_prime = {
+            let acc_default = if self.is_primary {
+                verifier.assign_default_accumulator(layouter)?
+            } else {
+                acc_r_nark
+            };
+            verifier.select_accumulator(layouter, &is_base_case, &acc_default, &acc_prime)?
         };
 
+        let h_from_incoming = scalar_chip.fit_in_native(layouter, &nark.instances[0][0])?;
+        let h_ohs_from_incoming = scalar_chip.fit_in_native(layouter, &nark.instances[0][1])?;
+
         self.check_state_hash(
-            &mut layouter,
+            layouter,
             Some(&is_base_case),
             &h_from_incoming,
             &vp_digest,
@@ -1087,7 +1065,7 @@ where
             &acc,
         )?;
         self.check_state_hash(
-            &mut layouter,
+            layouter,
             None,
             &h_prime,
             &vp_digest,
@@ -1097,17 +1075,16 @@ where
             &acc_prime,
         )?;
 
-        util_chip.constrain_instance(&mut layouter, h_ohs_from_incoming.cell(), 0)?;
-        util_chip.constrain_instance(&mut layouter, h_prime.cell(), 1)?;
+        util_chip.constrain_instance(layouter, h_ohs_from_incoming.cell(), 0)?;
+        util_chip.constrain_instance(layouter, h_prime.cell(), 1)?;
 
         Ok(())
     }
 }
 
-impl<C, Comm, Sc> Circuit<C::Base> for RecursiveCircuit<C, Comm, Sc>
+impl<C, Sc> Circuit<C::Base> for RecursiveCircuit<C, Sc>
 where
     C: CurveAffine,
-    Comm: AsRef<C>,
     Sc: StepCircuit<C>,
 {
     type Config = Sc::Config;
@@ -1119,7 +1096,8 @@ where
             step_circuit: self.step_circuit.without_witnesses(),
             config: self.config.clone(),
             chips: self.chips.clone(),
-            fvp: self.fvp.clone(),
+            avp: self.avp.clone(),
+            hp: self.hp.clone(),
             h_prime: Value::unknown(),
             acc: Value::unknown(),
             acc_prime: Value::unknown(),
@@ -1144,41 +1122,391 @@ where
     }
 }
 
-impl<C, Comm, Sc> CircuitExt<C::Base> for RecursiveCircuit<C, Comm, Sc>
+impl<C, Sc> CircuitExt<C::Base> for RecursiveCircuit<C, Sc>
 where
     C: CurveAffine,
-    Comm: AsRef<C>,
     Sc: StepCircuit<C>,
 {
     fn instances(&self) -> Vec<Vec<C::Base>> {
-        let mut instances = vec![vec![self.fvp.dummy_h(); 2]];
+        let mut instances = vec![vec![Self::DUMMY_H; 2]];
         self.incoming_instances[1].map(|h_ohs| instances[0][0] = fe_to_fe(h_ohs));
         self.h_prime.map(|h_prime| instances[0][1] = h_prime);
         instances
     }
 }
 
+pub struct ProtostarIvcProverParam<C, P1, P2, AT1, AT2>
+where
+    C: CurveCycle,
+    HyperPlonk<P1>: PlonkishBackend<C::Scalar>,
+    HyperPlonk<P2>: PlonkishBackend<C::Base>,
+    AT1: InMemoryTranscript,
+    AT2: InMemoryTranscript,
+{
+    primary_pp: ProtostarProverParam<C::Scalar, HyperPlonk<P1>>,
+    primary_atp: AT1::Param,
+    secondary_pp: ProtostarProverParam<C::Base, HyperPlonk<P2>>,
+    secondary_atp: AT2::Param,
+    _marker: PhantomData<(C, AT1, AT2)>,
+}
+
+pub struct ProtostarIvcVerifierParam<C, P1, P2, H1, H2>
+where
+    C: CurveCycle,
+    HyperPlonk<P1>: PlonkishBackend<C::Scalar>,
+    HyperPlonk<P2>: PlonkishBackend<C::Base>,
+    H1: HashInstruction<C::Secondary>,
+    H2: HashInstruction<C::Primary>,
+{
+    primary_vp: ProtostarVerifierParam<C::Scalar, HyperPlonk<P1>>,
+    primary_vp_digest: C::Base,
+    primary_hp: H1::Param,
+    secondary_vp: ProtostarVerifierParam<C::Base, HyperPlonk<P2>>,
+    secondary_vp_digest: C::Scalar,
+    secondary_hp: H2::Param,
+    _marker: PhantomData<(C, H1, H2)>,
+}
+
+#[allow(clippy::type_complexity)]
+pub fn preprocess<C, P1, P2, S1, S2, AT1, AT2>(
+    primary_num_vars: usize,
+    primary_atp: AT1::Param,
+    primary_step_circuit: S1,
+    secondary_num_vars: usize,
+    secondary_atp: AT2::Param,
+    secondary_step_circuit: S2,
+    mut rng: impl RngCore,
+) -> Result<
+    (
+        Halo2Circuit<C::Scalar, RecursiveCircuit<C::Secondary, S1>>,
+        Halo2Circuit<C::Base, RecursiveCircuit<C::Primary, S2>>,
+        ProtostarIvcProverParam<C, P1, P2, AT1, AT2>,
+        ProtostarIvcVerifierParam<
+            C,
+            P1,
+            P2,
+            <S1::Chips as Chips<C::Secondary>>::HashChip,
+            <S2::Chips as Chips<C::Primary>>::HashChip,
+        >,
+    ),
+    Error,
+>
+where
+    C: CurveCycle,
+    C::Scalar: Hash + Serialize + DeserializeOwned,
+    C::Base: Hash + Serialize + DeserializeOwned,
+    P1: PolynomialCommitmentScheme<
+        C::Scalar,
+        Polynomial = MultilinearPolynomial<C::Scalar>,
+        CommitmentChunk = C::Primary,
+    >,
+    P1::Commitment: AdditiveCommitment<C::Scalar> + AsRef<C::Primary> + From<C::Primary>,
+    P2: PolynomialCommitmentScheme<
+        C::Base,
+        Polynomial = MultilinearPolynomial<C::Base>,
+        CommitmentChunk = C::Secondary,
+    >,
+    P2::Commitment: AdditiveCommitment<C::Base> + AsRef<C::Secondary> + From<C::Secondary>,
+    S1: StepCircuit<C::Secondary>,
+    S2: StepCircuit<C::Primary>,
+    AT1: InMemoryTranscript,
+    AT2: InMemoryTranscript,
+{
+    let primary_param = P1::setup(1 << primary_num_vars, 0, &mut rng).unwrap();
+    let secondary_param = P2::setup(1 << secondary_num_vars, 0, &mut rng).unwrap();
+
+    let primary_circuit = RecursiveCircuit::new(true, primary_step_circuit, None);
+    let mut primary_circuit =
+        Halo2Circuit::new::<HyperPlonk<P1>>(primary_num_vars, primary_circuit);
+
+    let (_, primary_vp) = {
+        let primary_circuit_info = primary_circuit.circuit_info_without_preprocess().unwrap();
+        Protostar::<HyperPlonk<P1>>::preprocess(&primary_param, &primary_circuit_info).unwrap()
+    };
+
+    let secondary_circuit = RecursiveCircuit::new(
+        false,
+        secondary_step_circuit,
+        Some(ProtostarAccumulationVerifierParam::from(&primary_vp)),
+    );
+    let mut secondary_circuit =
+        Halo2Circuit::new::<HyperPlonk<P2>>(secondary_num_vars, secondary_circuit);
+    let (_, secondary_vp) = {
+        let secondary_circuit_info = secondary_circuit.circuit_info().unwrap();
+        Protostar::<HyperPlonk<P2>>::preprocess(&secondary_param, &secondary_circuit_info).unwrap()
+    };
+
+    primary_circuit.update_witness(|circuit| {
+        circuit.init(ProtostarAccumulationVerifierParam::from(&secondary_vp));
+    });
+    let primary_circuit_info = primary_circuit.circuit_info().unwrap();
+    let (primary_pp, primary_vp) =
+        Protostar::<HyperPlonk<P1>>::preprocess(&primary_param, &primary_circuit_info).unwrap();
+
+    secondary_circuit.update_witness(|circuit| {
+        circuit.init(ProtostarAccumulationVerifierParam::from(&primary_vp));
+    });
+    let secondary_circuit_info = secondary_circuit.circuit_info().unwrap();
+    let (secondary_pp, secondary_vp) =
+        Protostar::<HyperPlonk<P2>>::preprocess(&secondary_param, &secondary_circuit_info).unwrap();
+
+    let ivc_pp = ProtostarIvcProverParam {
+        primary_pp,
+        primary_atp,
+        secondary_pp,
+        secondary_atp,
+        _marker: PhantomData,
+    };
+    let ivc_vp = {
+        let primary_vp_digest = primary_vp.digest();
+        let secondary_vp_digest = secondary_vp.digest();
+        ProtostarIvcVerifierParam {
+            primary_vp,
+            primary_vp_digest,
+            primary_hp: primary_circuit.circuit().chips.hash_chip().param(),
+            secondary_vp,
+            secondary_vp_digest,
+            secondary_hp: secondary_circuit.circuit().chips.hash_chip().param(),
+            _marker: PhantomData,
+        }
+    };
+
+    Ok((primary_circuit, secondary_circuit, ivc_pp, ivc_vp))
+}
+
+#[allow(clippy::type_complexity)]
+pub fn prove_steps<C, P1, P2, S1, S2, AT1, AT2>(
+    ivc_pp: &ProtostarIvcProverParam<C, P1, P2, AT1, AT2>,
+    primary_circuit: &mut Halo2Circuit<C::Scalar, RecursiveCircuit<C::Secondary, S1>>,
+    secondary_circuit: &mut Halo2Circuit<C::Base, RecursiveCircuit<C::Primary, S2>>,
+    num_steps: usize,
+    mut rng: impl RngCore,
+) -> Result<
+    (
+        ProtostarAccumulator<C::Scalar, P1>,
+        ProtostarAccumulator<C::Base, P2>,
+        Vec<C::Base>,
+    ),
+    crate::Error,
+>
+where
+    C: CurveCycle,
+    C::Scalar: Hash + Serialize + DeserializeOwned,
+    C::Base: Hash + Serialize + DeserializeOwned,
+    P1: PolynomialCommitmentScheme<
+        C::Scalar,
+        Polynomial = MultilinearPolynomial<C::Scalar>,
+        CommitmentChunk = C::Primary,
+    >,
+    P1::Commitment: AdditiveCommitment<C::Scalar> + AsRef<C::Primary> + From<C::Primary>,
+    P2: PolynomialCommitmentScheme<
+        C::Base,
+        Polynomial = MultilinearPolynomial<C::Base>,
+        CommitmentChunk = C::Secondary,
+    >,
+    P2::Commitment: AdditiveCommitment<C::Base> + AsRef<C::Secondary> + From<C::Secondary>,
+    S1: StepCircuit<C::Secondary>,
+    S2: StepCircuit<C::Primary>,
+    AT1: TranscriptRead<P1::CommitmentChunk, C::Scalar>
+        + TranscriptWrite<P1::CommitmentChunk, C::Scalar>
+        + InMemoryTranscript,
+    AT2: TranscriptRead<P2::CommitmentChunk, C::Base>
+        + TranscriptWrite<P2::CommitmentChunk, C::Base>
+        + InMemoryTranscript,
+{
+    let mut primary_acc = Protostar::<HyperPlonk<P1>>::init_accumulator(&ivc_pp.primary_pp)?;
+    let mut secondary_acc = Protostar::<HyperPlonk<P2>>::init_accumulator(&ivc_pp.secondary_pp)?;
+
+    for step_idx in 0..num_steps {
+        let primary_acc_x = primary_acc.instance.clone();
+        let proof = {
+            let mut transcript = AT1::new(ivc_pp.primary_atp.clone());
+            Protostar::<HyperPlonk<P1>>::prove_accumulation_from_nark(
+                &ivc_pp.primary_pp,
+                &mut primary_acc,
+                primary_circuit as &_,
+                &mut transcript,
+                &mut rng,
+            )?;
+            transcript.into_proof()
+        };
+
+        secondary_circuit.update_witness(|circuit| {
+            circuit.update(
+                primary_acc_x,
+                primary_acc.instance.clone(),
+                primary_circuit.instances()[0].clone().try_into().unwrap(),
+                proof,
+            );
+        });
+
+        if step_idx != num_steps - 1 {
+            let secondary_acc_x = secondary_acc.instance.clone();
+            let proof = {
+                let mut transcript = AT2::new(ivc_pp.secondary_atp.clone());
+                Protostar::<HyperPlonk<P2>>::prove_accumulation_from_nark(
+                    &ivc_pp.secondary_pp,
+                    &mut secondary_acc,
+                    secondary_circuit as &_,
+                    &mut transcript,
+                    &mut rng,
+                )?;
+                transcript.into_proof()
+            };
+
+            primary_circuit.update_witness(|circuit| {
+                circuit.update(
+                    secondary_acc_x,
+                    secondary_acc.instance.clone(),
+                    secondary_circuit.instances()[0].clone().try_into().unwrap(),
+                    proof,
+                );
+            });
+        } else {
+            return Ok((
+                primary_acc,
+                secondary_acc,
+                secondary_circuit.instances()[0].to_vec(),
+            ));
+        }
+    }
+
+    unreachable!()
+}
+
+pub fn prove_decider<C, P1, P2, AT1, AT2>(
+    ivc_pp: &ProtostarIvcProverParam<C, P1, P2, AT1, AT2>,
+    primary_acc: &ProtostarAccumulator<C::Scalar, P1>,
+    primary_transcript: &mut impl TranscriptWrite<P1::CommitmentChunk, C::Scalar>,
+    secondary_acc: &mut ProtostarAccumulator<C::Base, P2>,
+    secondary_circuit: &impl PlonkishCircuit<C::Base>,
+    secondary_transcript: &mut impl TranscriptWrite<P2::CommitmentChunk, C::Base>,
+    mut rng: impl RngCore,
+) -> Result<(), crate::Error>
+where
+    C: CurveCycle,
+    C::Scalar: Hash + Serialize + DeserializeOwned,
+    C::Base: Hash + Serialize + DeserializeOwned,
+    P1: PolynomialCommitmentScheme<
+        C::Scalar,
+        Polynomial = MultilinearPolynomial<C::Scalar>,
+        CommitmentChunk = C::Primary,
+    >,
+    P1::Commitment: AdditiveCommitment<C::Scalar> + AsRef<C::Primary> + From<C::Primary>,
+    P2: PolynomialCommitmentScheme<
+        C::Base,
+        Polynomial = MultilinearPolynomial<C::Base>,
+        CommitmentChunk = C::Secondary,
+    >,
+    P2::Commitment: AdditiveCommitment<C::Base> + AsRef<C::Secondary> + From<C::Secondary>,
+    AT1: InMemoryTranscript,
+    AT2: InMemoryTranscript,
+{
+    Protostar::<HyperPlonk<P1>>::prove_decider(
+        &ivc_pp.primary_pp,
+        primary_acc,
+        primary_transcript,
+        &mut rng,
+    )?;
+    Protostar::<HyperPlonk<P2>>::prove_decider_with_last_nark(
+        &ivc_pp.secondary_pp,
+        secondary_acc,
+        secondary_circuit,
+        secondary_transcript,
+        &mut rng,
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_decider<C, P1, P2, H1, H2>(
+    ivc_vp: &ProtostarIvcVerifierParam<C, P1, P2, H1, H2>,
+    primary_initial_input: &[C::Scalar],
+    primary_output: &[C::Scalar],
+    primary_acc: ProtostarAccumulatorInstance<C::Scalar, P1::Commitment>,
+    primary_transcript: &mut impl TranscriptRead<P1::CommitmentChunk, C::Scalar>,
+    secondary_initial_input: &[C::Base],
+    secondary_output: &[C::Base],
+    mut secondary_acc_before_last: ProtostarAccumulatorInstance<C::Base, P2::Commitment>,
+    secondary_last_instances: &[Vec<C::Base>],
+    secondary_transcript: &mut impl TranscriptRead<P2::CommitmentChunk, C::Base>,
+    num_steps: usize,
+    mut rng: impl RngCore,
+) -> Result<(), crate::Error>
+where
+    C: CurveCycle,
+    C::Scalar: Hash + Serialize + DeserializeOwned,
+    C::Base: Hash + Serialize + DeserializeOwned,
+    P1: PolynomialCommitmentScheme<
+        C::Scalar,
+        Polynomial = MultilinearPolynomial<C::Scalar>,
+        CommitmentChunk = C::Primary,
+    >,
+    P1::Commitment: AdditiveCommitment<C::Scalar> + AsRef<C::Primary> + From<C::Primary>,
+    P2: PolynomialCommitmentScheme<
+        C::Base,
+        Polynomial = MultilinearPolynomial<C::Base>,
+        CommitmentChunk = C::Secondary,
+    >,
+    P2::Commitment: AdditiveCommitment<C::Base> + AsRef<C::Secondary> + From<C::Secondary>,
+    H1: HashInstruction<C::Secondary>,
+    H2: HashInstruction<C::Primary>,
+{
+    if H1::hash_state(
+        ivc_vp.primary_hp.clone(),
+        ivc_vp.secondary_vp_digest,
+        num_steps,
+        primary_initial_input,
+        primary_output,
+        &secondary_acc_before_last,
+    ) != fe_to_fe(secondary_last_instances[0][0])
+    {
+        return Err(crate::Error::InvalidSnark(
+            "Invalid primary state hash".to_string(),
+        ));
+    }
+    if H2::hash_state(
+        ivc_vp.secondary_hp.clone(),
+        ivc_vp.primary_vp_digest,
+        num_steps,
+        secondary_initial_input,
+        secondary_output,
+        &primary_acc,
+    ) != secondary_last_instances[0][1]
+    {
+        return Err(crate::Error::InvalidSnark(
+            "Invalid secondary state hash".to_string(),
+        ));
+    }
+
+    Protostar::<HyperPlonk<P1>>::verify_decider(
+        &ivc_vp.primary_vp,
+        &primary_acc,
+        primary_transcript,
+        &mut rng,
+    )?;
+    Protostar::<HyperPlonk<P2>>::verify_decider_with_last_nark(
+        &ivc_vp.secondary_vp,
+        &mut secondary_acc_before_last,
+        secondary_last_instances,
+        secondary_transcript,
+        &mut rng,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
-        backend::{
-            hyperplonk::{
-                folding::protostar::{
-                    verifier::{
-                        halo2::{
-                            AssignedProtostarInstance, Chips, FieldInstruction, HashInstruction,
-                            NativeEccInstruction, ProtostarFoldingVerifierParam, RecursiveCircuit,
-                            StepCircuit, TranscriptInstruction, UtilInstruction,
-                        },
-                        ProtostarInstance,
-                    },
-                    Protostar, ProtostarVerifierState,
-                },
-                HyperPlonk,
+        folding::protostar::{
+            ivc::halo2::{
+                preprocess, prove_decider, prove_steps, verify_decider,
+                AssignedProtostarAccumulatorInstance, Chips, FieldInstruction, HashInstruction,
+                NativeEccInstruction, StepCircuit, TranscriptInstruction, UtilInstruction,
             },
-            PlonkishBackend, PlonkishCircuit,
+            ProtostarAccumulatorInstance,
         },
-        frontend::halo2::{CircuitExt, Halo2Circuit},
+        frontend::halo2::CircuitExt,
         pcs::{
             multilinear::{MultilinearIpa, MultilinearSimulator},
             univariate::UnivariateKzg,
@@ -1187,17 +1515,15 @@ mod test {
         poly::multilinear::MultilinearPolynomial,
         util::{
             arithmetic::{
-                div_ceil, fe_from_bool, fe_from_le_bytes, fe_to_fe, fe_truncated, BitField,
-                Bn254Grumpkin, Coordinates, CurveAffine, CurveCycle, Field, FromUniformBytes,
-                PrimeField, PrimeFieldBits,
+                div_ceil, fe_from_bool, fe_from_le_bytes, fe_truncated, BitField, Bn254Grumpkin,
+                Coordinates, CurveAffine, CurveCycle, Field, FromUniformBytes, PrimeField,
+                PrimeFieldBits,
             },
-            end_timer,
             hash::Poseidon,
-            start_timer,
             test::seeded_std_rng,
             transcript::{
-                FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, Transcript,
-                TranscriptRead, TranscriptWrite,
+                FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscript,
+                Keccak256Transcript, Transcript, TranscriptRead, TranscriptWrite,
             },
             DeserializeOwned, Itertools, Serialize,
         },
@@ -1253,7 +1579,9 @@ mod test {
         stream: S,
     }
 
-    impl<F: FromUniformBytes<64>> PoseidonTranscript<F, Cursor<Vec<u8>>> {
+    impl<F: FromUniformBytes<64>> InMemoryTranscript for PoseidonTranscript<F, Cursor<Vec<u8>>> {
+        type Param = usize;
+
         fn new(num_limb_bits: usize) -> Self {
             Self {
                 num_limb_bits,
@@ -1810,21 +2138,30 @@ mod test {
         C::Base: FromUniformBytes<64>,
         C::Scalar: PrimeFieldBits,
     {
+        type Param = (usize, usize, Poseidon<C::Base, T, RATE>);
+
+        fn param(&self) -> Self::Param {
+            (
+                self.num_hash_bits,
+                self.num_limb_bits,
+                self.poseidon.clone(),
+            )
+        }
+
         fn hash_state<Comm: AsRef<C>>(
-            &self,
+            (num_hash_bits, num_limb_bits, mut poseidon): Self::Param,
             vp_digest: C::Base,
             step_idx: usize,
             initial_input: &[C::Base],
             output: &[C::Base],
-            acc: &ProtostarInstance<C::Scalar, Comm>,
+            acc: &ProtostarAccumulatorInstance<C::Scalar, Comm>,
         ) -> C::Base {
-            let mut poseidon = self.poseidon.clone();
             let x_y_is_identity = |comm: &Comm| {
                 Option::<Coordinates<_>>::from(comm.as_ref().coordinates())
                     .map(|coords| [*coords.x(), *coords.y(), C::Base::ZERO])
                     .unwrap_or_else(|| [C::Base::ZERO, C::Base::ZERO, C::Base::ONE])
             };
-            let fe_to_limbs = |fe| fe_to_limbs(fe, self.num_limb_bits);
+            let fe_to_limbs = |fe| fe_to_limbs(fe, num_limb_bits);
             let inputs = iter::empty()
                 .chain([vp_digest, C::Base::from(step_idx as u64)])
                 .chain(initial_input.iter().copied())
@@ -1834,11 +2171,11 @@ mod test {
                 .chain(acc.witness_comms.iter().flat_map(x_y_is_identity))
                 .chain(acc.challenges.iter().copied().flat_map(fe_to_limbs))
                 .chain(fe_to_limbs(acc.u))
-                .chain(fe_to_limbs(acc.compressed_e_sum))
-                .chain(x_y_is_identity(&acc.zeta_e_comm))
+                .chain(x_y_is_identity(&acc.e_comm))
+                .chain(acc.compressed_e_sum.map(fe_to_limbs).into_iter().flatten())
                 .collect_vec();
             poseidon.update(&inputs);
-            fe_truncated(poseidon.squeeze(), self.num_hash_bits)
+            fe_truncated(poseidon.squeeze(), num_hash_bits)
         }
 
         fn hash_assigned_state<EccChip, ScalarChip>(
@@ -1848,7 +2185,7 @@ mod test {
             step_idx: &AssignedCell<C::Base, C::Base>,
             initial_input: &[AssignedCell<C::Base, C::Base>],
             output: &[AssignedCell<C::Base, C::Base>],
-            acc: &AssignedProtostarInstance<C, EccChip, ScalarChip>,
+            acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
         ) -> Result<AssignedCell<C::Base, C::Base>, Error>
         where
             EccChip: NativeEccInstruction<C>,
@@ -1864,8 +2201,14 @@ mod test {
                 .chain(acc.witness_comms.iter().flat_map(|comm| comm.as_ref()))
                 .chain(acc.challenges.iter().flat_map(AsRef::<[_]>::as_ref))
                 .chain(AsRef::as_ref(&acc.u))
-                .chain(AsRef::as_ref(&acc.compressed_e_sum))
-                .chain(acc.zeta_e_comm.as_ref())
+                .chain(acc.e_comm.as_ref())
+                .chain(
+                    acc.compressed_e_sum
+                        .as_ref()
+                        .map(AsRef::as_ref)
+                        .into_iter()
+                        .flatten(),
+                )
                 .for_each(|value| {
                     value.value().map(|value| poseidon.update(&[*value]));
                 });
@@ -2078,252 +2421,116 @@ mod test {
         }
     }
 
-    fn run_protostar_folding_verifier<C, P1, P2>(
+    fn run_protostar_hyperplonk_ivc<C, P1, P2>(
         num_hash_bits: usize,
         num_limb_bits: usize,
         num_vars: usize,
         num_steps: usize,
     ) where
         C: CurveCycle,
-        C::Base: Ord + Hash + Serialize + DeserializeOwned,
-        C::Scalar: Ord + Hash + Serialize + DeserializeOwned,
+        C::Scalar: Hash + Serialize + DeserializeOwned,
+        C::Base: Hash + Serialize + DeserializeOwned,
         P1: PolynomialCommitmentScheme<
             C::Scalar,
             Polynomial = MultilinearPolynomial<C::Scalar>,
             CommitmentChunk = C::Primary,
         >,
+        P1::Commitment: AdditiveCommitment<C::Scalar> + AsRef<C::Primary> + From<C::Primary>,
         P2: PolynomialCommitmentScheme<
             C::Base,
             Polynomial = MultilinearPolynomial<C::Base>,
             CommitmentChunk = C::Secondary,
         >,
-        P1::Commitment: AdditiveCommitment<C::Scalar> + AsRef<C::Primary> + From<C::Primary>,
         P2::Commitment: AdditiveCommitment<C::Base> + AsRef<C::Secondary> + From<C::Secondary>,
+        Keccak256Transcript<Cursor<Vec<u8>>>: TranscriptRead<C::Primary, C::Scalar>
+            + TranscriptRead<C::Secondary, C::Base>
+            + TranscriptWrite<C::Primary, C::Scalar>
+            + TranscriptWrite<C::Secondary, C::Base>,
     {
-        let (mut primary, primary_pp, primary_vp, mut secondary, secondary_pp, secondary_vp) = {
-            let timer = start_timer(|| format!("setup-primary-{num_vars}"));
-            let primary_param = P1::setup(1 << num_vars, 0, seeded_std_rng()).unwrap();
-            end_timer(timer);
+        let primary_num_vars = num_vars;
+        let secondary_num_vars = num_vars;
+        let primary_atp = num_limb_bits;
+        let secondary_atp = num_limb_bits;
 
-            let timer = start_timer(|| format!("setup-secondary-{num_vars}"));
-            let secondary_param = P2::setup(1 << num_vars, 0, seeded_std_rng()).unwrap();
-            end_timer(timer);
-
-            let primary = RecursiveCircuit::<C::Secondary, P2::Commitment, _>::new(
-                true,
-                Default::default(),
+        let (mut primary_circuit, mut secondary_circuit, ivc_pp, ivc_vp) =
+            preprocess::<C, P1, P2, _, _, PoseidonTranscript<_, _>, PoseidonTranscript<_, _>>(
+                primary_num_vars,
+                primary_atp,
                 TrivialCircuit::new(num_hash_bits, num_limb_bits),
-            );
-            let primary = Halo2Circuit::new::<Protostar<HyperPlonk<P1>>>(num_vars, primary);
-            let primary_info = primary.circuit_info_without_preprocess().unwrap();
-
-            let timer = start_timer(|| format!("preprocess-primary-{num_vars}"));
-            let (_, primary_vp) =
-                Protostar::<HyperPlonk<P1>>::preprocess(&primary_param, &primary_info).unwrap();
-            end_timer(timer);
-
-            let secondary = RecursiveCircuit::<C::Primary, P1::Commitment, _>::new(
-                false,
-                ProtostarFoldingVerifierParam::from(&primary_vp),
+                secondary_num_vars,
+                secondary_atp,
                 TrivialCircuit::new(num_hash_bits, num_limb_bits),
-            );
-            let secondary = Halo2Circuit::new::<Protostar<HyperPlonk<P2>>>(num_vars, secondary);
-            let secondary_info = secondary.circuit_info().unwrap();
+                seeded_std_rng(),
+            )
+            .unwrap();
 
-            let timer = start_timer(|| format!("preprocess-secondary-{num_vars}"));
-            let (secondary_pp, secondary_vp) =
-                Protostar::<HyperPlonk<P2>>::preprocess(&secondary_param, &secondary_info).unwrap();
-            end_timer(timer);
+        let (primary_acc, mut secondary_acc, secondary_last_instances) = prove_steps(
+            &ivc_pp,
+            &mut primary_circuit,
+            &mut secondary_circuit,
+            num_steps,
+            seeded_std_rng(),
+        )
+        .unwrap();
 
-            let primary = RecursiveCircuit::<C::Secondary, P2::Commitment, _>::new(
-                true,
-                ProtostarFoldingVerifierParam::from(&secondary_vp),
-                TrivialCircuit::new(num_hash_bits, num_limb_bits),
-            );
-            let primary = Halo2Circuit::new::<Protostar<HyperPlonk<P1>>>(num_vars, primary);
-            let primary_info = primary.circuit_info().unwrap();
+        let (
+            primary_acc,
+            primary_initial_input,
+            primary_output,
+            primary_proof,
+            secondary_acc_before_last,
+            secondary_initial_input,
+            secondary_output,
+            secondary_proof,
+        ) = {
+            let secondary_acc_before_last = secondary_acc.instance.clone();
 
-            let timer = start_timer(|| format!("preprocess-primary-{num_vars}"));
-            let (primary_pp, primary_vp) =
-                Protostar::<HyperPlonk<P1>>::preprocess(&primary_param, &primary_info).unwrap();
-            end_timer(timer);
+            let mut primary_transcript = Keccak256Transcript::default();
+            let mut secondary_transcript = Keccak256Transcript::default();
+            prove_decider(
+                &ivc_pp,
+                &primary_acc,
+                &mut primary_transcript,
+                &mut secondary_acc,
+                &secondary_circuit,
+                &mut secondary_transcript,
+                seeded_std_rng(),
+            )
+            .unwrap();
 
             (
-                primary,
-                primary_pp,
-                primary_vp,
-                secondary,
-                secondary_pp,
-                secondary_vp,
+                primary_acc.instance,
+                StepCircuit::<C::Secondary>::initial_input(&primary_circuit.circuit().step_circuit),
+                StepCircuit::<C::Secondary>::output(&primary_circuit.circuit().step_circuit),
+                primary_transcript.into_proof(),
+                secondary_acc_before_last,
+                StepCircuit::<C::Primary>::initial_input(&secondary_circuit.circuit().step_circuit),
+                StepCircuit::<C::Primary>::output(&secondary_circuit.circuit().step_circuit),
+                secondary_transcript.into_proof(),
             )
         };
 
-        let mut primary_prover_state = primary_pp.init();
-        let mut secondary_prover_state = secondary_pp.init();
-
-        let timer = start_timer(|| format!("fold-{}", num_steps - 1));
-        for _ in 0..num_steps - 1 {
-            {
-                let primary_state = primary_prover_state.witness.instance.clone();
-
-                let timer = start_timer(|| format!("prove-primary-{num_vars}"));
-                let proof = {
-                    let mut transcript = PoseidonTranscript::new(num_limb_bits);
-                    Protostar::<HyperPlonk<P1>>::prove(
-                        &primary_pp,
-                        &mut primary_prover_state,
-                        &primary,
-                        &mut transcript,
-                        seeded_std_rng(),
-                    )
-                    .unwrap();
-                    transcript.into_proof()
-                };
-                end_timer(timer);
-
-                secondary.update_witness(|circuit| {
-                    circuit.update(
-                        primary_state,
-                        primary_prover_state.witness.instance.clone(),
-                        primary.instances()[0].clone().try_into().unwrap(),
-                        proof,
-                    );
-                });
-            }
-            {
-                let secondary_state = secondary_prover_state.witness.instance.clone();
-
-                let timer = start_timer(|| format!("prove-secondary-{num_vars}"));
-                let proof = {
-                    let mut transcript = PoseidonTranscript::new(num_limb_bits);
-                    Protostar::<HyperPlonk<P2>>::prove(
-                        &secondary_pp,
-                        &mut secondary_prover_state,
-                        &secondary,
-                        &mut transcript,
-                        seeded_std_rng(),
-                    )
-                    .unwrap();
-                    transcript.into_proof()
-                };
-                end_timer(timer);
-
-                primary.update_witness(|circuit| {
-                    circuit.update(
-                        secondary_state,
-                        secondary_prover_state.witness.instance.clone(),
-                        secondary.instances()[0].clone().try_into().unwrap(),
-                        proof,
-                    );
-                });
-            }
-        }
-        end_timer(timer);
-
-        let timer = start_timer(|| "decide");
-        let primary_state = {
-            primary_prover_state.set_folding(false);
-            let primary_verifier_state = ProtostarVerifierState::from(primary_prover_state.clone());
-            let primary_state = primary_prover_state.witness.instance.clone();
-
-            let timer = start_timer(|| format!("prove-primary-{num_vars}"));
-            let proof = {
-                let mut transcript = PoseidonTranscript::new(num_limb_bits);
-                Protostar::<HyperPlonk<P1>>::prove(
-                    &primary_pp,
-                    &mut primary_prover_state,
-                    &primary,
-                    &mut transcript,
-                    seeded_std_rng(),
-                )
-                .unwrap();
-                transcript.into_proof()
-            };
-            end_timer(timer);
-
-            let timer = start_timer(|| format!("verify-primary-{num_vars}"));
-            let result = {
-                let mut transcript =
-                    PoseidonTranscript::from_proof(num_limb_bits, proof.as_slice());
-                Protostar::<HyperPlonk<P1>>::verify(
-                    &primary_vp,
-                    primary_verifier_state,
-                    primary.instances(),
-                    &mut transcript,
-                    seeded_std_rng(),
-                )
-            };
-            assert_eq!(result, Ok(()));
-            end_timer(timer);
-
-            secondary.update_witness(|circuit| {
-                circuit.update(
-                    primary_state,
-                    primary_prover_state.witness.instance.clone(),
-                    primary.instances()[0].clone().try_into().unwrap(),
-                    proof,
-                );
-            });
-
-            primary_prover_state.witness.instance
+        let result = {
+            let mut primary_transcript =
+                Keccak256Transcript::from_proof((), primary_proof.as_slice());
+            let mut secondary_transcript =
+                Keccak256Transcript::from_proof((), secondary_proof.as_slice());
+            verify_decider(
+                &ivc_vp,
+                primary_initial_input,
+                primary_output,
+                primary_acc,
+                &mut primary_transcript,
+                secondary_initial_input,
+                secondary_output,
+                secondary_acc_before_last,
+                &[secondary_last_instances],
+                &mut secondary_transcript,
+                num_steps,
+                seeded_std_rng(),
+            )
         };
-        {
-            secondary_prover_state.set_folding(false);
-            let secondary_verifier_state =
-                ProtostarVerifierState::from(secondary_prover_state.clone());
-
-            let timer = start_timer(|| format!("prove-secondary-{num_vars}"));
-            let proof = {
-                let mut transcript = PoseidonTranscript::new(num_limb_bits);
-                Protostar::<HyperPlonk<P2>>::prove(
-                    &secondary_pp,
-                    &mut secondary_prover_state,
-                    &secondary,
-                    &mut transcript,
-                    seeded_std_rng(),
-                )
-                .unwrap();
-                transcript.into_proof()
-            };
-            end_timer(timer);
-
-            assert_eq!(
-                primary.circuit().chips.hash_chip().hash_state(
-                    primary.circuit().fvp.vp_digest,
-                    num_steps,
-                    StepCircuit::<C::Secondary>::initial_input(&primary.circuit().step_circuit),
-                    StepCircuit::<C::Secondary>::output(&primary.circuit().step_circuit),
-                    &secondary_verifier_state.instance
-                ),
-                fe_to_fe(secondary.instances()[0][0]),
-            );
-            assert_eq!(
-                secondary.circuit().chips.hash_chip().hash_state(
-                    secondary.circuit().fvp.vp_digest,
-                    num_steps,
-                    StepCircuit::<C::Primary>::initial_input(&secondary.circuit().step_circuit),
-                    StepCircuit::<C::Primary>::output(&secondary.circuit().step_circuit),
-                    &primary_state
-                ),
-                secondary.instances()[0][1],
-            );
-
-            let timer = start_timer(|| format!("verify-secondary-{num_vars}"));
-            let result = {
-                let mut transcript =
-                    PoseidonTranscript::from_proof(num_limb_bits, proof.as_slice());
-                Protostar::<HyperPlonk<P2>>::verify(
-                    &secondary_vp,
-                    secondary_verifier_state,
-                    secondary.instances(),
-                    &mut transcript,
-                    seeded_std_rng(),
-                )
-            };
-            assert_eq!(result, Ok(()));
-            end_timer(timer);
-        }
-        end_timer(timer);
+        assert_eq!(result, Ok(()));
     }
 
     #[test]
@@ -2332,7 +2539,7 @@ mod test {
         const NUM_LIMB_BITS: usize = 64;
         const NUM_VARS: usize = 9;
         const NUM_STEPS: usize = 3;
-        run_protostar_folding_verifier::<
+        run_protostar_hyperplonk_ivc::<
             Bn254Grumpkin,
             MultilinearSimulator<UnivariateKzg<Bn256>>,
             MultilinearIpa<grumpkin::G1Affine>,

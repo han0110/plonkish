@@ -1,6 +1,6 @@
 use crate::{
     backend::{PlonkishCircuit, PlonkishCircuitInfo},
-    pcs::{Commitment, CommitmentChunk, PolynomialCommitmentScheme},
+    pcs::{CommitmentChunk, PolynomialCommitmentScheme},
     util::{
         arithmetic::Field,
         transcript::{TranscriptRead, TranscriptWrite},
@@ -18,7 +18,7 @@ pub trait FoldingScheme<F: Field>: Clone + Debug {
     type Pcs: PolynomialCommitmentScheme<F>;
     type ProverParam: Debug + Serialize + DeserializeOwned;
     type VerifierParam: Debug + Serialize + DeserializeOwned;
-    type Accumulator: Debug + From<PlonkishNark<F, Self::Pcs>> + AsRef<Self::AccumulatorInstance>;
+    type Accumulator: Debug + AsRef<Self::AccumulatorInstance>;
     type AccumulatorInstance: Clone + Debug + Serialize + DeserializeOwned;
 
     fn setup(
@@ -32,6 +32,11 @@ pub trait FoldingScheme<F: Field>: Clone + Debug {
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error>;
 
     fn init_accumulator(pp: &Self::ProverParam) -> Result<Self::Accumulator, Error>;
+
+    fn init_accumulator_from_nark(
+        pp: &Self::ProverParam,
+        nark: PlonkishNark<F, Self::Pcs>,
+    ) -> Result<Self::Accumulator, Error>;
 
     fn prove_nark(
         pp: &Self::ProverParam,
@@ -56,7 +61,7 @@ pub trait FoldingScheme<F: Field>: Clone + Debug {
         mut rng: impl RngCore,
     ) -> Result<(), Error> {
         let nark = Self::prove_nark(pp, circuit, transcript, &mut rng)?;
-        let incoming = Self::Accumulator::from(nark);
+        let incoming = Self::init_accumulator_from_nark(pp, nark)?;
         Self::prove_accumulation::<true>(pp, accumulator, &incoming, transcript, &mut rng)?;
         Ok(())
     }
@@ -67,7 +72,7 @@ pub trait FoldingScheme<F: Field>: Clone + Debug {
         instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<CommitmentChunk<F, Self::Pcs>, F>,
         rng: impl RngCore,
-    ) -> Result<PlonkishNarkInstance<F, Commitment<F, Self::Pcs>>, Error>;
+    ) -> Result<(), Error>;
 
     fn prove_decider(
         pp: &Self::ProverParam,
@@ -75,6 +80,24 @@ pub trait FoldingScheme<F: Field>: Clone + Debug {
         transcript: &mut impl TranscriptWrite<CommitmentChunk<F, Self::Pcs>, F>,
         rng: impl RngCore,
     ) -> Result<(), Error>;
+
+    fn prove_decider_with_last_nark(
+        pp: &Self::ProverParam,
+        mut accumulator: impl BorrowMut<Self::Accumulator>,
+        circuit: &impl PlonkishCircuit<F>,
+        transcript: &mut impl TranscriptWrite<CommitmentChunk<F, Self::Pcs>, F>,
+        mut rng: impl RngCore,
+    ) -> Result<(), Error> {
+        Self::prove_accumulation_from_nark(
+            pp,
+            accumulator.borrow_mut(),
+            circuit,
+            transcript,
+            &mut rng,
+        )?;
+        Self::prove_decider(pp, accumulator.borrow(), transcript, &mut rng)?;
+        Ok(())
+    }
 
     fn verify_decider(
         vp: &Self::VerifierParam,
@@ -88,18 +111,17 @@ pub trait FoldingScheme<F: Field>: Clone + Debug {
         mut accumulator: impl BorrowMut<Self::AccumulatorInstance>,
         instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<CommitmentChunk<F, Self::Pcs>, F>,
-        decider_transcript: &mut impl TranscriptRead<CommitmentChunk<F, Self::Pcs>, F>,
         mut rng: impl RngCore,
-    ) -> Result<PlonkishNarkInstance<F, Commitment<F, Self::Pcs>>, Error> {
-        let nark = Self::verify_accumulation_from_nark(
+    ) -> Result<(), Error> {
+        Self::verify_accumulation_from_nark(
             vp,
             accumulator.borrow_mut(),
             instances,
             transcript,
             &mut rng,
         )?;
-        Self::verify_decider(vp, accumulator.borrow(), decider_transcript, &mut rng)?;
-        Ok(nark)
+        Self::verify_decider(vp, accumulator.borrow(), transcript, &mut rng)?;
+        Ok(())
     }
 }
 
@@ -172,7 +194,7 @@ pub(crate) mod test {
         Fs: FoldingScheme<F>,
         T: TranscriptRead<<Fs::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
             + TranscriptWrite<<Fs::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
-            + InMemoryTranscript,
+            + InMemoryTranscript<Param = ()>,
         C: PlonkishCircuit<F>,
     {
         for num_vars in num_vars_range {
@@ -187,7 +209,7 @@ pub(crate) mod test {
             let (pp, vp) = Fs::preprocess(&param, &circuit_info).unwrap();
             end_timer(timer);
 
-            let (accumulator_before_last, last_proof, decider_proof) = {
+            let (accumulator_before_last, proof) = {
                 let mut accumulator = Fs::init_accumulator(&pp).unwrap();
                 for circuit in circuits[..circuits.len() - 1].iter() {
                     let timer = start_timer(|| format!("prove_accumulation_from_nark-{num_vars}"));
@@ -195,18 +217,19 @@ pub(crate) mod test {
                         &pp,
                         &mut accumulator,
                         circuit,
-                        &mut T::default(),
+                        &mut T::new(()),
                         seeded_std_rng(),
                     )
                     .unwrap();
                     end_timer(timer);
                 }
+
                 let accumulator_before_last = accumulator.as_ref().clone();
 
-                let timer = start_timer(|| format!("prove_accumulation_from_nark-{num_vars}"));
-                let last_proof = {
-                    let mut transcript = T::default();
-                    Fs::prove_accumulation_from_nark(
+                let timer = start_timer(|| format!("prove_decider_with_last_nark-{num_vars}"));
+                let proof = {
+                    let mut transcript = T::new(());
+                    Fs::prove_decider_with_last_nark(
                         &pp,
                         &mut accumulator,
                         last_circuit,
@@ -218,28 +241,17 @@ pub(crate) mod test {
                 };
                 end_timer(timer);
 
-                let timer = start_timer(|| format!("prove_decider-{num_vars}"));
-                let decider_proof = {
-                    let mut transcript = T::default();
-                    Fs::prove_decider(&pp, &accumulator, &mut transcript, seeded_std_rng())
-                        .unwrap();
-                    transcript.into_proof()
-                };
-                end_timer(timer);
-
-                (accumulator_before_last, last_proof, decider_proof)
+                (accumulator_before_last, proof)
             };
 
             let timer = start_timer(|| format!("verify_decider_with_last_nark-{num_vars}"));
             let result = {
-                let mut last_transcript = T::from_proof(last_proof.as_slice());
-                let mut decider_transcript = T::from_proof(decider_proof.as_slice());
+                let mut transcript = T::from_proof((), proof.as_slice());
                 Fs::verify_decider_with_last_nark(
                     &vp,
                     accumulator_before_last,
                     last_circuit.instances(),
-                    &mut last_transcript,
-                    &mut decider_transcript,
+                    &mut transcript,
                     seeded_std_rng(),
                 )
             };

@@ -157,7 +157,7 @@ pub(super) mod test {
                 transcript.into_proof()
             };
             let accept = {
-                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
                 let (x_eval, x) =
                     S::verify(&vp, num_vars, degree, Fr::zero(), &mut transcript).unwrap();
                 let evals = expression

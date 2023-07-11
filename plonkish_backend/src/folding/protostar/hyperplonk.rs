@@ -19,8 +19,10 @@ use crate::{
                     evaluate_zeta_cross_term_poly, lookup_h_polys, powers_of_zeta_poly,
                 },
             },
+            ivc::ProtostarAccumulationVerifierParam,
             Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance, ProtostarProverParam,
-            ProtostarStrategy, ProtostarVerifierParam,
+            ProtostarStrategy::{Compressing, NoCompressing},
+            ProtostarVerifierParam,
         },
         FoldingScheme, PlonkishNark, PlonkishNarkInstance,
     },
@@ -37,7 +39,6 @@ use crate::{
 use rand::RngCore;
 use std::{borrow::BorrowMut, hash::Hash, iter};
 
-pub mod ivc;
 mod preprocessor;
 mod prover;
 
@@ -49,10 +50,10 @@ where
     Pcs::CommitmentChunk: AdditiveCommitment<F>,
 {
     type Pcs = Pcs;
-    type ProverParam = ProtostarProverParam<F, HyperPlonk<Pcs>, STRATEGY>;
-    type VerifierParam = ProtostarVerifierParam<F, HyperPlonk<Pcs>, STRATEGY>;
-    type Accumulator = ProtostarAccumulator<F, Pcs, STRATEGY>;
-    type AccumulatorInstance = ProtostarAccumulatorInstance<F, Pcs::Commitment, STRATEGY>;
+    type ProverParam = ProtostarProverParam<F, HyperPlonk<Pcs>>;
+    type VerifierParam = ProtostarVerifierParam<F, HyperPlonk<Pcs>>;
+    type Accumulator = ProtostarAccumulator<F, Pcs>;
+    type AccumulatorInstance = ProtostarAccumulatorInstance<F, Pcs::Commitment>;
 
     fn setup(
         circuit_info: &PlonkishCircuitInfo<F>,
@@ -62,7 +63,7 @@ where
 
         let num_vars = circuit_info.k;
         let poly_size = 1 << num_vars;
-        let batch_size = batch_size::<_, STRATEGY>(circuit_info);
+        let batch_size = batch_size(circuit_info, STRATEGY.into());
         Pcs::setup(poly_size, batch_size, rng)
     }
 
@@ -72,15 +73,27 @@ where
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
         assert!(circuit_info.is_well_formed());
 
-        preprocess(param, circuit_info)
+        preprocess(param, circuit_info, STRATEGY.into())
     }
 
     fn init_accumulator(pp: &Self::ProverParam) -> Result<Self::Accumulator, Error> {
         Ok(ProtostarAccumulator::init(
+            pp.strategy,
             pp.pp.num_vars,
             &pp.pp.num_instances,
             pp.num_folding_witness_polys,
             pp.num_folding_challenges,
+        ))
+    }
+
+    fn init_accumulator_from_nark(
+        pp: &Self::ProverParam,
+        nark: PlonkishNark<F, Self::Pcs>,
+    ) -> Result<Self::Accumulator, Error> {
+        Ok(ProtostarAccumulator::from_nark(
+            pp.strategy,
+            pp.pp.num_vars,
+            nark,
         ))
     }
 
@@ -90,9 +103,9 @@ where
         transcript: &mut impl TranscriptWrite<CommitmentChunk<F, Pcs>, F>,
         _: impl RngCore,
     ) -> Result<PlonkishNark<F, Pcs>, Error> {
-        let stretagy = ProtostarStrategy::from(STRATEGY);
         let ProtostarProverParam {
             pp,
+            strategy,
             num_theta_primes,
             num_alpha_primes,
             ..
@@ -175,9 +188,9 @@ where
 
         // Round n+2
 
-        let (zeta, powers_of_zeta_poly, powers_of_zeta_comm) = match stretagy {
-            ProtostarStrategy::NoCompressing => (None, None, None),
-            ProtostarStrategy::Compressing => {
+        let (zeta, powers_of_zeta_poly, powers_of_zeta_comm) = match strategy {
+            NoCompressing => (None, None, None),
+            Compressing => {
                 let zeta = transcript.squeeze_challenge();
 
                 let powers_of_zeta_poly = powers_of_zeta_poly(pp.num_vars, zeta);
@@ -230,9 +243,9 @@ where
         transcript: &mut impl TranscriptWrite<CommitmentChunk<F, Pcs>, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
-        let stretagy = ProtostarStrategy::from(STRATEGY);
         let ProtostarProverParam {
             pp,
+            strategy,
             num_alpha_primes,
             cross_term_expressions,
             ..
@@ -244,8 +257,8 @@ where
             incoming.instance.absorb_into(transcript)?;
         }
 
-        match stretagy {
-            ProtostarStrategy::NoCompressing => {
+        match strategy {
+            NoCompressing => {
                 let timer = start_timer(|| {
                     format!("evaluate_cross_term_polys-{}", cross_term_expressions.len())
                 });
@@ -269,7 +282,16 @@ where
                 accumulator.fold_uncompressed(incoming, &cross_term_polys, &cross_term_comms, &r);
                 end_timer(timer);
             }
-            ProtostarStrategy::Compressing => {
+            Compressing => {
+                let timer = start_timer(|| "evaluate_zeta_cross_term_poly");
+                let zeta_cross_term_poly = evaluate_zeta_cross_term_poly(
+                    pp.num_vars,
+                    *num_alpha_primes,
+                    accumulator,
+                    incoming,
+                );
+                end_timer(timer);
+
                 let timer = start_timer(|| {
                     let len = cross_term_expressions.len();
                     format!("evaluate_compressed_cross_term_sums-{len}",)
@@ -283,18 +305,9 @@ where
                 );
                 end_timer(timer);
 
-                let timer = start_timer(|| "evaluate_zeta_cross_term_poly");
-                let zeta_cross_term_poly = evaluate_zeta_cross_term_poly(
-                    pp.num_vars,
-                    *num_alpha_primes,
-                    accumulator,
-                    incoming,
-                );
-                end_timer(timer);
-
-                transcript.write_field_elements(&compressed_cross_term_sums)?;
                 let zeta_cross_term_comm =
                     Pcs::commit_and_write(&pp.pcs, &zeta_cross_term_poly, transcript)?;
+                transcript.write_field_elements(&compressed_cross_term_sums)?;
 
                 // Round 0
 
@@ -303,9 +316,9 @@ where
                 let timer = start_timer(|| "fold_compressed");
                 accumulator.fold_compressed(
                     incoming,
-                    &compressed_cross_term_sums,
                     &zeta_cross_term_poly,
                     &zeta_cross_term_comm,
+                    &compressed_cross_term_sums,
                     &r,
                 );
                 end_timer(timer);
@@ -321,10 +334,10 @@ where
         instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<CommitmentChunk<F, Self::Pcs>, F>,
         _: impl RngCore,
-    ) -> Result<PlonkishNarkInstance<F, Pcs::Commitment>, Error> {
-        let stretagy = ProtostarStrategy::from(STRATEGY);
+    ) -> Result<(), Error> {
         let ProtostarVerifierParam {
             vp,
+            strategy,
             num_theta_primes,
             num_alpha_primes,
             num_cross_terms,
@@ -367,9 +380,9 @@ where
 
         // Round n+2
 
-        let (zeta, powers_of_zeta_comm) = match stretagy {
-            ProtostarStrategy::NoCompressing => (None, None),
-            ProtostarStrategy::Compressing => {
+        let (zeta, powers_of_zeta_comm) = match strategy {
+            NoCompressing => (None, None),
+            Compressing => {
                 let zeta = transcript.squeeze_challenge();
 
                 let powers_of_zeta_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
@@ -401,11 +414,11 @@ where
                 .chain(powers_of_zeta_comm)
                 .collect(),
         );
-        let incoming = ProtostarAccumulatorInstance::from_nark(nark.clone());
+        let incoming = ProtostarAccumulatorInstance::from_nark(*strategy, nark);
         accumulator.absorb_into(transcript)?;
 
-        match stretagy {
-            ProtostarStrategy::NoCompressing => {
+        match strategy {
+            NoCompressing => {
                 let cross_term_comms =
                     Pcs::read_commitments(&vp.pcs, *num_cross_terms, transcript)?;
 
@@ -415,10 +428,10 @@ where
 
                 accumulator.fold_uncompressed(&incoming, &cross_term_comms, &r);
             }
-            ProtostarStrategy::Compressing => {
+            Compressing => {
+                let zeta_cross_term_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
                 let compressed_cross_term_sums =
                     transcript.read_field_elements(*num_cross_terms)?;
-                let zeta_cross_term_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
 
                 // Round n+4
 
@@ -426,14 +439,14 @@ where
 
                 accumulator.fold_compressed(
                     &incoming,
-                    &compressed_cross_term_sums,
                     &zeta_cross_term_comm,
+                    &compressed_cross_term_sums,
                     &r,
                 );
             }
         };
 
-        Ok(nark)
+        Ok(())
     }
 
     fn prove_decider(
@@ -575,6 +588,49 @@ where
         Pcs::batch_verify(&vp.pcs, comms, &points, &evals, transcript)?;
 
         Ok(())
+    }
+}
+
+impl<F, Pcs, N> From<&ProtostarVerifierParam<F, HyperPlonk<Pcs>>>
+    for ProtostarAccumulationVerifierParam<N>
+where
+    F: PrimeField + Hash + Serialize + DeserializeOwned,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+    N: PrimeField,
+{
+    fn from(vp: &ProtostarVerifierParam<F, HyperPlonk<Pcs>>) -> Self {
+        let num_witness_polys = iter::empty()
+            .chain(vp.vp.num_witness_polys.iter().cloned())
+            .chain([vp.vp.num_lookups, 2 * vp.vp.num_lookups])
+            .chain(match vp.strategy {
+                NoCompressing => None,
+                Compressing => Some(1),
+            })
+            .collect();
+        let num_challenges = {
+            let mut num_challenges = iter::empty()
+                .chain(vp.vp.num_challenges.iter().cloned())
+                .map(|num_challenge| vec![1; num_challenge])
+                .collect_vec();
+            num_challenges.last_mut().unwrap().push(vp.num_theta_primes);
+            iter::empty()
+                .chain(num_challenges)
+                .chain([vec![1]])
+                .chain(match vp.strategy {
+                    NoCompressing => None,
+                    Compressing => Some(vec![1]),
+                })
+                .chain([vec![vp.num_alpha_primes]])
+                .collect()
+        };
+        Self {
+            vp_digest: vp.digest(),
+            strategy: vp.strategy,
+            num_instances: vp.vp.num_instances.clone(),
+            num_witness_polys,
+            num_challenges,
+            num_cross_terms: vp.num_cross_terms,
+        }
     }
 }
 

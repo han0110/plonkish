@@ -21,7 +21,7 @@ use crate::{
     },
 };
 use halo2_proofs::{
-    circuit::{AssignedCell, Cell, Layouter, Value},
+    circuit::{AssignedCell, Layouter, Value},
     plonk::{Circuit, ConstraintSystem, Error},
 };
 use rand::RngCore;
@@ -44,7 +44,8 @@ type AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip> = ProtostarAcc
 >;
 
 pub trait NativeEccInstruction<C: CurveAffine>: Clone + Debug {
-    type Assigned: Clone + Debug + AsRef<[AssignedCell<C::Base, C::Base>]>;
+    type AssignedCell: Clone + Debug;
+    type Assigned: Clone + Debug + AsRef<[Self::AssignedCell]>;
 
     fn assign_constant(
         &self,
@@ -61,7 +62,7 @@ pub trait NativeEccInstruction<C: CurveAffine>: Clone + Debug {
     fn select(
         &self,
         layouter: &mut impl Layouter<C::Base>,
-        condition: &AssignedCell<C::Base, C::Base>,
+        condition: &Self::AssignedCell,
         when_true: &Self::Assigned,
         when_false: &Self::Assigned,
     ) -> Result<Self::Assigned, Error>;
@@ -79,12 +80,53 @@ pub trait NativeEccInstruction<C: CurveAffine>: Clone + Debug {
         &self,
         layouter: &mut impl Layouter<C::Base>,
         base: &Self::Assigned,
-        le_bits: &[AssignedCell<C::Base, C::Base>],
+        le_bits: &[Self::AssignedCell],
     ) -> Result<Self::Assigned, Error>;
 }
 
+pub trait NativeFieldInstruction<F: PrimeField>: Clone + Debug {
+    type AssignedCell: Clone + Debug;
+
+    fn assign_constant(
+        &self,
+        layouter: &mut impl Layouter<F>,
+        constant: F,
+    ) -> Result<Self::AssignedCell, Error>;
+
+    fn assign_witness(
+        &self,
+        layouter: &mut impl Layouter<F>,
+        witness: Value<F>,
+    ) -> Result<Self::AssignedCell, Error>;
+
+    fn is_equal(
+        &self,
+        layouter: &mut impl Layouter<F>,
+        lhs: &Self::AssignedCell,
+        rhs: &Self::AssignedCell,
+    ) -> Result<Self::AssignedCell, Error>;
+
+    fn select(
+        &self,
+        layouter: &mut impl Layouter<F>,
+        condition: &Self::AssignedCell,
+        when_true: &Self::AssignedCell,
+        when_false: &Self::AssignedCell,
+    ) -> Result<Self::AssignedCell, Error>;
+
+    fn assert_if_known(&self, value: &Self::AssignedCell, f: impl FnOnce(&F) -> bool);
+
+    fn add(
+        &self,
+        layouter: &mut impl Layouter<F>,
+        lhs: &Self::AssignedCell,
+        rhs: &Self::AssignedCell,
+    ) -> Result<Self::AssignedCell, Error>;
+}
+
 pub trait FieldInstruction<F: PrimeField, N: PrimeField>: Clone + Debug {
-    type Assigned: Clone + Debug + AsRef<[AssignedCell<N, N>]>;
+    type AssignedCell: Clone + Debug;
+    type Assigned: Clone + Debug + AsRef<[Self::AssignedCell]>;
 
     fn assign_constant(
         &self,
@@ -102,12 +144,12 @@ pub trait FieldInstruction<F: PrimeField, N: PrimeField>: Clone + Debug {
         &self,
         layouter: &mut impl Layouter<N>,
         value: &Self::Assigned,
-    ) -> Result<AssignedCell<N, N>, Error>;
+    ) -> Result<Self::AssignedCell, Error>;
 
     fn select(
         &self,
         layouter: &mut impl Layouter<N>,
-        condition: &AssignedCell<N, N>,
+        condition: &Self::AssignedCell,
         when_true: &Self::Assigned,
         when_false: &Self::Assigned,
     ) -> Result<Self::Assigned, Error>;
@@ -169,10 +211,63 @@ pub trait FieldInstruction<F: PrimeField, N: PrimeField>: Clone + Debug {
     }
 }
 
+pub trait UtilInstruction<N: PrimeField>: Clone + Debug {
+    type AssignedCell;
+
+    fn convert(
+        &self,
+        layouter: &mut impl Layouter<N>,
+        value: &AssignedCell<N, N>,
+    ) -> Result<Self::AssignedCell, Error>;
+
+    fn constrain_equal(
+        &self,
+        layouter: &mut impl Layouter<N>,
+        lhs: &Self::AssignedCell,
+        rhs: &Self::AssignedCell,
+    ) -> Result<(), Error>;
+
+    fn constrain_instance(
+        &self,
+        layouter: &mut impl Layouter<N>,
+        value: &Self::AssignedCell,
+        row: usize,
+    ) -> Result<(), Error>;
+}
+
+pub trait HashInstruction<C: CurveAffine>: Clone + Debug {
+    type Param: Clone + Debug;
+    type AssignedCell: Clone + Debug;
+
+    fn param(&self) -> Self::Param;
+
+    fn hash_state<Comm: AsRef<C>>(
+        param: Self::Param,
+        vp_digest: C::Base,
+        step_idx: usize,
+        initial_input: &[C::Base],
+        output: &[C::Base],
+        acc: &ProtostarAccumulatorInstance<C::Scalar, Comm>,
+    ) -> C::Base;
+
+    fn hash_assigned_state<EccChip, ScalarChip>(
+        &self,
+        layouter: &mut impl Layouter<C::Base>,
+        vp_digest: &Self::AssignedCell,
+        step_idx: &Self::AssignedCell,
+        initial_input: &[Self::AssignedCell],
+        output: &[Self::AssignedCell],
+        acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+    ) -> Result<Self::AssignedCell, Error>
+    where
+        EccChip: NativeEccInstruction<C, AssignedCell = Self::AssignedCell>,
+        ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = Self::AssignedCell>;
+}
+
 pub trait TranscriptInstruction<C: CurveAffine, EccChip, ScalarChip>: Clone + Debug
 where
     EccChip: NativeEccInstruction<C>,
-    ScalarChip: FieldInstruction<C::Scalar, C::Base>,
+    ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = EccChip::AssignedCell>,
 {
     type Challenge: Clone + Debug + AsRef<ScalarChip::Assigned>;
 
@@ -211,7 +306,7 @@ where
         &self,
         layouter: &mut impl Layouter<C::Base>,
         scalar: &Self::Challenge,
-    ) -> Result<Vec<AssignedCell<C::Base, C::Base>>, Error>;
+    ) -> Result<Vec<EccChip::AssignedCell>, Error>;
 
     fn squeeze_challenge(
         &mut self,
@@ -284,111 +379,19 @@ where
     }
 }
 
-pub trait HashInstruction<C: CurveAffine>: Clone + Debug {
-    type Param: Clone + Debug;
-
-    fn param(&self) -> Self::Param;
-
-    fn hash_state<Comm: AsRef<C>>(
-        param: Self::Param,
-        vp_digest: C::Base,
-        step_idx: usize,
-        initial_input: &[C::Base],
-        output: &[C::Base],
-        acc: &ProtostarAccumulatorInstance<C::Scalar, Comm>,
-    ) -> C::Base;
-
-    fn hash_assigned_state<EccChip, ScalarChip>(
-        &self,
-        layouter: &mut impl Layouter<C::Base>,
-        vp_digest: &AssignedCell<C::Base, C::Base>,
-        step_idx: &AssignedCell<C::Base, C::Base>,
-        initial_input: &[AssignedCell<C::Base, C::Base>],
-        output: &[AssignedCell<C::Base, C::Base>],
-        acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
-    ) -> Result<AssignedCell<C::Base, C::Base>, Error>
-    where
-        EccChip: NativeEccInstruction<C>,
-        ScalarChip: FieldInstruction<C::Scalar, C::Base>;
-}
-
-pub trait UtilInstruction<N: PrimeField>: Clone + Debug {
-    fn assign_constant(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        constant: N,
-    ) -> Result<AssignedCell<N, N>, Error>;
-
-    fn assign_witness(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        witness: Value<N>,
-    ) -> Result<AssignedCell<N, N>, Error>;
-
-    fn is_equal(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        lhs: &AssignedCell<N, N>,
-        rhs: &AssignedCell<N, N>,
-    ) -> Result<AssignedCell<N, N>, Error>;
-
-    fn select(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        condition: &AssignedCell<N, N>,
-        when_true: &AssignedCell<N, N>,
-        when_false: &AssignedCell<N, N>,
-    ) -> Result<AssignedCell<N, N>, Error>;
-
-    fn add(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        lhs: &AssignedCell<N, N>,
-        rhs: &AssignedCell<N, N>,
-    ) -> Result<AssignedCell<N, N>, Error>;
-
-    fn constrain_equal(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        lhs: &AssignedCell<N, N>,
-        rhs: &AssignedCell<N, N>,
-    ) -> Result<(), Error> {
-        lhs.value().zip(rhs.value()).assert_if_known(|(lhs, rhs)| {
-            assert_eq!(lhs, rhs);
-            lhs == rhs
-        });
-        layouter.assign_region(
-            || "",
-            |mut region| region.constrain_equal(lhs.cell(), rhs.cell()),
-        )
-    }
-
-    fn constrain_constant(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        lhs: &AssignedCell<N, N>,
-        constant: N,
-    ) -> Result<(), Error> {
-        let constant = self.assign_constant(layouter, constant)?;
-        self.constrain_equal(layouter, lhs, &constant)
-    }
-
-    fn constrain_instance(
-        &self,
-        layouter: &mut impl Layouter<N>,
-        cell: Cell,
-        row: usize,
-    ) -> Result<(), Error>;
-}
-
 pub trait Chips<C: CurveAffine>: Clone + Debug {
-    type EccChip: NativeEccInstruction<C>;
-    type ScalarChip: FieldInstruction<C::Scalar, C::Base>;
+    type AssignedCell: Clone + Debug;
+
+    type EccChip: NativeEccInstruction<C, AssignedCell = Self::AssignedCell>;
+    type BaseChip: NativeFieldInstruction<C::Base, AssignedCell = Self::AssignedCell>;
+    type ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = Self::AssignedCell>;
+    type UtilChip: UtilInstruction<C::Base, AssignedCell = Self::AssignedCell>;
+    type HashChip: HashInstruction<C, AssignedCell = Self::AssignedCell>;
     type TranscriptChip: TranscriptInstruction<C, Self::EccChip, Self::ScalarChip>;
-    type HashChip: HashInstruction<C>;
-    type UtilChip: UtilInstruction<C::Base>;
 
     fn ecc_chip(&self) -> &Self::EccChip;
+
+    fn base_chip(&self) -> &Self::BaseChip;
 
     fn scalar_chip(&self) -> &Self::ScalarChip;
 
@@ -397,6 +400,10 @@ pub trait Chips<C: CurveAffine>: Clone + Debug {
     fn hash_chip(&self) -> &Self::HashChip;
 
     fn util_chip(&self) -> &Self::UtilChip;
+
+    fn layout(&self, _: &mut impl Layouter<C::Base>) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub trait StepCircuit<C: CurveAffine>: Clone + Debug + CircuitExt<C::Base> {
@@ -442,7 +449,7 @@ impl<C, EccChip, ScalarChip> ProtostarAccumulationVerifier<C, EccChip, ScalarChi
 where
     C: CurveAffine,
     EccChip: NativeEccInstruction<C>,
-    ScalarChip: FieldInstruction<C::Scalar, C::Base>,
+    ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = EccChip::AssignedCell>,
 {
     pub fn new(
         ecc_chip: EccChip,
@@ -682,7 +689,7 @@ where
         cross_term_comms: &[EccChip::Assigned],
         compressed_cross_term_sums: Option<&[ScalarChip::Assigned]>,
         r: &ScalarChip::Assigned,
-        r_le_bits: &[AssignedCell<C::Base, C::Base>],
+        r_le_bits: &[EccChip::AssignedCell],
     ) -> Result<
         (
             AssignedPlonkishNarkInstance<C, EccChip, ScalarChip>,
@@ -784,7 +791,7 @@ where
     fn select_accumulator(
         &self,
         layouter: &mut impl Layouter<C::Base>,
-        condition: &AssignedCell<C::Base, C::Base>,
+        condition: &EccChip::AssignedCell,
         when_true: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
         when_false: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
     ) -> Result<AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>, Error> {
@@ -940,16 +947,17 @@ where
     fn check_initial_condition(
         &self,
         layouter: &mut impl Layouter<C::Base>,
-        is_base_case: &AssignedCell<C::Base, C::Base>,
-        initial_input: &[AssignedCell<C::Base, C::Base>],
-        input: &[AssignedCell<C::Base, C::Base>],
+        is_base_case: &<Sc::Chips as Chips<C>>::AssignedCell,
+        initial_input: &[<Sc::Chips as Chips<C>>::AssignedCell],
+        input: &[<Sc::Chips as Chips<C>>::AssignedCell],
     ) -> Result<(), Error> {
+        let base_chip = self.chips.base_chip();
         let util_chip = self.chips.util_chip();
-        let zero = util_chip.assign_constant(layouter, C::Base::ZERO)?;
+        let zero = base_chip.assign_constant(layouter, C::Base::ZERO)?;
 
         for (lhs, rhs) in input.iter().zip(initial_input.iter()) {
-            let lhs = util_chip.select(layouter, is_base_case, lhs, &zero)?;
-            let rhs = util_chip.select(layouter, is_base_case, rhs, &zero)?;
+            let lhs = base_chip.select(layouter, is_base_case, lhs, &zero)?;
+            let rhs = base_chip.select(layouter, is_base_case, rhs, &zero)?;
             util_chip.constrain_equal(layouter, &lhs, &rhs)?;
         }
 
@@ -961,18 +969,19 @@ where
     fn check_state_hash(
         &self,
         layouter: &mut impl Layouter<C::Base>,
-        is_base_case: Option<&AssignedCell<C::Base, C::Base>>,
-        h: &AssignedCell<C::Base, C::Base>,
-        vp_digest: &AssignedCell<C::Base, C::Base>,
-        step_idx: &AssignedCell<C::Base, C::Base>,
-        initial_input: &[AssignedCell<C::Base, C::Base>],
-        output: &[AssignedCell<C::Base, C::Base>],
+        is_base_case: Option<&<Sc::Chips as Chips<C>>::AssignedCell>,
+        h: &<Sc::Chips as Chips<C>>::AssignedCell,
+        vp_digest: &<Sc::Chips as Chips<C>>::AssignedCell,
+        step_idx: &<Sc::Chips as Chips<C>>::AssignedCell,
+        initial_input: &[<Sc::Chips as Chips<C>>::AssignedCell],
+        output: &[<Sc::Chips as Chips<C>>::AssignedCell],
         acc: &AssignedProtostarAccumulatorInstance<
             C,
             <Sc::Chips as Chips<C>>::EccChip,
             <Sc::Chips as Chips<C>>::ScalarChip,
         >,
     ) -> Result<(), Error> {
+        let base_chip = self.chips.base_chip();
         let hash_chip = self.chips.hash_chip();
         let util_chip = self.chips.util_chip();
         let lhs = h;
@@ -985,8 +994,8 @@ where
             acc,
         )?;
         let rhs = if let Some(is_base_case) = is_base_case {
-            let dummy_h = util_chip.assign_constant(layouter, Self::DUMMY_H)?;
-            util_chip.select(layouter, is_base_case, &dummy_h, &rhs)?
+            let dummy_h = base_chip.assign_constant(layouter, Self::DUMMY_H)?;
+            base_chip.select(layouter, is_base_case, &dummy_h, &rhs)?
         } else {
             rhs
         };
@@ -1003,6 +1012,7 @@ where
         let layouter = &mut layouter;
 
         let ecc_chip = self.chips.ecc_chip();
+        let base_chip = self.chips.base_chip();
         let scalar_chip = self.chips.scalar_chip();
         let transcript_chip = self.chips.transcript_chip();
         let util_chip = self.chips.util_chip();
@@ -1013,25 +1023,33 @@ where
             self.avp.clone(),
         )?;
 
-        let zero = util_chip.assign_constant(layouter, C::Base::ZERO)?;
-        let one = util_chip.assign_constant(layouter, C::Base::ONE)?;
-        let vp_digest = util_chip.assign_witness(layouter, Value::known(self.avp.vp_digest))?;
-        let step_idx = util_chip.assign_witness(
+        let zero = base_chip.assign_constant(layouter, C::Base::ZERO)?;
+        let one = base_chip.assign_constant(layouter, C::Base::ONE)?;
+        let vp_digest = base_chip.assign_witness(layouter, Value::known(self.avp.vp_digest))?;
+        let step_idx = base_chip.assign_witness(
             layouter,
             Value::known(C::Base::from(self.step_circuit.step_idx() as u64)),
         )?;
-        let step_idx_plus_one = util_chip.add(layouter, &step_idx, &one)?;
+        let step_idx_plus_one = base_chip.add(layouter, &step_idx, &one)?;
         let initial_input = self
             .step_circuit
             .initial_input()
             .iter()
-            .map(|value| util_chip.assign_witness(layouter, Value::known(*value)))
+            .map(|value| base_chip.assign_witness(layouter, Value::known(*value)))
+            .try_collect::<_, Vec<_>, _>()?;
+        let input = input
+            .iter()
+            .map(|assigned| util_chip.convert(layouter, assigned))
+            .try_collect::<_, Vec<_>, _>()?;
+        let output = output
+            .iter()
+            .map(|assigned| util_chip.convert(layouter, assigned))
             .try_collect::<_, Vec<_>, _>()?;
 
-        let is_base_case = util_chip.is_equal(layouter, &step_idx, &zero)?;
-        let h_prime = util_chip.assign_witness(layouter, self.h_prime)?;
+        let is_base_case = base_chip.is_equal(layouter, &step_idx, &zero)?;
+        let h_prime = base_chip.assign_witness(layouter, self.h_prime)?;
 
-        self.check_initial_condition(layouter, &is_base_case, &initial_input, input)?;
+        self.check_initial_condition(layouter, &is_base_case, &initial_input, &input)?;
 
         let acc = verifier.assign_accumulator(layouter, self.acc.as_ref())?;
 
@@ -1061,7 +1079,7 @@ where
             &vp_digest,
             &step_idx,
             &initial_input,
-            input,
+            &input,
             &acc,
         )?;
         self.check_state_hash(
@@ -1071,12 +1089,14 @@ where
             &vp_digest,
             &step_idx_plus_one,
             &initial_input,
-            output,
+            &output,
             &acc_prime,
         )?;
 
-        util_chip.constrain_instance(layouter, h_ohs_from_incoming.cell(), 0)?;
-        util_chip.constrain_instance(layouter, h_prime.cell(), 1)?;
+        util_chip.constrain_instance(layouter, &h_ohs_from_incoming, 0)?;
+        util_chip.constrain_instance(layouter, &h_prime, 1)?;
+
+        self.chips.layout(layouter)?;
 
         Ok(())
     }
@@ -1502,7 +1522,8 @@ mod test {
             ivc::halo2::{
                 preprocess, prove_decider, prove_steps, verify_decider,
                 AssignedProtostarAccumulatorInstance, Chips, FieldInstruction, HashInstruction,
-                NativeEccInstruction, StepCircuit, TranscriptInstruction, UtilInstruction,
+                NativeEccInstruction, NativeFieldInstruction, StepCircuit, TranscriptInstruction,
+                UtilInstruction,
             },
             ProtostarAccumulatorInstance,
         },
@@ -1530,7 +1551,7 @@ mod test {
     };
     use halo2_curves::{bn256::Bn256, grumpkin};
     use halo2_proofs::{
-        circuit::{AssignedCell, Cell, Layouter, SimpleFloorPlanner, Value},
+        circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
         plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
         poly::Rotation,
     };
@@ -1711,7 +1732,7 @@ mod test {
     }
 
     #[derive(Clone, Debug)]
-    struct DummyChip<C: CurveAffine> {
+    struct MockChip<C: CurveAffine> {
         num_hash_bits: usize,
         num_limb_bits: usize,
         advice: Column<Advice>,
@@ -1721,7 +1742,7 @@ mod test {
         _marker: PhantomData<C>,
     }
 
-    impl<C: CurveAffine> DummyChip<C>
+    impl<C: CurveAffine> MockChip<C>
     where
         C::Base: FromUniformBytes<64>,
     {
@@ -1731,7 +1752,7 @@ mod test {
             advice: Column<Advice>,
             instance: Column<Instance>,
         ) -> Self {
-            DummyChip {
+            MockChip {
                 num_hash_bits,
                 num_limb_bits,
                 advice,
@@ -1760,11 +1781,16 @@ mod test {
             let mut s = f.debug_struct("AssignedEcPoint");
             let mut value = None;
             self.ec_point.map(|ec_point| value = Some(ec_point));
-            s.field("ec_point", &value).finish()
+            if let Some(value) = value {
+                s.field("ec_point", &value).finish()
+            } else {
+                s.finish()
+            }
         }
     }
 
-    impl<C: CurveAffine> NativeEccInstruction<C> for DummyChip<C> {
+    impl<C: CurveAffine> NativeEccInstruction<C> for MockChip<C> {
+        type AssignedCell = AssignedCell<C::Base, C::Base>;
         type Assigned = AssignedEcPoint<C>;
 
         fn assign_constant(
@@ -1772,11 +1798,7 @@ mod test {
             layouter: &mut impl Layouter<C::Base>,
             constant: C,
         ) -> Result<Self::Assigned, Error> {
-            <Self as NativeEccInstruction<C>>::assign_witness(
-                self,
-                layouter,
-                Value::known(constant),
-            )
+            NativeEccInstruction::assign_witness(self, layouter, Value::known(constant))
         }
 
         fn assign_witness(
@@ -1818,13 +1840,17 @@ mod test {
             when_true: &Self::Assigned,
             when_false: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
-            let mut out = when_false.clone();
-            condition.value().map(|condition| {
-                if condition == &C::Base::ONE {
-                    out = when_true.clone();
-                }
-            });
-            <Self as NativeEccInstruction<C>>::assign_witness(self, layouter, out.ec_point)
+            let output = condition
+                .value()
+                .zip(when_true.ec_point.zip(when_false.ec_point))
+                .map(|(condition, (when_true, when_false))| {
+                    if condition == &C::Base::ONE {
+                        when_true
+                    } else {
+                        when_false
+                    }
+                });
+            NativeEccInstruction::assign_witness(self, layouter, output)
         }
 
         fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C) -> bool) {
@@ -1838,7 +1864,7 @@ mod test {
             rhs: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
             let output = (lhs.ec_point + rhs.ec_point).map(Into::into);
-            <Self as NativeEccInstruction<C>>::assign_witness(self, layouter, output)
+            NativeEccInstruction::assign_witness(self, layouter, output)
         }
 
         fn mul(
@@ -1864,7 +1890,7 @@ mod test {
                 .ec_point
                 .zip(scalar)
                 .map(|(base, scalar)| (base * scalar).into());
-            <Self as NativeEccInstruction<C>>::assign_witness(self, layouter, output)
+            NativeEccInstruction::assign_witness(self, layouter, output)
         }
     }
 
@@ -1891,14 +1917,93 @@ mod test {
             let mut s = f.debug_struct("AssignedScalar");
             let mut value = None;
             self.scalar.map(|scalar| value = Some(scalar));
-            s.field("scalar", &value).finish()
+            if let Some(value) = value {
+                s.field("scalar", &value).finish()
+            } else {
+                s.finish()
+            }
         }
     }
 
-    impl<C: CurveAffine> FieldInstruction<C::Scalar, C::Base> for DummyChip<C>
+    impl<C: CurveAffine> NativeFieldInstruction<C::Base> for MockChip<C>
     where
         C::Scalar: PrimeFieldBits,
     {
+        type AssignedCell = AssignedCell<C::Base, C::Base>;
+
+        fn assign_constant(
+            &self,
+            layouter: &mut impl Layouter<C::Base>,
+            constant: C::Base,
+        ) -> Result<Self::AssignedCell, Error> {
+            NativeFieldInstruction::assign_witness(self, layouter, Value::known(constant))
+        }
+
+        fn assign_witness(
+            &self,
+            layouter: &mut impl Layouter<C::Base>,
+            witness: Value<C::Base>,
+        ) -> Result<Self::AssignedCell, Error> {
+            layouter.assign_region(
+                || "",
+                |mut region| region.assign_advice(|| "", self.advice, 0, || witness),
+            )
+        }
+
+        fn is_equal(
+            &self,
+            layouter: &mut impl Layouter<C::Base>,
+            lhs: &Self::AssignedCell,
+            rhs: &Self::AssignedCell,
+        ) -> Result<Self::AssignedCell, Error> {
+            let is_equal = lhs
+                .value()
+                .zip(rhs.value())
+                .map(|(lhs, rhs)| lhs == rhs)
+                .map(fe_from_bool);
+            NativeFieldInstruction::assign_witness(self, layouter, is_equal)
+        }
+
+        fn select(
+            &self,
+            layouter: &mut impl Layouter<C::Base>,
+            condition: &AssignedCell<C::Base, C::Base>,
+            when_true: &Self::AssignedCell,
+            when_false: &Self::AssignedCell,
+        ) -> Result<Self::AssignedCell, Error> {
+            let output = condition
+                .value()
+                .zip(when_true.value().copied().zip(when_false.value().copied()))
+                .map(|(condition, (when_true, when_false))| {
+                    if condition == &C::Base::ONE {
+                        when_true
+                    } else {
+                        when_false
+                    }
+                });
+            NativeFieldInstruction::assign_witness(self, layouter, output)
+        }
+
+        fn assert_if_known(&self, value: &Self::AssignedCell, f: impl FnOnce(&C::Base) -> bool) {
+            value.value().cloned().assert_if_known(f)
+        }
+
+        fn add(
+            &self,
+            layouter: &mut impl Layouter<C::Base>,
+            lhs: &Self::AssignedCell,
+            rhs: &Self::AssignedCell,
+        ) -> Result<Self::AssignedCell, Error> {
+            let value = lhs.value().copied() + rhs.value();
+            NativeFieldInstruction::assign_witness(self, layouter, value)
+        }
+    }
+
+    impl<C: CurveAffine> FieldInstruction<C::Scalar, C::Base> for MockChip<C>
+    where
+        C::Scalar: PrimeFieldBits,
+    {
+        type AssignedCell = AssignedCell<C::Base, C::Base>;
         type Assigned = AssignedScalar<C::Scalar, C::Base>;
 
         fn assign_constant(
@@ -1906,22 +2011,7 @@ mod test {
             layouter: &mut impl Layouter<C::Base>,
             constant: C::Scalar,
         ) -> Result<Self::Assigned, Error> {
-            let limbs = layouter.assign_region(
-                || "",
-                |mut region| {
-                    fe_to_limbs(constant, self.num_limb_bits)
-                        .into_iter()
-                        .enumerate()
-                        .map(|(offset, limb)| {
-                            region.assign_advice(|| "", self.advice, offset, || Value::known(limb))
-                        })
-                        .try_collect()
-                },
-            )?;
-            Ok(AssignedScalar {
-                scalar: Value::known(constant),
-                limbs,
-            })
+            FieldInstruction::assign_witness(self, layouter, Value::known(constant))
         }
 
         fn assign_witness(
@@ -1970,18 +2060,22 @@ mod test {
 
         fn select(
             &self,
-            _: &mut impl Layouter<C::Base>,
+            layouter: &mut impl Layouter<C::Base>,
             condition: &AssignedCell<C::Base, C::Base>,
             when_true: &Self::Assigned,
             when_false: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
-            let mut out = when_false.clone();
-            condition.value().map(|condition| {
-                if condition == &C::Base::ONE {
-                    out = when_true.clone();
-                }
-            });
-            Ok(out)
+            let output = condition
+                .value()
+                .zip(when_true.scalar.zip(when_false.scalar))
+                .map(|(condition, (when_true, when_false))| {
+                    if condition == &C::Base::ONE {
+                        when_true
+                    } else {
+                        when_false
+                    }
+                });
+            FieldInstruction::assign_witness(self, layouter, output)
         }
 
         fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C::Scalar) -> bool) {
@@ -1995,7 +2089,7 @@ mod test {
             rhs: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
             let scalar = lhs.scalar + rhs.scalar;
-            <Self as FieldInstruction<C::Scalar, C::Base>>::assign_witness(self, layouter, scalar)
+            FieldInstruction::assign_witness(self, layouter, scalar)
         }
 
         fn mul(
@@ -2005,11 +2099,11 @@ mod test {
             rhs: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
             let scalar = lhs.scalar * rhs.scalar;
-            <Self as FieldInstruction<C::Scalar, C::Base>>::assign_witness(self, layouter, scalar)
+            FieldInstruction::assign_witness(self, layouter, scalar)
         }
     }
 
-    impl<C> TranscriptInstruction<C, Self, Self> for DummyChip<C>
+    impl<C> TranscriptInstruction<C, Self, Self> for MockChip<C>
     where
         C: CurveAffine,
         C::Base: FromUniformBytes<64>,
@@ -2133,12 +2227,13 @@ mod test {
         }
     }
 
-    impl<C: CurveAffine> HashInstruction<C> for DummyChip<C>
+    impl<C: CurveAffine> HashInstruction<C> for MockChip<C>
     where
         C::Base: FromUniformBytes<64>,
-        C::Scalar: PrimeFieldBits,
+        C::ScalarExt: PrimeFieldBits,
     {
         type Param = (usize, usize, Poseidon<C::Base, T, RATE>);
+        type AssignedCell = AssignedCell<C::Base, C::Base>;
 
         fn param(&self) -> Self::Param {
             (
@@ -2188,8 +2283,8 @@ mod test {
             acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
         ) -> Result<AssignedCell<C::Base, C::Base>, Error>
         where
-            EccChip: NativeEccInstruction<C>,
-            ScalarChip: FieldInstruction<C::Scalar, C::Base>,
+            EccChip: NativeEccInstruction<C, AssignedCell = Self::AssignedCell>,
+            ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = Self::AssignedCell>,
         {
             let mut poseidon = self.poseidon.clone();
             iter::empty()
@@ -2220,91 +2315,66 @@ mod test {
         }
     }
 
-    impl<C: CurveAffine> UtilInstruction<C::Base> for DummyChip<C>
+    impl<C: CurveAffine> UtilInstruction<C::Base> for MockChip<C>
     where
         C::Base: FromUniformBytes<64>,
         C::Scalar: PrimeFieldBits,
     {
-        fn assign_constant(
+        type AssignedCell = AssignedCell<C::Base, C::Base>;
+
+        fn convert(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
-            witness: C::Base,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
-            UtilInstruction::<C::Base>::assign_witness(self, layouter, Value::known(witness))
+            _: &mut impl Layouter<C::Base>,
+            value: &AssignedCell<C::Base, C::Base>,
+        ) -> Result<Self::AssignedCell, Error> {
+            Ok(value.clone())
         }
 
-        fn assign_witness(
+        fn constrain_equal(
             &self,
             layouter: &mut impl Layouter<C::Base>,
-            witness: Value<C::Base>,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
+            lhs: &Self::AssignedCell,
+            rhs: &Self::AssignedCell,
+        ) -> Result<(), Error> {
+            lhs.value().zip(rhs.value()).assert_if_known(|(lhs, rhs)| {
+                assert_eq!(lhs, rhs);
+                lhs == rhs
+            });
             layouter.assign_region(
                 || "",
-                |mut region| region.assign_advice(|| "", self.advice, 0, || witness),
+                |mut region| region.constrain_equal(lhs.cell(), rhs.cell()),
             )
-        }
-
-        fn is_equal(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            lhs: &AssignedCell<C::Base, C::Base>,
-            rhs: &AssignedCell<C::Base, C::Base>,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
-            let is_equal = lhs
-                .value()
-                .zip(rhs.value())
-                .map(|(lhs, rhs)| lhs == rhs)
-                .map(fe_from_bool);
-            UtilInstruction::<C::Base>::assign_witness(self, layouter, is_equal)
-        }
-
-        fn select(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            condition: &AssignedCell<C::Base, C::Base>,
-            when_true: &AssignedCell<C::Base, C::Base>,
-            when_false: &AssignedCell<C::Base, C::Base>,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
-            condition.value().assert_if_known(|condition| {
-                *condition == &C::Base::ZERO || *condition == &C::Base::ONE
-            });
-            let value = condition.value().copied() * when_true.value()
-                + condition.value().map(|condition| C::Base::ONE - condition) * when_false.value();
-            UtilInstruction::<C::Base>::assign_witness(self, layouter, value)
-        }
-
-        fn add(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            lhs: &AssignedCell<C::Base, C::Base>,
-            rhs: &AssignedCell<C::Base, C::Base>,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
-            let output = lhs.value().copied() + rhs.value();
-            UtilInstruction::<C::Base>::assign_witness(self, layouter, output)
         }
 
         fn constrain_instance(
             &self,
             layouter: &mut impl Layouter<C::Base>,
-            cell: Cell,
+            assigned: &Self::AssignedCell,
             row: usize,
         ) -> Result<(), Error> {
-            layouter.constrain_instance(cell, self.instance, row)
+            layouter.constrain_instance(assigned.cell(), self.instance, row)
         }
     }
 
-    impl<C: CurveAffine> Chips<C> for DummyChip<C>
+    impl<C: CurveAffine> Chips<C> for MockChip<C>
     where
         C::Base: FromUniformBytes<64>,
         C::Scalar: PrimeFieldBits,
     {
+        type AssignedCell = AssignedCell<C::Base, C::Base>;
+
         type EccChip = Self;
+        type BaseChip = Self;
         type ScalarChip = Self;
         type TranscriptChip = Self;
         type HashChip = Self;
         type UtilChip = Self;
 
         fn ecc_chip(&self) -> &Self::EccChip {
+            self
+        }
+
+        fn base_chip(&self) -> &Self::BaseChip {
             self
         }
 
@@ -2380,10 +2450,10 @@ mod test {
         C::Base: FromUniformBytes<64>,
         C::Scalar: PrimeFieldBits,
     {
-        type Chips = DummyChip<C>;
+        type Chips = MockChip<C>;
 
         fn chips(&self, (advice, instance): Self::Config) -> Self::Chips {
-            DummyChip::new(self.num_hash_bits, self.num_limb_bits, advice, instance)
+            MockChip::new(self.num_hash_bits, self.num_limb_bits, advice, instance)
         }
 
         fn step_idx(&self) -> usize {

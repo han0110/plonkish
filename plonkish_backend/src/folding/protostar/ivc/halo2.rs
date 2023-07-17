@@ -239,10 +239,8 @@ pub trait HashInstruction<C: CurveAffine>: Clone + Debug {
     type Param: Clone + Debug;
     type AssignedCell: Clone + Debug;
 
-    fn param(&self) -> Self::Param;
-
     fn hash_state<Comm: AsRef<C>>(
-        param: Self::Param,
+        param: &Self::Param,
         vp_digest: C::Base,
         step_idx: usize,
         initial_input: &[C::Base],
@@ -272,34 +270,15 @@ where
     type Challenge: Clone + Debug + AsRef<ScalarChip::Assigned>;
 
     fn dummy_proof(avp: &ProtostarAccumulationVerifierParam<C::Base>) -> Vec<u8> {
-        let g = C::generator().coordinates().unwrap();
-        let g_x = g.x().to_repr();
-        let g_y = g.y().to_repr();
-        let zero = C::Scalar::ZERO.to_repr();
-        iter::empty()
-            .chain(
-                iter::repeat_with(|| [g_x.as_ref(), g_y.as_ref()])
-                    .take(avp.num_folding_witness_polys())
-                    .flatten()
-                    .flatten(),
-            )
-            .chain(match avp.strategy {
-                NoCompressing => iter::empty()
-                    .chain(iter::repeat([g_x.as_ref(), g_y.as_ref()]).take(avp.num_cross_terms))
-                    .flatten()
-                    .flatten()
-                    .collect_vec(),
-                Compressing => iter::empty()
-                    .chain([g_x.as_ref(), g_y.as_ref()])
-                    .chain(iter::repeat(zero.as_ref()).take(avp.num_cross_terms))
-                    .flatten()
-                    .collect_vec(),
-            })
-            .copied()
-            .collect()
+        let uncompressed_comm_size = C::Base::ZERO.to_repr().as_ref().len() * 2;
+        let scalar_size = C::Scalar::ZERO.to_repr().as_ref().len();
+        let proof_size = avp.num_folding_witness_polys() * uncompressed_comm_size
+            + match avp.strategy {
+                NoCompressing => avp.num_cross_terms * uncompressed_comm_size,
+                Compressing => uncompressed_comm_size + avp.num_cross_terms * scalar_size,
+            };
+        vec![0; proof_size]
     }
-
-    fn init(&self, proof: Value<&[u8]>) -> Self;
 
     #[allow(clippy::type_complexity)]
     fn challenge_to_le_bits(
@@ -387,7 +366,9 @@ pub trait Chips<C: CurveAffine>: Clone + Debug {
     type ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = Self::AssignedCell>;
     type UtilChip: UtilInstruction<C::Base, AssignedCell = Self::AssignedCell>;
     type HashChip: HashInstruction<C, AssignedCell = Self::AssignedCell>;
-    type TranscriptChip: TranscriptInstruction<C, Self::EccChip, Self::ScalarChip>;
+    type TranscriptChip<'a>: TranscriptInstruction<C, Self::EccChip, Self::ScalarChip>
+    where
+        Self: 'a;
 
     fn ecc_chip(&self) -> &Self::EccChip;
 
@@ -395,15 +376,11 @@ pub trait Chips<C: CurveAffine>: Clone + Debug {
 
     fn scalar_chip(&self) -> &Self::ScalarChip;
 
-    fn transcript_chip(&self) -> &Self::TranscriptChip;
+    fn util_chip(&self) -> &Self::UtilChip;
 
     fn hash_chip(&self) -> &Self::HashChip;
 
-    fn util_chip(&self) -> &Self::UtilChip;
-
-    fn layout(&self, _: &mut impl Layouter<C::Base>) -> Result<(), Error> {
-        Ok(())
-    }
+    fn transcript_chip<'a>(&'a self, proof: Value<&'a [u8]>) -> Self::TranscriptChip<'a>;
 }
 
 pub trait StepCircuit<C: CurveAffine>: Clone + Debug + CircuitExt<C::Base> {
@@ -872,11 +849,11 @@ where
     pub fn new(
         is_primary: bool,
         step_circuit: Sc,
+        hp: <<Sc::Chips as Chips<C>>::HashChip as HashInstruction<C>>::Param,
         avp: Option<ProtostarAccumulationVerifierParam<C::Base>>,
     ) -> Self {
         let config = Self::configure(&mut Default::default());
         let chips = step_circuit.chips(config.clone());
-        let hp = chips.hash_chip().param();
         let mut circuit = Self {
             is_primary,
             step_circuit,
@@ -909,7 +886,7 @@ where
             self.step_circuit.next();
         }
         self.h_prime = Value::known(<Sc::Chips as Chips<_>>::HashChip::hash_state(
-            self.hp.clone(),
+            &self.hp,
             self.avp.vp_digest,
             self.step_circuit.step_idx() + 1,
             self.step_circuit.initial_input(),
@@ -947,12 +924,13 @@ where
     fn check_initial_condition(
         &self,
         layouter: &mut impl Layouter<C::Base>,
+        chips: &Sc::Chips,
         is_base_case: &<Sc::Chips as Chips<C>>::AssignedCell,
         initial_input: &[<Sc::Chips as Chips<C>>::AssignedCell],
         input: &[<Sc::Chips as Chips<C>>::AssignedCell],
     ) -> Result<(), Error> {
-        let base_chip = self.chips.base_chip();
-        let util_chip = self.chips.util_chip();
+        let base_chip = chips.base_chip();
+        let util_chip = chips.util_chip();
         let zero = base_chip.assign_constant(layouter, C::Base::ZERO)?;
 
         for (lhs, rhs) in input.iter().zip(initial_input.iter()) {
@@ -969,6 +947,7 @@ where
     fn check_state_hash(
         &self,
         layouter: &mut impl Layouter<C::Base>,
+        chips: &Sc::Chips,
         is_base_case: Option<&<Sc::Chips as Chips<C>>::AssignedCell>,
         h: &<Sc::Chips as Chips<C>>::AssignedCell,
         vp_digest: &<Sc::Chips as Chips<C>>::AssignedCell,
@@ -981,9 +960,9 @@ where
             <Sc::Chips as Chips<C>>::ScalarChip,
         >,
     ) -> Result<(), Error> {
-        let base_chip = self.chips.base_chip();
-        let hash_chip = self.chips.hash_chip();
-        let util_chip = self.chips.util_chip();
+        let base_chip = chips.base_chip();
+        let hash_chip = chips.hash_chip();
+        let util_chip = chips.util_chip();
         let lhs = h;
         let rhs = hash_chip.hash_assigned_state::<<Sc::Chips as Chips<_>>::EccChip, <Sc::Chips as Chips<_>>::ScalarChip>(
             layouter,
@@ -1003,7 +982,7 @@ where
         Ok(())
     }
 
-    fn synthesize_folding(
+    fn synthesize_accumulation_verifier(
         &self,
         mut layouter: impl Layouter<C::Base>,
         input: &[AssignedCell<C::Base, C::Base>],
@@ -1014,7 +993,6 @@ where
         let ecc_chip = self.chips.ecc_chip();
         let base_chip = self.chips.base_chip();
         let scalar_chip = self.chips.scalar_chip();
-        let transcript_chip = self.chips.transcript_chip();
         let util_chip = self.chips.util_chip();
 
         let verifier = ProtostarAccumulationVerifier::new(
@@ -1049,16 +1027,17 @@ where
         let is_base_case = base_chip.is_equal(layouter, &step_idx, &zero)?;
         let h_prime = base_chip.assign_witness(layouter, self.h_prime)?;
 
-        self.check_initial_condition(layouter, &is_base_case, &initial_input, &input)?;
+        self.check_initial_condition(layouter, &self.chips, &is_base_case, &initial_input, &input)?;
 
         let acc = verifier.assign_accumulator(layouter, self.acc.as_ref())?;
 
-        let (nark, acc_r_nark, acc_prime) = verifier.verify_accumulation_from_nark(
-            layouter,
-            &acc,
-            [&self.incoming_instances[0], &self.incoming_instances[1]].map(Value::as_ref),
-            &mut transcript_chip.init(self.incoming_proof.as_ref().map(Vec::as_slice)),
-        )?;
+        let (nark, acc_r_nark, acc_prime) = {
+            let instances =
+                [&self.incoming_instances[0], &self.incoming_instances[1]].map(Value::as_ref);
+            let proof = self.incoming_proof.as_ref().map(Vec::as_slice);
+            let mut transcript = self.chips.transcript_chip(proof);
+            verifier.verify_accumulation_from_nark(layouter, &acc, instances, &mut transcript)?
+        };
 
         let acc_prime = {
             let acc_default = if self.is_primary {
@@ -1074,6 +1053,7 @@ where
 
         self.check_state_hash(
             layouter,
+            &self.chips,
             Some(&is_base_case),
             &h_from_incoming,
             &vp_digest,
@@ -1084,6 +1064,7 @@ where
         )?;
         self.check_state_hash(
             layouter,
+            &self.chips,
             None,
             &h_prime,
             &vp_digest,
@@ -1095,8 +1076,6 @@ where
 
         util_chip.constrain_instance(layouter, &h_ohs_from_incoming, 0)?;
         util_chip.constrain_instance(layouter, &h_prime, 1)?;
-
-        self.chips.layout(layouter)?;
 
         Ok(())
     }
@@ -1137,7 +1116,7 @@ where
     ) -> Result<(), Error> {
         let (input, output) =
             StepCircuit::synthesize(&self.step_circuit, config, layouter.namespace(|| ""))?;
-        self.synthesize_folding(layouter.namespace(|| ""), &input, &output)?;
+        self.synthesize_accumulation_verifier(layouter.namespace(|| ""), &input, &output)?;
         Ok(())
     }
 }
@@ -1188,12 +1167,15 @@ where
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn preprocess<C, P1, P2, S1, S2, AT1, AT2>(
     primary_num_vars: usize,
     primary_atp: AT1::Param,
+    primary_hp: <<S1::Chips as Chips<C::Secondary>>::HashChip as HashInstruction<C::Secondary>>::Param,
     primary_step_circuit: S1,
     secondary_num_vars: usize,
     secondary_atp: AT2::Param,
+    secondary_hp: <<S2::Chips as Chips<C::Primary>>::HashChip as HashInstruction<C::Primary>>::Param,
     secondary_step_circuit: S2,
     mut rng: impl RngCore,
 ) -> Result<
@@ -1235,7 +1217,7 @@ where
     let primary_param = P1::setup(1 << primary_num_vars, 0, &mut rng).unwrap();
     let secondary_param = P2::setup(1 << secondary_num_vars, 0, &mut rng).unwrap();
 
-    let primary_circuit = RecursiveCircuit::new(true, primary_step_circuit, None);
+    let primary_circuit = RecursiveCircuit::new(true, primary_step_circuit, primary_hp, None);
     let mut primary_circuit =
         Halo2Circuit::new::<HyperPlonk<P1>>(primary_num_vars, primary_circuit);
 
@@ -1247,6 +1229,7 @@ where
     let secondary_circuit = RecursiveCircuit::new(
         false,
         secondary_step_circuit,
+        secondary_hp,
         Some(ProtostarAccumulationVerifierParam::from(&primary_vp)),
     );
     let mut secondary_circuit =
@@ -1283,10 +1266,10 @@ where
         ProtostarIvcVerifierParam {
             primary_vp,
             primary_vp_digest,
-            primary_hp: primary_circuit.circuit().chips.hash_chip().param(),
+            primary_hp: primary_circuit.circuit().hp.clone(),
             secondary_vp,
             secondary_vp_digest,
-            secondary_hp: secondary_circuit.circuit().chips.hash_chip().param(),
+            secondary_hp: secondary_circuit.circuit().hp.clone(),
             _marker: PhantomData,
         }
     };
@@ -1473,7 +1456,7 @@ where
     H2: HashInstruction<C::Primary>,
 {
     if H1::hash_state(
-        ivc_vp.primary_hp.clone(),
+        &ivc_vp.primary_hp,
         ivc_vp.secondary_vp_digest,
         num_steps,
         primary_initial_input,
@@ -1486,7 +1469,7 @@ where
         ));
     }
     if H2::hash_state(
-        ivc_vp.secondary_hp.clone(),
+        &ivc_vp.secondary_hp,
         ivc_vp.primary_vp_digest,
         num_steps,
         secondary_initial_input,
@@ -1516,52 +1499,59 @@ where
 }
 
 #[cfg(test)]
-mod test {
+mod strawman {
     use crate::{
         folding::protostar::{
             ivc::halo2::{
-                preprocess, prove_decider, prove_steps, verify_decider,
                 AssignedProtostarAccumulatorInstance, Chips, FieldInstruction, HashInstruction,
-                NativeEccInstruction, NativeFieldInstruction, StepCircuit, TranscriptInstruction,
+                NativeEccInstruction, NativeFieldInstruction, TranscriptInstruction,
                 UtilInstruction,
             },
             ProtostarAccumulatorInstance,
         },
-        frontend::halo2::CircuitExt,
-        pcs::{
-            multilinear::{MultilinearIpa, MultilinearSimulator},
-            univariate::UnivariateKzg,
-            AdditiveCommitment, PolynomialCommitmentScheme,
+        frontend::halo2::chip::halo2_wrong::{
+            from_le_bits, integer_to_native, sum_with_coeff, to_le_bits_strict, PoseidonChip,
         },
-        poly::multilinear::MultilinearPolynomial,
         util::{
             arithmetic::{
-                div_ceil, fe_from_bool, fe_from_le_bytes, fe_truncated, BitField, Bn254Grumpkin,
-                Coordinates, CurveAffine, CurveCycle, Field, FromUniformBytes, PrimeField,
-                PrimeFieldBits,
+                fe_from_bool, fe_from_le_bytes, fe_to_fe, fe_truncated, BitField, CurveAffine,
+                Field, FromUniformBytes, PrimeField, PrimeFieldBits,
             },
-            hash::Poseidon,
-            test::seeded_std_rng,
+            hash::{poseidon::Spec, Poseidon},
             transcript::{
                 FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscript,
-                Keccak256Transcript, Transcript, TranscriptRead, TranscriptWrite,
+                Transcript, TranscriptRead, TranscriptWrite,
             },
-            DeserializeOwned, Itertools, Serialize,
+            Itertools,
         },
     };
-    use halo2_curves::{bn256::Bn256, grumpkin};
     use halo2_proofs::{
-        circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
-        plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
-        poly::Rotation,
+        circuit::{AssignedCell, Layouter, Value},
+        plonk::{Column, ConstraintSystem, Error, Instance},
+    };
+    use halo2_wrong_v2::{
+        integer::{
+            chip::{IntegerChip, Range},
+            rns::Rns,
+            Integer,
+        },
+        maingate::{config::MainGate, operations::Collector, Gate},
+        Composable, Scaled, Witness,
     };
     use std::{
+        cell::RefCell,
+        collections::BTreeMap,
         fmt::{self, Debug},
-        hash::Hash,
         io::{self, Cursor, Read},
         iter,
         marker::PhantomData,
+        rc::Rc,
     };
+
+    const NUM_LIMBS: usize = 4;
+    const NUM_LIMB_BITS: usize = 65;
+    const NUM_SUBLIMBS: usize = 5;
+    const NUM_LOOKUPS: usize = 1;
 
     const T: usize = 5;
     const RATE: usize = 4;
@@ -1571,9 +1561,7 @@ mod test {
     const NUM_CHALLENGE_BITS: usize = 128;
     const NUM_CHALLENGE_BYTES: usize = NUM_CHALLENGE_BITS / 8;
 
-    fn num_limbs<F: PrimeField>(num_limb_bits: usize) -> usize {
-        div_ceil(F::NUM_BITS as usize, num_limb_bits)
-    }
+    const NUM_HASH_BITS: usize = 250;
 
     fn fe_to_limbs<F1: PrimeFieldBits, F2: PrimeField>(fe: F1, num_limb_bits: usize) -> Vec<F2> {
         fe.to_le_bits()
@@ -1582,31 +1570,42 @@ mod test {
             .map(|bits| match bits.len() {
                 1..=64 => F2::from(bits.load_le()),
                 65..=128 => {
-                    let lo = bits.load_le::<u64>();
+                    let lo = bits[..64].load_le::<u64>();
                     let hi = bits[64..].load_le::<u64>();
                     F2::from(hi) * F2::from(2).pow_vartime([64]) + F2::from(lo)
                 }
                 _ => unimplemented!(),
             })
-            .chain(iter::repeat(F2::ZERO))
-            .take(num_limbs::<F1>(num_limb_bits))
+            .take(NUM_LIMBS)
             .collect()
+    }
+
+    fn x_y_is_identity<C: CurveAffine>(ec_point: &C) -> [C::Base; 3] {
+        let coords = ec_point.coordinates().unwrap();
+        let is_identity = (coords.x().is_zero() & coords.y().is_zero()).into();
+        [*coords.x(), *coords.y(), fe_from_bool(is_identity)]
+    }
+
+    pub fn accumulation_transcript_param<F: FromUniformBytes<64>>() -> Spec<F, T, RATE> {
+        Spec::new(R_F, R_P)
+    }
+
+    pub fn hash_param<F: FromUniformBytes<64>>() -> Spec<F, T, RATE> {
+        Spec::new(R_F, R_P)
     }
 
     #[derive(Debug)]
     pub struct PoseidonTranscript<F: PrimeField, S> {
-        num_limb_bits: usize,
         state: Poseidon<F, T, RATE>,
         stream: S,
     }
 
     impl<F: FromUniformBytes<64>> InMemoryTranscript for PoseidonTranscript<F, Cursor<Vec<u8>>> {
-        type Param = usize;
+        type Param = Spec<F, T, RATE>;
 
-        fn new(num_limb_bits: usize) -> Self {
+        fn new(spec: Self::Param) -> Self {
             Self {
-                num_limb_bits,
-                state: Poseidon::new(R_F, R_P),
+                state: Poseidon::new_with_spec(spec),
                 stream: Default::default(),
             }
         }
@@ -1615,10 +1614,9 @@ mod test {
             self.stream.into_inner()
         }
 
-        fn from_proof(num_limb_bits: usize, proof: &[u8]) -> Self {
+        fn from_proof(spec: Self::Param, proof: &[u8]) -> Self {
             Self {
-                num_limb_bits,
-                state: Poseidon::new(R_F, R_P),
+                state: Poseidon::new_with_spec(spec),
                 stream: Cursor::new(proof.to_vec()),
             }
         }
@@ -1635,7 +1633,7 @@ mod test {
         }
 
         fn common_field_element(&mut self, fe: &F) -> Result<(), crate::Error> {
-            self.state.update(&fe_to_limbs(*fe, self.num_limb_bits));
+            self.state.update(&fe_to_limbs(*fe, NUM_LIMB_BITS));
 
             Ok(())
         }
@@ -1678,10 +1676,7 @@ mod test {
         C::Scalar: PrimeFieldBits,
     {
         fn common_commitment(&mut self, ec_point: &C) -> Result<(), crate::Error> {
-            let x_y_is_identity = Option::<Coordinates<_>>::from(ec_point.coordinates())
-                .map(|coords| [*coords.x(), *coords.y(), C::Base::ZERO])
-                .unwrap_or_else(|| [C::Base::ZERO, C::Base::ZERO, C::Base::ONE]);
-            self.state.update(&x_y_is_identity);
+            self.state.update(&x_y_is_identity(ec_point));
             Ok(())
         }
     }
@@ -1731,47 +1726,245 @@ mod test {
         }
     }
 
+    pub type Config<F> = MainGate<F, NUM_LOOKUPS>;
+
+    #[allow(clippy::type_complexity)]
     #[derive(Clone, Debug)]
-    struct MockChip<C: CurveAffine> {
-        num_hash_bits: usize,
-        num_limb_bits: usize,
-        advice: Column<Advice>,
+    pub struct Chip<C: CurveAffine> {
+        rns: Rns<C::Scalar, C::Base, NUM_LIMBS, NUM_LIMB_BITS, NUM_SUBLIMBS>,
+        maingate: MainGate<C::Base, NUM_LOOKUPS>,
+        collector: Rc<RefCell<Collector<C::Base>>>,
+        cell_map: Rc<RefCell<BTreeMap<u32, AssignedCell<C::Base, C::Base>>>>,
         instance: Column<Instance>,
-        poseidon: Poseidon<C::Base, T, RATE>,
-        proof: Value<Cursor<Vec<u8>>>,
+        poseidon_spec: Spec<C::Base, T, RATE>,
         _marker: PhantomData<C>,
     }
 
-    impl<C: CurveAffine> MockChip<C>
+    impl<C: CurveAffine> Chips<C> for Chip<C>
     where
-        C::Base: FromUniformBytes<64>,
+        C::Base: FromUniformBytes<64> + PrimeFieldBits,
+        C::Scalar: PrimeFieldBits,
     {
-        fn new(
-            num_hash_bits: usize,
-            num_limb_bits: usize,
-            advice: Column<Advice>,
-            instance: Column<Instance>,
-        ) -> Self {
-            MockChip {
-                num_hash_bits,
-                num_limb_bits,
-                advice,
+        type AssignedCell = Witness<C::Base>;
+
+        type EccChip = Self;
+        type BaseChip = Self;
+        type ScalarChip = Self;
+        type UtilChip = Self;
+        type HashChip = Self;
+        type TranscriptChip<'a> = PoseidonTranscriptChip<'a, C>;
+
+        fn ecc_chip(&self) -> &Self::EccChip {
+            self
+        }
+
+        fn base_chip(&self) -> &Self::BaseChip {
+            self
+        }
+
+        fn scalar_chip(&self) -> &Self::ScalarChip {
+            self
+        }
+
+        fn util_chip(&self) -> &Self::UtilChip {
+            self
+        }
+
+        fn hash_chip(&self) -> &Self::HashChip {
+            self
+        }
+
+        fn transcript_chip<'a>(&'a self, proof: Value<&'a [u8]>) -> Self::TranscriptChip<'a> {
+            let poseidon_chip = PoseidonChip::from_spec(
+                &mut self.collector.borrow_mut(),
+                self.poseidon_spec.clone(),
+            );
+            PoseidonTranscriptChip {
+                poseidon_chip,
+                chip: self,
+                proof,
+            }
+        }
+    }
+
+    impl<C: CurveAffine> Chip<C> {
+        pub fn configure(meta: &mut ConstraintSystem<C::Base>) -> Config<C::Base> {
+            let rns =
+                Rns::<C::Scalar, C::Base, NUM_LIMBS, NUM_LIMB_BITS, NUM_SUBLIMBS>::construct();
+            let overflow_bit_lens = rns.overflow_lengths();
+            let composition_bit_len = IntegerChip::<
+                C::Scalar,
+                C::Base,
+                NUM_LIMBS,
+                NUM_LIMB_BITS,
+                NUM_SUBLIMBS,
+            >::sublimb_bit_len();
+            MainGate::<_, NUM_LOOKUPS>::configure(
+                meta,
+                vec![composition_bit_len],
+                overflow_bit_lens,
+            )
+        }
+    }
+
+    impl<C: CurveAffine> Chip<C>
+    where
+        C::Base: Ord,
+    {
+        pub fn new(maingate: MainGate<C::Base, NUM_LOOKUPS>, instance: Column<Instance>) -> Self
+        where
+            C::Base: FromUniformBytes<64>,
+        {
+            Chip {
+                rns: Rns::construct(),
+                maingate,
+                collector: Default::default(),
+                cell_map: Default::default(),
                 instance,
-                poseidon: Poseidon::new(R_F, R_P),
-                proof: Value::unknown(),
+                poseidon_spec: Spec::new(R_F, R_P),
                 _marker: PhantomData,
+            }
+        }
+
+        fn negate_ec_point(&self, value: &AssignedEcPoint<C>) -> AssignedEcPoint<C> {
+            let collector = &mut self.collector.borrow_mut();
+            let y = collector.sub_from_constant(C::Base::ZERO, value.y());
+            let mut out = value.clone();
+            out.x_y_is_identity[1] = y;
+            out.ec_point = out.ec_point.map(|ec_point| -ec_point);
+            out
+        }
+
+        fn add_ec_point_incomplete(
+            &self,
+            lhs: &AssignedEcPoint<C>,
+            rhs: &AssignedEcPoint<C>,
+        ) -> AssignedEcPoint<C> {
+            let collector = &mut self.collector.borrow_mut();
+            let x_diff = collector.sub(rhs.x(), lhs.x());
+            let y_diff = collector.sub(rhs.y(), lhs.y());
+            let (x_diff_inv, _) = collector.inv(&x_diff);
+            let lambda = collector.mul(&y_diff, &x_diff_inv);
+            let lambda_square = collector.mul(&lambda, &lambda);
+            let out_x = sum_with_coeff(
+                collector,
+                [
+                    (&lambda_square, C::Base::ONE),
+                    (lhs.x(), -C::Base::ONE),
+                    (rhs.x(), -C::Base::ONE),
+                ],
+            );
+            let out_y = {
+                let x_diff = collector.sub(lhs.x(), &out_x);
+                let lambda_x_diff = collector.mul(&lambda, &x_diff);
+                collector.sub(&lambda_x_diff, lhs.y())
+            };
+            let out_is_identity = collector.register_constant(C::Base::ZERO);
+
+            AssignedEcPoint {
+                ec_point: (lhs.ec_point + rhs.ec_point).map(Into::into),
+                x_y_is_identity: [out_x, out_y, out_is_identity],
+            }
+        }
+
+        fn double_ec_point_incomplete(&self, value: &AssignedEcPoint<C>) -> AssignedEcPoint<C> {
+            let collector = &mut self.collector.borrow_mut();
+            let two = C::Base::ONE.double();
+            let three = two + C::Base::ONE;
+            let lambda_numer =
+                collector.mul_add_constant_scaled(three, value.x(), value.x(), C::a());
+            let y_doubled = collector.add(value.y(), value.y());
+            let (lambda_denom_inv, _) = collector.inv(&y_doubled);
+            let lambda = collector.mul(&lambda_numer, &lambda_denom_inv);
+            let lambda_square = collector.mul(&lambda, &lambda);
+            let out_x = collector.add_scaled(
+                &Scaled::new(&lambda_square, C::Base::ONE),
+                &Scaled::new(value.x(), -two),
+            );
+            let out_y = {
+                let x_diff = collector.sub(value.x(), &out_x);
+                let lambda_x_diff = collector.mul(&lambda, &x_diff);
+                collector.sub(&lambda_x_diff, value.y())
+            };
+            AssignedEcPoint {
+                ec_point: (value.ec_point + value.ec_point).map(Into::into),
+                x_y_is_identity: [out_x, out_y, *value.is_identity()],
+            }
+        }
+
+        fn add_ec_point_inner(
+            &self,
+            lhs: &AssignedEcPoint<C>,
+            rhs: &AssignedEcPoint<C>,
+        ) -> (AssignedEcPoint<C>, Witness<C::Base>, Witness<C::Base>) {
+            let collector = &mut self.collector.borrow_mut();
+            let x_diff = collector.sub(rhs.x(), lhs.x());
+            let y_diff = collector.sub(rhs.y(), lhs.y());
+            let (x_diff_inv, is_x_equal) = collector.inv(&x_diff);
+            let (_, is_y_equal) = collector.inv(&y_diff);
+            let lambda = collector.mul(&y_diff, &x_diff_inv);
+            let lambda_square = collector.mul(&lambda, &lambda);
+            let out_x = sum_with_coeff(
+                collector,
+                [
+                    (&lambda_square, C::Base::ONE),
+                    (lhs.x(), -C::Base::ONE),
+                    (rhs.x(), -C::Base::ONE),
+                ],
+            );
+            let out_y = {
+                let x_diff = collector.sub(lhs.x(), &out_x);
+                let lambda_x_diff = collector.mul(&lambda, &x_diff);
+                collector.sub(&lambda_x_diff, lhs.y())
+            };
+            let out_x = collector.select(rhs.is_identity(), lhs.x(), &out_x);
+            let out_x = collector.select(lhs.is_identity(), rhs.x(), &out_x);
+            let out_y = collector.select(rhs.is_identity(), lhs.y(), &out_y);
+            let out_y = collector.select(lhs.is_identity(), rhs.y(), &out_y);
+            let out_is_identity = collector.mul(lhs.is_identity(), rhs.is_identity());
+
+            let out = AssignedEcPoint {
+                ec_point: (lhs.ec_point + rhs.ec_point).map(Into::into),
+                x_y_is_identity: [out_x, out_y, out_is_identity],
+            };
+            (out, is_x_equal, is_y_equal)
+        }
+
+        fn double_ec_point(&self, value: &AssignedEcPoint<C>) -> AssignedEcPoint<C> {
+            let doubled = self.double_ec_point_incomplete(value);
+            let collector = &mut self.collector.borrow_mut();
+            let zero = collector.register_constant(C::Base::ZERO);
+            let out_x = collector.select(value.is_identity(), &zero, doubled.x());
+            let out_y = collector.select(value.is_identity(), &zero, doubled.y());
+            AssignedEcPoint {
+                ec_point: (value.ec_point + value.ec_point).map(Into::into),
+                x_y_is_identity: [out_x, out_y, *value.is_identity()],
             }
         }
     }
 
     #[derive(Clone)]
-    struct AssignedEcPoint<C: CurveAffine> {
+    pub struct AssignedEcPoint<C: CurveAffine> {
         ec_point: Value<C>,
-        x_y_is_identity: [AssignedCell<C::Base, C::Base>; 3],
+        x_y_is_identity: [Witness<C::Base>; 3],
     }
 
-    impl<C: CurveAffine> AsRef<[AssignedCell<C::Base, C::Base>]> for AssignedEcPoint<C> {
-        fn as_ref(&self) -> &[AssignedCell<C::Base, C::Base>] {
+    impl<C: CurveAffine> AssignedEcPoint<C> {
+        fn x(&self) -> &Witness<C::Base> {
+            &self.x_y_is_identity[0]
+        }
+
+        fn y(&self) -> &Witness<C::Base> {
+            &self.x_y_is_identity[1]
+        }
+
+        fn is_identity(&self) -> &Witness<C::Base> {
+            &self.x_y_is_identity[2]
+        }
+    }
+
+    impl<C: CurveAffine> AsRef<[Witness<C::Base>]> for AssignedEcPoint<C> {
+        fn as_ref(&self) -> &[Witness<C::Base>] {
             &self.x_y_is_identity
         }
     }
@@ -1789,8 +1982,12 @@ mod test {
         }
     }
 
-    impl<C: CurveAffine> NativeEccInstruction<C> for MockChip<C> {
-        type AssignedCell = AssignedCell<C::Base, C::Base>;
+    impl<C: CurveAffine> NativeEccInstruction<C> for Chip<C>
+    where
+        C::Scalar: Ord + PrimeFieldBits,
+        C::Base: Ord,
+    {
+        type AssignedCell = Witness<C::Base>;
         type Assigned = AssignedEcPoint<C>;
 
         fn assign_constant(
@@ -1798,59 +1995,75 @@ mod test {
             layouter: &mut impl Layouter<C::Base>,
             constant: C,
         ) -> Result<Self::Assigned, Error> {
-            NativeEccInstruction::assign_witness(self, layouter, Value::known(constant))
+            let x_y_is_identity = x_y_is_identity(&constant).map(|value| {
+                NativeFieldInstruction::assign_constant(self, layouter, value).unwrap()
+            });
+            Ok(AssignedEcPoint {
+                ec_point: Value::known(constant),
+                x_y_is_identity,
+            })
         }
 
         fn assign_witness(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
+            _: &mut impl Layouter<C::Base>,
             witness: Value<C>,
         ) -> Result<Self::Assigned, Error> {
-            let x_y_is_identity = layouter.assign_region(
-                || "",
-                |mut region| {
-                    Ok(witness
-                        .map(|witness| {
-                            Option::<Coordinates<_>>::from(witness.coordinates())
-                                .map(|coords| [*coords.x(), *coords.y(), C::Base::ZERO])
-                                .unwrap_or_else(|| [C::Base::ZERO, C::Base::ZERO, C::Base::ONE])
-                        })
-                        .transpose_array()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(offset, value)| {
-                            region.assign_advice(|| "", self.advice, offset, || value)
-                        })
-                        .try_collect::<_, Vec<_>, _>()?
-                        .try_into()
-                        .unwrap())
-                },
-            )?;
-
+            let collector = &mut self.collector.borrow_mut();
+            let zero = collector.register_constant(C::Base::ZERO);
+            let one = collector.register_constant(C::Base::ONE);
+            let [x, y, is_identity] = witness
+                .as_ref()
+                .map(x_y_is_identity)
+                .transpose_array()
+                .map(|value| collector.new_witness(value));
+            collector.assert_bit(&is_identity);
+            let not_identity = collector.sub(&one, &is_identity);
+            let lhs = collector.mul(&y, &y);
+            let lhs = collector.mul(&lhs, &not_identity);
+            let x_square_plus_a = collector.mul_add_constant_scaled(C::Base::ONE, &x, &x, C::a());
+            let rhs = collector.mul_add_constant_scaled(C::Base::ONE, &x_square_plus_a, &x, C::b());
+            let rhs = collector.mul(&rhs, &not_identity);
+            collector.equal(&lhs, &rhs);
+            let x = collector.select(&is_identity, &zero, &x);
+            let y = collector.select(&is_identity, &zero, &y);
             Ok(AssignedEcPoint {
                 ec_point: witness,
-                x_y_is_identity,
+                x_y_is_identity: [x, y, is_identity],
             })
         }
 
         fn select(
             &self,
             layouter: &mut impl Layouter<C::Base>,
-            condition: &AssignedCell<C::Base, C::Base>,
+            condition: &Self::AssignedCell,
             when_true: &Self::Assigned,
             when_false: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
+            let x_y_is_identity = when_true
+                .x_y_is_identity
+                .iter()
+                .zip(when_false.x_y_is_identity.iter())
+                .map(|(when_true, when_false)| {
+                    NativeFieldInstruction::select(self, layouter, condition, when_true, when_false)
+                })
+                .try_collect::<_, Vec<_>, _>()?
+                .try_into()
+                .unwrap();
             let output = condition
                 .value()
                 .zip(when_true.ec_point.zip(when_false.ec_point))
                 .map(|(condition, (when_true, when_false))| {
-                    if condition == &C::Base::ONE {
+                    if condition == C::Base::ONE {
                         when_true
                     } else {
                         when_false
                     }
                 });
-            NativeEccInstruction::assign_witness(self, layouter, output)
+            Ok(AssignedEcPoint {
+                ec_point: output,
+                x_y_is_identity,
+            })
         }
 
         fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C) -> bool) {
@@ -1863,60 +2076,123 @@ mod test {
             lhs: &Self::Assigned,
             rhs: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
-            let output = (lhs.ec_point + rhs.ec_point).map(Into::into);
-            NativeEccInstruction::assign_witness(self, layouter, output)
+            let (out_added, is_x_equal, is_y_equal) = self.add_ec_point_inner(lhs, rhs);
+            let out_doubled = self.double_ec_point(lhs);
+            let identity = NativeEccInstruction::assign_constant(self, layouter, C::identity())?;
+            let out =
+                NativeEccInstruction::select(self, layouter, &is_y_equal, &out_doubled, &identity)?;
+            NativeEccInstruction::select(self, layouter, &is_x_equal, &out, &out_added)
         }
 
         fn mul(
             &self,
             layouter: &mut impl Layouter<C::Base>,
             base: &Self::Assigned,
-            le_bits: &[AssignedCell<C::Base, C::Base>],
+            le_bits: &[Self::AssignedCell],
         ) -> Result<Self::Assigned, Error> {
-            let scalar = le_bits.iter().rev().map(AssignedCell::value).fold(
-                Value::known(C::Scalar::ZERO),
-                |acc, bit| {
-                    acc.zip(bit).map(|(acc, bit)| {
-                        acc.double()
-                            + if *bit == C::Base::ONE {
-                                C::Scalar::ONE
-                            } else {
-                                C::Scalar::ZERO
-                            }
-                    })
-                },
-            );
-            let output = base
-                .ec_point
-                .zip(scalar)
-                .map(|(base, scalar)| (base * scalar).into());
-            NativeEccInstruction::assign_witness(self, layouter, output)
+            assert!(le_bits.len() < (C::Scalar::NUM_BITS - 2) as usize);
+
+            let base_neg = self.negate_ec_point(base);
+
+            let mut acc = base.clone();
+            let mut base = base.clone();
+
+            for bit in le_bits.iter().skip(1) {
+                base = self.double_ec_point_incomplete(&base);
+                let acc_plus_base = self.add_ec_point_incomplete(&acc, &base);
+                let [acc_x, acc_y, _] = &mut acc.x_y_is_identity;
+                *acc_x =
+                    NativeFieldInstruction::select(self, layouter, bit, acc_plus_base.x(), acc_x)?;
+                *acc_y =
+                    NativeFieldInstruction::select(self, layouter, bit, acc_plus_base.y(), acc_y)?;
+            }
+
+            let acc_minus_base = self.add_ec_point_incomplete(&acc, &base_neg);
+            let out =
+                NativeEccInstruction::select(self, layouter, &le_bits[0], &acc, &acc_minus_base)?;
+            let identity = NativeEccInstruction::assign_constant(self, layouter, C::identity())?;
+            NativeEccInstruction::select(self, layouter, base.is_identity(), &identity, &out)
+        }
+    }
+
+    impl<C: CurveAffine> NativeFieldInstruction<C::Base> for Chip<C>
+    where
+        C::Scalar: PrimeFieldBits,
+    {
+        type AssignedCell = Witness<C::Base>;
+
+        fn assign_constant(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            constant: C::Base,
+        ) -> Result<Self::AssignedCell, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            Ok(collector.register_constant(constant))
+        }
+
+        fn assign_witness(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            witness: Value<C::Base>,
+        ) -> Result<Self::AssignedCell, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            let value = collector.new_witness(witness);
+            Ok(collector.add_constant(&value, C::Base::ZERO))
+        }
+
+        fn is_equal(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            lhs: &Self::AssignedCell,
+            rhs: &Self::AssignedCell,
+        ) -> Result<Self::AssignedCell, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            Ok(collector.is_equal(lhs, rhs))
+        }
+
+        fn select(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            condition: &Self::AssignedCell,
+            when_true: &Self::AssignedCell,
+            when_false: &Self::AssignedCell,
+        ) -> Result<Self::AssignedCell, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            Ok(collector.select(condition, when_true, when_false))
+        }
+
+        fn assert_if_known(&self, value: &Self::AssignedCell, f: impl FnOnce(&C::Base) -> bool) {
+            value.value().assert_if_known(f)
+        }
+
+        fn add(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            lhs: &Self::AssignedCell,
+            rhs: &Self::AssignedCell,
+        ) -> Result<Self::AssignedCell, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            Ok(collector.add(lhs, rhs))
         }
     }
 
     #[derive(Clone)]
-    struct AssignedScalar<F: Field, N: Field> {
-        scalar: Value<F>,
-        limbs: Vec<AssignedCell<N, N>>,
+    pub struct AssignedScalar<F: PrimeField, N: PrimeField> {
+        scalar: Integer<F, N, NUM_LIMBS, NUM_LIMB_BITS>,
+        limbs: Vec<Witness<N>>,
     }
 
-    impl<F: Field, N: Field> AsRef<Self> for AssignedScalar<F, N> {
-        fn as_ref(&self) -> &Self {
-            self
-        }
-    }
-
-    impl<F: Field, N: Field> AsRef<[AssignedCell<N, N>]> for AssignedScalar<F, N> {
-        fn as_ref(&self) -> &[AssignedCell<N, N>] {
+    impl<F: PrimeField, N: PrimeField> AsRef<[Witness<N>]> for AssignedScalar<F, N> {
+        fn as_ref(&self) -> &[Witness<N>] {
             &self.limbs
         }
     }
 
-    impl<F: Field, N: Field> Debug for AssignedScalar<F, N> {
+    impl<F: PrimeField, N: PrimeField> Debug for AssignedScalar<F, N> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let mut s = f.debug_struct("AssignedScalar");
             let mut value = None;
-            self.scalar.map(|scalar| value = Some(scalar));
+            self.scalar.value().map(|scalar| value = Some(scalar));
             if let Some(value) = value {
                 s.field("scalar", &value).finish()
             } else {
@@ -1925,255 +2201,280 @@ mod test {
         }
     }
 
-    impl<C: CurveAffine> NativeFieldInstruction<C::Base> for MockChip<C>
+    impl<C: CurveAffine> FieldInstruction<C::Scalar, C::Base> for Chip<C>
     where
         C::Scalar: PrimeFieldBits,
     {
-        type AssignedCell = AssignedCell<C::Base, C::Base>;
-
-        fn assign_constant(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            constant: C::Base,
-        ) -> Result<Self::AssignedCell, Error> {
-            NativeFieldInstruction::assign_witness(self, layouter, Value::known(constant))
-        }
-
-        fn assign_witness(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            witness: Value<C::Base>,
-        ) -> Result<Self::AssignedCell, Error> {
-            layouter.assign_region(
-                || "",
-                |mut region| region.assign_advice(|| "", self.advice, 0, || witness),
-            )
-        }
-
-        fn is_equal(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            lhs: &Self::AssignedCell,
-            rhs: &Self::AssignedCell,
-        ) -> Result<Self::AssignedCell, Error> {
-            let is_equal = lhs
-                .value()
-                .zip(rhs.value())
-                .map(|(lhs, rhs)| lhs == rhs)
-                .map(fe_from_bool);
-            NativeFieldInstruction::assign_witness(self, layouter, is_equal)
-        }
-
-        fn select(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            condition: &AssignedCell<C::Base, C::Base>,
-            when_true: &Self::AssignedCell,
-            when_false: &Self::AssignedCell,
-        ) -> Result<Self::AssignedCell, Error> {
-            let output = condition
-                .value()
-                .zip(when_true.value().copied().zip(when_false.value().copied()))
-                .map(|(condition, (when_true, when_false))| {
-                    if condition == &C::Base::ONE {
-                        when_true
-                    } else {
-                        when_false
-                    }
-                });
-            NativeFieldInstruction::assign_witness(self, layouter, output)
-        }
-
-        fn assert_if_known(&self, value: &Self::AssignedCell, f: impl FnOnce(&C::Base) -> bool) {
-            value.value().cloned().assert_if_known(f)
-        }
-
-        fn add(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            lhs: &Self::AssignedCell,
-            rhs: &Self::AssignedCell,
-        ) -> Result<Self::AssignedCell, Error> {
-            let value = lhs.value().copied() + rhs.value();
-            NativeFieldInstruction::assign_witness(self, layouter, value)
-        }
-    }
-
-    impl<C: CurveAffine> FieldInstruction<C::Scalar, C::Base> for MockChip<C>
-    where
-        C::Scalar: PrimeFieldBits,
-    {
-        type AssignedCell = AssignedCell<C::Base, C::Base>;
+        type AssignedCell = Witness<C::Base>;
         type Assigned = AssignedScalar<C::Scalar, C::Base>;
 
         fn assign_constant(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
+            _: &mut impl Layouter<C::Base>,
             constant: C::Scalar,
         ) -> Result<Self::Assigned, Error> {
-            FieldInstruction::assign_witness(self, layouter, Value::known(constant))
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.register_constant(constant);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedScalar { scalar, limbs })
         }
 
         fn assign_witness(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
+            _: &mut impl Layouter<C::Base>,
             witness: Value<C::Scalar>,
         ) -> Result<Self::Assigned, Error> {
-            let limbs = layouter.assign_region(
-                || "",
-                |mut region| {
-                    witness
-                        .map(|fe| fe_to_limbs(fe, self.num_limb_bits))
-                        .transpose_vec(num_limbs::<C::Scalar>(self.num_limb_bits))
-                        .into_iter()
-                        .enumerate()
-                        .map(|(offset, limb)| {
-                            region.assign_advice(|| "", self.advice, offset, || limb)
-                        })
-                        .try_collect()
-                },
-            )?;
-            Ok(AssignedScalar {
-                scalar: witness,
-                limbs,
-            })
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.range(self.rns.from_fe(witness), Range::Remainder);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedScalar { scalar, limbs })
         }
 
         fn fit_in_native(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
+            _: &mut impl Layouter<C::Base>,
             value: &Self::Assigned,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
-            let base = Value::known(C::Base::ONE.double().pow([self.num_limb_bits as u64]));
-            let native = value
-                .limbs
-                .iter()
-                .rev()
-                .fold(Value::known(C::Base::ZERO), |acc, limb| {
-                    acc * base + limb.value()
-                });
-            layouter.assign_region(
-                || "",
-                |mut region| region.assign_advice(|| "", self.advice, 0, || native),
-            )
+        ) -> Result<Self::AssignedCell, Error> {
+            Ok(integer_to_native(
+                &self.rns,
+                &mut self.collector.borrow_mut(),
+                &value.scalar,
+                NUM_HASH_BITS,
+            ))
         }
 
         fn select(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
-            condition: &AssignedCell<C::Base, C::Base>,
+            _: &mut impl Layouter<C::Base>,
+            condition: &Self::AssignedCell,
             when_true: &Self::Assigned,
             when_false: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
-            let output = condition
-                .value()
-                .zip(when_true.scalar.zip(when_false.scalar))
-                .map(|(condition, (when_true, when_false))| {
-                    if condition == &C::Base::ONE {
-                        when_true
-                    } else {
-                        when_false
-                    }
-                });
-            FieldInstruction::assign_witness(self, layouter, output)
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.select(&when_true.scalar, &when_false.scalar, condition);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedScalar { scalar, limbs })
         }
 
         fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C::Scalar) -> bool) {
-            value.scalar.assert_if_known(f)
+            value.scalar.value().assert_if_known(f)
         }
 
         fn add(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
+            _: &mut impl Layouter<C::Base>,
             lhs: &Self::Assigned,
             rhs: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
-            let scalar = lhs.scalar + rhs.scalar;
-            FieldInstruction::assign_witness(self, layouter, scalar)
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.add(&lhs.scalar, &rhs.scalar);
+            let scalar = integer_chip.reduce(&scalar);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedScalar { scalar, limbs })
         }
 
         fn mul(
             &self,
-            layouter: &mut impl Layouter<C::Base>,
+            _: &mut impl Layouter<C::Base>,
             lhs: &Self::Assigned,
             rhs: &Self::Assigned,
         ) -> Result<Self::Assigned, Error> {
-            let scalar = lhs.scalar * rhs.scalar;
-            FieldInstruction::assign_witness(self, layouter, scalar)
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.mul(&lhs.scalar, &rhs.scalar);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedScalar { scalar, limbs })
         }
     }
 
-    impl<C> TranscriptInstruction<C, Self, Self> for MockChip<C>
+    impl<C: CurveAffine> UtilInstruction<C::Base> for Chip<C>
     where
-        C: CurveAffine,
         C::Base: FromUniformBytes<64>,
         C::Scalar: PrimeFieldBits,
     {
-        type Challenge = <Self as FieldInstruction<C::Scalar, C::Base>>::Assigned;
+        type AssignedCell = Witness<C::Base>;
 
-        fn init(&self, proof: Value<&[u8]>) -> Self {
-            let mut chip = self.clone();
-            chip.proof = proof.map(|proof| Cursor::new(proof.to_vec()));
-            chip
+        fn convert(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            value: &AssignedCell<C::Base, C::Base>,
+        ) -> Result<Self::AssignedCell, Error> {
+            Ok(self.collector.borrow_mut().new_external(value))
         }
+
+        fn constrain_equal(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            lhs: &Self::AssignedCell,
+            rhs: &Self::AssignedCell,
+        ) -> Result<(), Error> {
+            self.collector.borrow_mut().equal(lhs, rhs);
+            Ok(())
+        }
+
+        fn constrain_instance(
+            &self,
+            layouter: &mut impl Layouter<C::Base>,
+            assigned: &Self::AssignedCell,
+            row: usize,
+        ) -> Result<(), Error> {
+            if self.cell_map.borrow().is_empty() {
+                *self.cell_map.borrow_mut() =
+                    self.maingate.layout(layouter, &self.collector.borrow())?;
+            }
+            let cell = self.cell_map.borrow()[&assigned.id()].cell();
+            layouter.constrain_instance(cell, self.instance, row)?;
+
+            if row == 1 {
+                *self.collector.borrow_mut() = Default::default();
+                *self.cell_map.borrow_mut() = Default::default();
+            }
+
+            Ok(())
+        }
+    }
+
+    impl<C: CurveAffine> HashInstruction<C> for Chip<C>
+    where
+        C::Base: FromUniformBytes<64> + PrimeFieldBits,
+        C::ScalarExt: PrimeFieldBits,
+    {
+        type Param = Spec<C::Base, T, RATE>;
+        type AssignedCell = Witness<C::Base>;
+
+        fn hash_state<Comm: AsRef<C>>(
+            spec: &Self::Param,
+            vp_digest: C::Base,
+            step_idx: usize,
+            initial_input: &[C::Base],
+            output: &[C::Base],
+            acc: &ProtostarAccumulatorInstance<C::Scalar, Comm>,
+        ) -> C::Base {
+            let mut poseidon = Poseidon::new_with_spec(spec.clone());
+            let fe_to_limbs = |fe| fe_to_limbs(fe, NUM_LIMB_BITS);
+            let inputs = iter::empty()
+                .chain([vp_digest, C::Base::from(step_idx as u64)])
+                .chain(initial_input.iter().copied())
+                .chain(output.iter().copied())
+                .chain(fe_to_limbs(acc.instances[0][0]))
+                .chain(fe_to_limbs(acc.instances[0][1]))
+                .chain(
+                    acc.witness_comms
+                        .iter()
+                        .map(AsRef::as_ref)
+                        .flat_map(x_y_is_identity),
+                )
+                .chain(acc.challenges.iter().copied().flat_map(fe_to_limbs))
+                .chain(fe_to_limbs(acc.u))
+                .chain(x_y_is_identity(acc.e_comm.as_ref()))
+                .chain(acc.compressed_e_sum.map(fe_to_limbs).into_iter().flatten())
+                .collect_vec();
+            poseidon.update(&inputs);
+            fe_truncated(poseidon.squeeze(), NUM_HASH_BITS)
+        }
+
+        fn hash_assigned_state<EccChip, ScalarChip>(
+            &self,
+            _: &mut impl Layouter<C::Base>,
+            vp_digest: &Witness<C::Base>,
+            step_idx: &Witness<C::Base>,
+            initial_input: &[Witness<C::Base>],
+            output: &[Witness<C::Base>],
+            acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
+        ) -> Result<Witness<C::Base>, Error>
+        where
+            EccChip: NativeEccInstruction<C, AssignedCell = Self::AssignedCell>,
+            ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = Self::AssignedCell>,
+        {
+            let collector = &mut self.collector.borrow_mut();
+            let inputs = iter::empty()
+                .chain([vp_digest, step_idx])
+                .chain(initial_input)
+                .chain(output)
+                .chain(AsRef::as_ref(&acc.instances[0][0]))
+                .chain(AsRef::as_ref(&acc.instances[0][1]))
+                .chain(acc.witness_comms.iter().flat_map(AsRef::as_ref))
+                .chain(acc.challenges.iter().flat_map(AsRef::<[_]>::as_ref))
+                .chain(AsRef::as_ref(&acc.u))
+                .chain(acc.e_comm.as_ref())
+                .chain(
+                    acc.compressed_e_sum
+                        .as_ref()
+                        .map(AsRef::as_ref)
+                        .into_iter()
+                        .flatten(),
+                )
+                .copied()
+                .collect_vec();
+            let mut poseidon_chip = PoseidonChip::from_spec(collector, self.poseidon_spec.clone());
+            poseidon_chip.update(&inputs);
+            let hash = poseidon_chip.squeeze(collector);
+            let hash_le_bits = to_le_bits_strict(collector, &hash);
+            Ok(from_le_bits(collector, &hash_le_bits[..NUM_HASH_BITS]))
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct PoseidonTranscriptChip<'a, C: CurveAffine> {
+        poseidon_chip: PoseidonChip<C::Base, T, RATE>,
+        chip: &'a Chip<C>,
+        proof: Value<&'a [u8]>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Challenge<F: PrimeField, N: PrimeField> {
+        le_bits: Vec<Witness<N>>,
+        scalar: AssignedScalar<F, N>,
+    }
+
+    impl<F: PrimeField, N: PrimeField> AsRef<AssignedScalar<F, N>> for Challenge<F, N> {
+        fn as_ref(&self) -> &AssignedScalar<F, N> {
+            &self.scalar
+        }
+    }
+
+    impl<'a, C> TranscriptInstruction<C, Chip<C>, Chip<C>> for PoseidonTranscriptChip<'a, C>
+    where
+        C: CurveAffine,
+        C::Base: FromUniformBytes<64> + PrimeFieldBits,
+        C::Scalar: PrimeFieldBits,
+    {
+        type Challenge = Challenge<C::Scalar, C::Base>;
 
         fn challenge_to_le_bits(
             &self,
-            layouter: &mut impl Layouter<<C as CurveAffine>::Base>,
-            scalar: &Self::Challenge,
-        ) -> Result<Vec<AssignedCell<C::Base, C::Base>>, Error> {
-            layouter.assign_region(
-                || "",
-                |mut region| {
-                    scalar
-                        .scalar
-                        .map(|scalar| {
-                            scalar
-                                .to_le_bits()
-                                .into_iter()
-                                .take(NUM_CHALLENGE_BITS)
-                                .collect_vec()
-                        })
-                        .transpose_vec(NUM_CHALLENGE_BITS)
-                        .into_iter()
-                        .enumerate()
-                        .map(|(offset, bit)| {
-                            region.assign_advice(
-                                || "",
-                                self.advice,
-                                offset,
-                                || bit.map(fe_from_bool),
-                            )
-                        })
-                        .try_collect()
-                },
-            )
+            _: &mut impl Layouter<<C as CurveAffine>::Base>,
+            challenge: &Self::Challenge,
+        ) -> Result<Vec<Witness<C::Base>>, Error> {
+            Ok(challenge.le_bits.clone())
         }
 
         fn common_field_element(
             &mut self,
-            value: &<Self as FieldInstruction<C::Scalar, C::Base>>::Assigned,
+            value: &AssignedScalar<C::Scalar, C::Base>,
         ) -> Result<(), Error> {
-            AsRef::<[_]>::as_ref(value).iter().for_each(|value| {
-                value.value().map(|value| self.poseidon.update(&[*value]));
-            });
+            AsRef::<[_]>::as_ref(value)
+                .iter()
+                .for_each(|value| self.poseidon_chip.update(&[*value]));
             Ok(())
         }
 
-        fn common_commitment(
-            &mut self,
-            value: &<Self as NativeEccInstruction<C>>::Assigned,
-        ) -> Result<(), Error> {
-            value.as_ref().iter().for_each(|value| {
-                value.value().map(|value| self.poseidon.update(&[*value]));
-            });
+        fn common_commitment(&mut self, value: &AssignedEcPoint<C>) -> Result<(), Error> {
+            value
+                .as_ref()
+                .iter()
+                .for_each(|value| self.poseidon_chip.update(&[*value]));
             Ok(())
         }
 
         fn read_field_element(
             &mut self,
             layouter: &mut impl Layouter<C::Base>,
-        ) -> Result<<Self as FieldInstruction<C::Scalar, C::Base>>::Assigned, Error> {
+        ) -> Result<AssignedScalar<C::Scalar, C::Base>, Error> {
             let fe = self.proof.as_mut().and_then(|proof| {
                 let mut repr = <C::Scalar as PrimeField>::Repr::default();
                 if proof.read_exact(repr.as_mut()).is_err() {
@@ -2183,7 +2484,7 @@ mod test {
                     .map(Value::known)
                     .unwrap_or_else(Value::unknown)
             });
-            let fe = FieldInstruction::assign_witness(self, layouter, fe)?;
+            let fe = FieldInstruction::assign_witness(self.chip, layouter, fe)?;
             self.common_field_element(&fe)?;
             Ok(fe)
         }
@@ -2191,7 +2492,7 @@ mod test {
         fn read_commitment(
             &mut self,
             layouter: &mut impl Layouter<C::Base>,
-        ) -> Result<<Self as NativeEccInstruction<C>>::Assigned, Error> {
+        ) -> Result<AssignedEcPoint<C>, Error> {
             let comm = self.proof.as_mut().and_then(|proof| {
                 let mut reprs = [<C::Base as PrimeField>::Repr::default(); 2];
                 for repr in &mut reprs {
@@ -2210,250 +2511,118 @@ mod test {
                         .unwrap_or_else(Value::unknown)
                 })
             });
-            let comm = NativeEccInstruction::assign_witness(self, layouter, comm)?;
+            let comm = NativeEccInstruction::assign_witness(self.chip, layouter, comm)?;
             self.common_commitment(&comm)?;
             Ok(comm)
         }
 
         fn squeeze_challenge(
             &mut self,
-            layouter: &mut impl Layouter<C::Base>,
-        ) -> Result<<Self as FieldInstruction<C::Scalar, C::Base>>::Assigned, Error> {
-            let hash = self.poseidon.squeeze();
-            self.poseidon.update(&[hash]);
-
-            let challenge = fe_from_le_bytes(&hash.to_repr().as_ref()[..NUM_CHALLENGE_BYTES]);
-            FieldInstruction::assign_witness(self, layouter, Value::known(challenge))
-        }
-    }
-
-    impl<C: CurveAffine> HashInstruction<C> for MockChip<C>
-    where
-        C::Base: FromUniformBytes<64>,
-        C::ScalarExt: PrimeFieldBits,
-    {
-        type Param = (usize, usize, Poseidon<C::Base, T, RATE>);
-        type AssignedCell = AssignedCell<C::Base, C::Base>;
-
-        fn param(&self) -> Self::Param {
-            (
-                self.num_hash_bits,
-                self.num_limb_bits,
-                self.poseidon.clone(),
-            )
-        }
-
-        fn hash_state<Comm: AsRef<C>>(
-            (num_hash_bits, num_limb_bits, mut poseidon): Self::Param,
-            vp_digest: C::Base,
-            step_idx: usize,
-            initial_input: &[C::Base],
-            output: &[C::Base],
-            acc: &ProtostarAccumulatorInstance<C::Scalar, Comm>,
-        ) -> C::Base {
-            let x_y_is_identity = |comm: &Comm| {
-                Option::<Coordinates<_>>::from(comm.as_ref().coordinates())
-                    .map(|coords| [*coords.x(), *coords.y(), C::Base::ZERO])
-                    .unwrap_or_else(|| [C::Base::ZERO, C::Base::ZERO, C::Base::ONE])
-            };
-            let fe_to_limbs = |fe| fe_to_limbs(fe, num_limb_bits);
-            let inputs = iter::empty()
-                .chain([vp_digest, C::Base::from(step_idx as u64)])
-                .chain(initial_input.iter().copied())
-                .chain(output.iter().copied())
-                .chain(fe_to_limbs(acc.instances[0][0]))
-                .chain(fe_to_limbs(acc.instances[0][1]))
-                .chain(acc.witness_comms.iter().flat_map(x_y_is_identity))
-                .chain(acc.challenges.iter().copied().flat_map(fe_to_limbs))
-                .chain(fe_to_limbs(acc.u))
-                .chain(x_y_is_identity(&acc.e_comm))
-                .chain(acc.compressed_e_sum.map(fe_to_limbs).into_iter().flatten())
-                .collect_vec();
-            poseidon.update(&inputs);
-            fe_truncated(poseidon.squeeze(), num_hash_bits)
-        }
-
-        fn hash_assigned_state<EccChip, ScalarChip>(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            vp_digest: &AssignedCell<C::Base, C::Base>,
-            step_idx: &AssignedCell<C::Base, C::Base>,
-            initial_input: &[AssignedCell<C::Base, C::Base>],
-            output: &[AssignedCell<C::Base, C::Base>],
-            acc: &AssignedProtostarAccumulatorInstance<C, EccChip, ScalarChip>,
-        ) -> Result<AssignedCell<C::Base, C::Base>, Error>
-        where
-            EccChip: NativeEccInstruction<C, AssignedCell = Self::AssignedCell>,
-            ScalarChip: FieldInstruction<C::Scalar, C::Base, AssignedCell = Self::AssignedCell>,
-        {
-            let mut poseidon = self.poseidon.clone();
-            iter::empty()
-                .chain([vp_digest, step_idx])
-                .chain(initial_input)
-                .chain(output)
-                .chain(AsRef::as_ref(&acc.instances[0][0]))
-                .chain(AsRef::as_ref(&acc.instances[0][1]))
-                .chain(acc.witness_comms.iter().flat_map(|comm| comm.as_ref()))
-                .chain(acc.challenges.iter().flat_map(AsRef::<[_]>::as_ref))
-                .chain(AsRef::as_ref(&acc.u))
-                .chain(acc.e_comm.as_ref())
-                .chain(
-                    acc.compressed_e_sum
-                        .as_ref()
-                        .map(AsRef::as_ref)
-                        .into_iter()
-                        .flatten(),
-                )
-                .for_each(|value| {
-                    value.value().map(|value| poseidon.update(&[*value]));
-                });
-            let hash = fe_truncated(poseidon.squeeze(), self.num_hash_bits);
-            layouter.assign_region(
-                || "",
-                |mut region| region.assign_advice(|| "", self.advice, 0, || Value::known(hash)),
-            )
-        }
-    }
-
-    impl<C: CurveAffine> UtilInstruction<C::Base> for MockChip<C>
-    where
-        C::Base: FromUniformBytes<64>,
-        C::Scalar: PrimeFieldBits,
-    {
-        type AssignedCell = AssignedCell<C::Base, C::Base>;
-
-        fn convert(
-            &self,
             _: &mut impl Layouter<C::Base>,
-            value: &AssignedCell<C::Base, C::Base>,
-        ) -> Result<Self::AssignedCell, Error> {
-            Ok(value.clone())
-        }
+        ) -> Result<Challenge<C::Scalar, C::Base>, Error> {
+            let collector = &mut self.chip.collector.borrow_mut();
+            let (challenge_le_bits, challenge) = {
+                let hash = self.poseidon_chip.squeeze(collector);
+                self.poseidon_chip.update(&[hash]);
 
-        fn constrain_equal(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            lhs: &Self::AssignedCell,
-            rhs: &Self::AssignedCell,
-        ) -> Result<(), Error> {
-            lhs.value().zip(rhs.value()).assert_if_known(|(lhs, rhs)| {
-                assert_eq!(lhs, rhs);
-                lhs == rhs
-            });
-            layouter.assign_region(
-                || "",
-                |mut region| region.constrain_equal(lhs.cell(), rhs.cell()),
-            )
-        }
+                let challenge_le_bits = to_le_bits_strict(collector, &hash)
+                    .into_iter()
+                    .take(NUM_CHALLENGE_BITS)
+                    .collect_vec();
+                let challenge = from_le_bits(collector, &challenge_le_bits);
 
-        fn constrain_instance(
-            &self,
-            layouter: &mut impl Layouter<C::Base>,
-            assigned: &Self::AssignedCell,
-            row: usize,
-        ) -> Result<(), Error> {
-            layouter.constrain_instance(assigned.cell(), self.instance, row)
-        }
-    }
+                (challenge_le_bits, challenge)
+            };
 
-    impl<C: CurveAffine> Chips<C> for MockChip<C>
-    where
-        C::Base: FromUniformBytes<64>,
-        C::Scalar: PrimeFieldBits,
-    {
-        type AssignedCell = AssignedCell<C::Base, C::Base>;
+            let mut integer_chip = IntegerChip::new(collector, &self.chip.rns);
+            let limbs = self.chip.rns.from_fe(challenge.value().map(fe_to_fe));
+            let scalar = integer_chip.range(limbs, Range::Remainder);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
 
-        type EccChip = Self;
-        type BaseChip = Self;
-        type ScalarChip = Self;
-        type TranscriptChip = Self;
-        type HashChip = Self;
-        type UtilChip = Self;
+            let scalar_in_base =
+                integer_to_native(&self.chip.rns, collector, &scalar, NUM_CHALLENGE_BITS);
+            collector.equal(&challenge, &scalar_in_base);
 
-        fn ecc_chip(&self) -> &Self::EccChip {
-            self
-        }
-
-        fn base_chip(&self) -> &Self::BaseChip {
-            self
-        }
-
-        fn scalar_chip(&self) -> &Self::ScalarChip {
-            self
-        }
-
-        fn transcript_chip(&self) -> &Self::TranscriptChip {
-            self
-        }
-
-        fn hash_chip(&self) -> &Self::HashChip {
-            self
-        }
-
-        fn util_chip(&self) -> &Self::UtilChip {
-            self
+            Ok(Challenge {
+                le_bits: challenge_le_bits,
+                scalar: AssignedScalar { scalar, limbs },
+            })
         }
     }
+}
 
-    #[derive(Clone, Debug)]
-    struct TrivialCircuit {
-        num_hash_bits: usize,
-        num_limb_bits: usize,
+#[cfg(test)]
+mod test {
+    use crate::{
+        folding::protostar::ivc::halo2::{
+            preprocess, prove_decider, prove_steps, strawman, verify_decider, StepCircuit,
+        },
+        frontend::halo2::CircuitExt,
+        pcs::{
+            multilinear::{MultilinearIpa, MultilinearSimulator},
+            univariate::UnivariateKzg,
+            AdditiveCommitment, PolynomialCommitmentScheme,
+        },
+        poly::multilinear::MultilinearPolynomial,
+        util::{
+            arithmetic::{
+                Bn254Grumpkin, CurveAffine, CurveCycle, FromUniformBytes, PrimeFieldBits,
+            },
+            test::seeded_std_rng,
+            transcript::{
+                InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
+            },
+            DeserializeOwned, Serialize,
+        },
+    };
+    use halo2_curves::{bn256::Bn256, grumpkin};
+    use halo2_proofs::{
+        circuit::{AssignedCell, Layouter, SimpleFloorPlanner},
+        plonk::{Circuit, Column, ConstraintSystem, Error, Instance},
+    };
+    use std::{fmt::Debug, hash::Hash, io::Cursor, marker::PhantomData};
+
+    #[derive(Clone, Debug, Default)]
+    struct TrivialCircuit<C> {
         step_idx: usize,
+        _marker: PhantomData<C>,
     }
 
-    impl TrivialCircuit {
-        fn new(num_hash_bits: usize, num_limb_bits: usize) -> Self {
-            Self {
-                num_hash_bits,
-                num_limb_bits,
-                step_idx: 0,
-            }
-        }
-    }
-
-    impl<F: Field> Circuit<F> for TrivialCircuit {
-        type Config = (Column<Advice>, Column<Instance>);
+    impl<C: CurveAffine> Circuit<C::Base> for TrivialCircuit<C> {
+        type Config = (strawman::Config<C::Base>, Column<Instance>);
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
             self.clone()
         }
 
-        fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let selector = meta.selector();
-            let advice = meta.advice_column();
+        fn configure(meta: &mut ConstraintSystem<C::Base>) -> Self::Config {
+            let main_gate = strawman::Chip::<C>::configure(meta);
             let instance = meta.instance_column();
-            meta.create_gate("", |meta| {
-                let selector = meta.query_selector(selector);
-                let advice = meta.query_advice(advice, Rotation::cur());
-                Some(selector * advice)
-            });
-            meta.enable_equality(advice);
             meta.enable_equality(instance);
-            (advice, instance)
+            (main_gate, instance)
         }
 
-        fn synthesize(&self, _: Self::Config, _: impl Layouter<F>) -> Result<(), Error> {
+        fn synthesize(&self, _: Self::Config, _: impl Layouter<C::Base>) -> Result<(), Error> {
             Ok(())
         }
     }
 
-    impl<F: Field> CircuitExt<F> for TrivialCircuit {
-        fn instances(&self) -> Vec<Vec<F>> {
+    impl<C: CurveAffine> CircuitExt<C::Base> for TrivialCircuit<C> {
+        fn instances(&self) -> Vec<Vec<C::Base>> {
             Vec::new()
         }
     }
 
-    impl<C: CurveAffine> StepCircuit<C> for TrivialCircuit
+    impl<C: CurveAffine> StepCircuit<C> for TrivialCircuit<C>
     where
-        C::Base: FromUniformBytes<64>,
+        C::Base: FromUniformBytes<64> + PrimeFieldBits,
         C::Scalar: PrimeFieldBits,
     {
-        type Chips = MockChip<C>;
+        type Chips = strawman::Chip<C>;
 
-        fn chips(&self, (advice, instance): Self::Config) -> Self::Chips {
-            MockChip::new(self.num_hash_bits, self.num_limb_bits, advice, instance)
+        fn chips(&self, (main_gate, instance): Self::Config) -> Self::Chips {
+            strawman::Chip::new(main_gate, instance)
         }
 
         fn step_idx(&self) -> usize {
@@ -2491,12 +2660,8 @@ mod test {
         }
     }
 
-    fn run_protostar_hyperplonk_ivc<C, P1, P2>(
-        num_hash_bits: usize,
-        num_limb_bits: usize,
-        num_vars: usize,
-        num_steps: usize,
-    ) where
+    fn run_protostar_hyperplonk_ivc<C, P1, P2>(num_vars: usize, num_steps: usize)
+    where
         C: CurveCycle,
         C::Scalar: Hash + Serialize + DeserializeOwned,
         C::Base: Hash + Serialize + DeserializeOwned,
@@ -2518,21 +2683,32 @@ mod test {
             + TranscriptWrite<C::Secondary, C::Base>,
     {
         let primary_num_vars = num_vars;
+        let primary_atp = strawman::accumulation_transcript_param();
+        let primary_hp = strawman::hash_param();
         let secondary_num_vars = num_vars;
-        let primary_atp = num_limb_bits;
-        let secondary_atp = num_limb_bits;
+        let secondary_atp = strawman::accumulation_transcript_param();
+        let secondary_hp = strawman::hash_param();
 
-        let (mut primary_circuit, mut secondary_circuit, ivc_pp, ivc_vp) =
-            preprocess::<C, P1, P2, _, _, PoseidonTranscript<_, _>, PoseidonTranscript<_, _>>(
-                primary_num_vars,
-                primary_atp,
-                TrivialCircuit::new(num_hash_bits, num_limb_bits),
-                secondary_num_vars,
-                secondary_atp,
-                TrivialCircuit::new(num_hash_bits, num_limb_bits),
-                seeded_std_rng(),
-            )
-            .unwrap();
+        let (mut primary_circuit, mut secondary_circuit, ivc_pp, ivc_vp) = preprocess::<
+            C,
+            P1,
+            P2,
+            _,
+            _,
+            strawman::PoseidonTranscript<_, _>,
+            strawman::PoseidonTranscript<_, _>,
+        >(
+            primary_num_vars,
+            primary_atp,
+            primary_hp,
+            TrivialCircuit::default(),
+            secondary_num_vars,
+            secondary_atp,
+            secondary_hp,
+            TrivialCircuit::default(),
+            seeded_std_rng(),
+        )
+        .unwrap();
 
         let (primary_acc, mut secondary_acc, secondary_last_instances) = prove_steps(
             &ivc_pp,
@@ -2605,14 +2781,12 @@ mod test {
 
     #[test]
     fn kzg_protostar_folding_verifier() {
-        const NUM_HASH_BITS: usize = 250;
-        const NUM_LIMB_BITS: usize = 64;
-        const NUM_VARS: usize = 9;
+        const NUM_VARS: usize = 16;
         const NUM_STEPS: usize = 3;
         run_protostar_hyperplonk_ivc::<
             Bn254Grumpkin,
             MultilinearSimulator<UnivariateKzg<Bn256>>,
             MultilinearIpa<grumpkin::G1Affine>,
-        >(NUM_HASH_BITS, NUM_LIMB_BITS, NUM_VARS, NUM_STEPS);
+        >(NUM_VARS, NUM_STEPS);
     }
 }

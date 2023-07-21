@@ -193,7 +193,10 @@ where
             Compressing => {
                 let zeta = transcript.squeeze_challenge();
 
+                let timer = start_timer(|| "powers_of_zeta_poly");
                 let powers_of_zeta_poly = powers_of_zeta_poly(pp.num_vars, zeta);
+                end_timer(timer);
+
                 let powers_of_zeta_comm =
                     Pcs::commit_and_write(&pp.pcs, &powers_of_zeta_poly, transcript)?;
 

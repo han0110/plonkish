@@ -15,7 +15,7 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{fe_to_fe, CurveAffine, CurveCycle, Field, PrimeField},
-        izip_eq,
+        end_timer, izip_eq, start_timer,
         transcript::{InMemoryTranscript, TranscriptRead, TranscriptWrite},
         DeserializeOwned, Itertools, Serialize,
     },
@@ -1322,6 +1322,13 @@ where
 
     for step_idx in 0..num_steps {
         let primary_acc_x = primary_acc.instance.clone();
+
+        let timer = start_timer(|| {
+            format!(
+                "prove_accumulation_from_nark-primary-{}",
+                ivc_pp.primary_pp.pp.num_vars
+            )
+        });
         let proof = {
             let mut transcript = AT1::new(ivc_pp.primary_atp.clone());
             Protostar::<HyperPlonk<P1>>::prove_accumulation_from_nark(
@@ -1333,6 +1340,7 @@ where
             )?;
             transcript.into_proof()
         };
+        end_timer(timer);
 
         secondary_circuit.update_witness(|circuit| {
             circuit.update(
@@ -1345,6 +1353,13 @@ where
 
         if step_idx != num_steps - 1 {
             let secondary_acc_x = secondary_acc.instance.clone();
+
+            let timer = start_timer(|| {
+                format!(
+                    "prove_accumulation_from_nark-secondary-{}",
+                    ivc_pp.secondary_pp.pp.num_vars
+                )
+            });
             let proof = {
                 let mut transcript = AT2::new(ivc_pp.secondary_atp.clone());
                 Protostar::<HyperPlonk<P2>>::prove_accumulation_from_nark(
@@ -1356,6 +1371,7 @@ where
                 )?;
                 transcript.into_proof()
             };
+            end_timer(timer);
 
             primary_circuit.update_witness(|circuit| {
                 circuit.update(
@@ -1405,12 +1421,20 @@ where
     AT1: InMemoryTranscript,
     AT2: InMemoryTranscript,
 {
+    let timer = start_timer(|| format!("prove_decider-primary-{}", ivc_pp.primary_pp.pp.num_vars));
     Protostar::<HyperPlonk<P1>>::prove_decider(
         &ivc_pp.primary_pp,
         primary_acc,
         primary_transcript,
         &mut rng,
     )?;
+    end_timer(timer);
+    let timer = start_timer(|| {
+        format!(
+            "prove_decider_with_last_nark-secondary-{}",
+            ivc_pp.secondary_pp.pp.num_vars
+        )
+    });
     Protostar::<HyperPlonk<P2>>::prove_decider_with_last_nark(
         &ivc_pp.secondary_pp,
         secondary_acc,
@@ -1418,6 +1442,7 @@ where
         secondary_transcript,
         &mut rng,
     )?;
+    end_timer(timer);
     Ok(())
 }
 

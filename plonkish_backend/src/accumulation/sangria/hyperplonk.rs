@@ -7,7 +7,7 @@ pub(crate) mod test {
             HyperPlonk,
         },
         pcs::{
-            multilinear::{MultilinearIpa, MultilinearKzg, MultilinearSimulator},
+            multilinear::{Gemini, MultilinearIpa, MultilinearKzg},
             univariate::UnivariateKzg,
         },
         util::{
@@ -54,5 +54,5 @@ pub(crate) mod test {
 
     tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
-    tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);
+    tests!(gemini_kzg, Gemini<UnivariateKzg<Bn256>>);
 }

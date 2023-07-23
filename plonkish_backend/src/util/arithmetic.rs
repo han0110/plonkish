@@ -78,6 +78,10 @@ pub fn powers<F: Field>(scalar: F) -> impl Iterator<Item = F> {
     iter::successors(Some(F::ONE), move |power| Some(scalar * power))
 }
 
+pub fn squares<F: Field>(scalar: F) -> impl Iterator<Item = F> {
+    iter::successors(Some(scalar), move |scalar| Some(scalar.square()))
+}
+
 pub fn product<F: Field>(values: impl IntoIterator<Item = impl Borrow<F>>) -> F {
     values
         .into_iter()

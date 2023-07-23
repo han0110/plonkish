@@ -380,8 +380,7 @@ mod test {
         },
         pcs::{
             multilinear::{
-                MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
-                MultilinearSimulator,
+                Gemini, MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
             },
             univariate::UnivariateKzg,
         },
@@ -422,5 +421,5 @@ mod test {
     tests!(hyrax, MultilinearHyrax<grumpkin::G1Affine>, 5..16);
     tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
-    tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);
+    tests!(gemini_kzg, Gemini<UnivariateKzg<Bn256>>);
 }

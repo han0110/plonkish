@@ -5,7 +5,7 @@ use crate::{
     },
     frontend::halo2::CircuitExt,
     pcs::{
-        multilinear::{MultilinearIpa, MultilinearSimulator},
+        multilinear::{Gemini, MultilinearIpa},
         univariate::UnivariateKzg,
         AdditiveCommitment, PolynomialCommitmentScheme,
     },
@@ -246,7 +246,7 @@ fn kzg_protostar_folding_verifier() {
     const NUM_STEPS: usize = 3;
     run_protostar_hyperplonk_ivc::<
         bn256::G1Affine,
-        MultilinearSimulator<UnivariateKzg<Bn256>>,
+        Gemini<UnivariateKzg<Bn256>>,
         MultilinearIpa<grumpkin::G1Affine>,
     >(NUM_VARS, NUM_STEPS);
 }

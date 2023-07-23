@@ -5,21 +5,21 @@ use crate::{
 };
 
 mod brakedown;
+mod gemini;
 mod hyrax;
 mod ipa;
 mod kzg;
-mod simulator;
 
 pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
 };
+pub use gemini::Gemini;
 pub use hyrax::{MultilinearHyrax, MultilinearHyraxCommitment, MultilinearHyraxParams};
 pub use ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParams};
 pub use kzg::{
     MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,
     MultilinearKzgVerifierParams,
 };
-pub use simulator::MultilinearSimulator;
 
 fn validate_input<'a, F: Field>(
     function: &str,

@@ -10,7 +10,7 @@ use crate::{
         Polynomial,
     },
     util::{
-        arithmetic::{Field, MultiMillerLoop},
+        arithmetic::{squares, Field, MultiMillerLoop},
         chain,
         transcript::{TranscriptRead, TranscriptWrite},
         DeserializeOwned, Itertools, Serialize,
@@ -18,12 +18,12 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ops::Neg};
 
 #[derive(Clone, Debug)]
-pub struct MultilinearSimulator<Pcs>(PhantomData<Pcs>);
+pub struct Gemini<Pcs>(PhantomData<Pcs>);
 
-impl<M> PolynomialCommitmentScheme<M::Scalar> for MultilinearSimulator<UnivariateKzg<M>>
+impl<M> PolynomialCommitmentScheme<M::Scalar> for Gemini<UnivariateKzg<M>>
 where
     M: MultiMillerLoop,
     M::Scalar: Serialize + DeserializeOwned,
@@ -80,6 +80,7 @@ where
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
+        let num_vars = point.len();
         if pp.degree() + 1 < poly.evals().len() {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large degree of poly to open (param supports degree up to {} but got {})",
@@ -94,9 +95,9 @@ where
         }
 
         let fs = {
-            let mut fs = Vec::with_capacity(point.len());
+            let mut fs = Vec::with_capacity(num_vars);
             fs.push(UnivariatePolynomial::new(poly.evals().to_vec()));
-            for x_i in &point[..point.len() - 1] {
+            for x_i in &point[..num_vars - 1] {
                 let f_i_minus_one = fs.last().unwrap().coeffs();
                 let mut f_i = Vec::with_capacity(f_i_minus_one.len() >> 1);
                 merge_into(&mut f_i, f_i_minus_one, x_i, 1, 0);
@@ -121,17 +122,14 @@ where
         .collect_vec();
 
         let beta = transcript.squeeze_challenge();
-        let points = [beta, -beta, beta.square()];
-
-        let evals = fs
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, f)| {
-                chain![(idx != 0).then_some(2), [0, 1]]
-                    .map(move |point| Evaluation::new(idx, point, f.evaluate(&points[point])))
-            })
+        let points = chain![[beta], squares(beta).map(Neg::neg)]
+            .take(num_vars + 1)
             .collect_vec();
-        transcript.write_field_elements(evals.iter().map(Evaluation::value))?;
+
+        let evals = chain!([(0, 0), (0, 1)], (1..num_vars).zip(2..))
+            .map(|(idx, point)| Evaluation::new(idx, point, fs[idx].evaluate(&points[point])))
+            .collect_vec();
+        transcript.write_field_elements(evals[1..].iter().map(Evaluation::value))?;
 
         UnivariateKzg::<M>::batch_open(pp, &fs, &comms, &points, &evals, transcript)
     }
@@ -174,30 +172,24 @@ where
             .collect_vec();
 
         let beta = transcript.squeeze_challenge();
-        let points = [beta, -beta, beta.square()];
+        let squares_of_beta = squares(beta).take(num_vars).collect_vec();
 
-        let evals = (0..num_vars)
-            .flat_map(|idx| {
-                chain![(idx != 0).then_some(2), [0, 1]]
-                    .map(|point| {
-                        transcript
-                            .read_field_element()
-                            .map(|eval| Evaluation::new(idx, point, eval))
-                    })
-                    .collect_vec()
-            })
-            .try_collect::<_, Vec<_>, _>()?;
+        let evals = transcript.read_field_elements(num_vars)?;
 
-        let two = M::Scalar::ONE + M::Scalar::ONE;
-        let beta_inv = beta.invert().unwrap();
-        for ((a, b, c), x_i) in chain![evals.iter().map(Evaluation::value), [eval]]
-            .tuples()
-            .zip_eq(point)
-        {
-            (two * c == (*a + b) * (M::Scalar::ONE - x_i) + (*a - b) * beta_inv * x_i)
-                .then_some(())
-                .ok_or_else(|| Error::InvalidPcsOpen("Consistency failure".to_string()))?;
-        }
+        let one = M::Scalar::ONE;
+        let two = one.double();
+        let eval_0 = evals.iter().zip(&squares_of_beta).zip(point).rev().fold(
+            *eval,
+            |eval_pos, ((eval_neg, sqaure_of_beta), x_i)| {
+                (two * sqaure_of_beta * eval_pos - ((one - x_i) * sqaure_of_beta - x_i) * eval_neg)
+                    * ((one - x_i) * sqaure_of_beta + x_i).invert().unwrap()
+            },
+        );
+        let evals = chain!([(0, 0), (0, 1)], (1..num_vars).zip(2..))
+            .zip(chain![[eval_0], evals])
+            .map(|((idx, point), eval)| Evaluation::new(idx, point, eval))
+            .collect_vec();
+        let points = chain!([beta], squares_of_beta.into_iter().map(Neg::neg)).collect_vec();
 
         UnivariateKzg::<M>::batch_verify(vp, &comms, &points, &evals, transcript)
     }
@@ -220,7 +212,7 @@ mod test {
     use crate::{
         pcs::{
             multilinear::{
-                simulator::MultilinearSimulator,
+                gemini::Gemini,
                 test::{run_batch_commit_open_verify, run_commit_open_verify},
             },
             univariate::UnivariateKzg,
@@ -229,7 +221,7 @@ mod test {
     };
     use halo2_curves::bn256::Bn256;
 
-    type Pcs = MultilinearSimulator<UnivariateKzg<Bn256>>;
+    type Pcs = Gemini<UnivariateKzg<Bn256>>;
 
     #[test]
     fn commit_open_verify() {

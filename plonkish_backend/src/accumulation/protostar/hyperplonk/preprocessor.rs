@@ -1,12 +1,12 @@
 use crate::{
-    backend::{
-        hyperplonk::{preprocessor::permutation_constraints, HyperPlonk},
-        PlonkishBackend, PlonkishCircuitInfo,
-    },
-    folding::protostar::{
+    accumulation::protostar::{
         ProtostarProverParam, ProtostarStrategy,
         ProtostarStrategy::{Compressing, NoCompressing},
         ProtostarVerifierParam,
+    },
+    backend::{
+        hyperplonk::{preprocessor::permutation_constraints, HyperPlonk},
+        PlonkishBackend, PlonkishCircuitInfo,
     },
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,

@@ -1,6 +1,6 @@
 use crate::{
+    accumulation::protostar::ProtostarAccumulator,
     backend::hyperplonk::prover::instance_polys,
-    folding::protostar::ProtostarAccumulator,
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
@@ -84,7 +84,7 @@ pub(crate) fn evaluate_cross_term_polys<F, Pcs>(
     cross_term_expressions: &[Expression<F>],
     num_vars: usize,
     preprocess_polys: &[MultilinearPolynomial<F>],
-    folded: &ProtostarAccumulator<F, Pcs>,
+    accumulator: &ProtostarAccumulator<F, Pcs>,
     incoming: &ProtostarAccumulator<F, Pcs>,
 ) -> Vec<MultilinearPolynomial<F>>
 where
@@ -99,7 +99,7 @@ where
         cross_term_expressions,
         num_vars,
         preprocess_polys,
-        folded,
+        accumulator,
         incoming,
     );
 
@@ -183,7 +183,7 @@ where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
-    let [(folded_pow, folded_zeta, folded_u), (incoming_pow, incoming_zeta, incoming_u)] =
+    let [(acc_pow, acc_zeta, acc_u), (incoming_pow, incoming_zeta, incoming_u)] =
         [accumulator, incoming].map(|witness| {
             let pow = witness.witness_polys.last().unwrap();
             let zeta = witness
@@ -206,17 +206,16 @@ where
             .iter_mut()
             .zip(start..)
             .for_each(|(cross_term, b)| {
-                *cross_term = folded_pow[next_map[b]] + folded_u * incoming_pow[next_map[b]]
-                    - (folded_pow[b] * incoming_zeta + incoming_pow[b] * folded_zeta);
+                *cross_term = acc_pow[next_map[b]] + acc_u * incoming_pow[next_map[b]]
+                    - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
             })
     });
     let b_0 = 0;
     let b_last = bh.rotate(1, Rotation::prev());
-    cross_term[b_0] +=
-        folded_pow[b_0] * incoming_zeta + incoming_pow[b_0] * folded_zeta - folded_u.double();
-    cross_term[b_last] += folded_pow[b_last] * incoming_zeta + incoming_pow[b_last] * folded_zeta
-        - folded_u * incoming_zeta
-        - folded_zeta;
+    cross_term[b_0] += acc_pow[b_0] * incoming_zeta + incoming_pow[b_0] * acc_zeta - acc_u.double();
+    cross_term[b_last] += acc_pow[b_last] * incoming_zeta + incoming_pow[b_last] * acc_zeta
+        - acc_u * incoming_zeta
+        - acc_zeta;
 
     MultilinearPolynomial::new(cross_term)
 }
@@ -234,11 +233,11 @@ where
 {
     assert!(!expressions.is_empty());
 
-    let folded_instance_polys = instance_polys(num_vars, &accumulator.instance.instances);
+    let acc_instance_polys = instance_polys(num_vars, &accumulator.instance.instances);
     let incoming_instance_polys = instance_polys(num_vars, &incoming.instance.instances);
     let polys = iter::empty()
         .chain(preprocess_polys.iter().map(Cow::Borrowed))
-        .chain(folded_instance_polys.into_iter().map(Cow::Owned))
+        .chain(acc_instance_polys.into_iter().map(Cow::Owned))
         .chain(accumulator.witness_polys.iter().map(Cow::Borrowed))
         .chain(incoming_instance_polys.into_iter().map(Cow::Owned))
         .chain(incoming.witness_polys.iter().map(Cow::Borrowed))

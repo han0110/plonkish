@@ -1,5 +1,5 @@
 use crate::{
-    folding::protostar::{ProtostarAccumulatorInstance, ProtostarStrategy},
+    accumulation::protostar::{ProtostarAccumulatorInstance, ProtostarStrategy},
     util::{arithmetic::PrimeField, Deserialize, Serialize},
 };
 

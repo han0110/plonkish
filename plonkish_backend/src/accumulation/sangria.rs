@@ -1,5 +1,5 @@
 use crate::{
-    folding::protostar::{
+    accumulation::protostar::{
         Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance, ProtostarProverParam,
         ProtostarStrategy::NoCompressing, ProtostarVerifierParam,
     },

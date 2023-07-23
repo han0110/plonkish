@@ -1,6 +1,5 @@
 use crate::{
-    backend::{hyperplonk::HyperPlonk, PlonkishBackend, PlonkishCircuit},
-    folding::{
+    accumulation::{
         protostar::{
             ivc::ProtostarAccumulationVerifierParam,
             PlonkishNarkInstance, Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance,
@@ -8,8 +7,9 @@ use crate::{
             ProtostarStrategy::{Compressing, NoCompressing},
             ProtostarVerifierParam,
         },
-        FoldingScheme,
+        AccumulationScheme,
     },
+    backend::{hyperplonk::HyperPlonk, PlonkishBackend, PlonkishCircuit},
     frontend::halo2::{CircuitExt, Halo2Circuit},
     pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,

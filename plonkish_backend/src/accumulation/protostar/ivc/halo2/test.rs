@@ -1,5 +1,5 @@
 use crate::{
-    folding::protostar::ivc::halo2::{
+    accumulation::protostar::ivc::halo2::{
         preprocess, prove_decider, prove_steps, verify_decider, HashInstruction, StepCircuit,
         TranscriptInstruction, TwoChainCurveInstruction,
     },
@@ -253,7 +253,7 @@ fn kzg_protostar_folding_verifier() {
 
 mod strawman {
     use crate::{
-        folding::protostar::{
+        accumulation::protostar::{
             ivc::halo2::{
                 AssignedProtostarAccumulatorInstance, HashInstruction, TranscriptInstruction,
                 TwoChainCurveInstruction,

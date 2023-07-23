@@ -14,7 +14,7 @@ use std::{borrow::BorrowMut, fmt::Debug};
 pub mod protostar;
 pub mod sangria;
 
-pub trait FoldingScheme<F: Field>: Clone + Debug {
+pub trait AccumulationScheme<F: Field>: Clone + Debug {
     type Pcs: PolynomialCommitmentScheme<F>;
     type ProverParam: Debug + Serialize + DeserializeOwned;
     type VerifierParam: Debug + Serialize + DeserializeOwned;
@@ -173,8 +173,8 @@ impl<F, C> PlonkishNarkInstance<F, C> {
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
+        accumulation::AccumulationScheme,
         backend::{PlonkishCircuit, PlonkishCircuitInfo},
-        folding::FoldingScheme,
         pcs::PolynomialCommitmentScheme,
         util::{
             arithmetic::PrimeField,
@@ -191,7 +191,7 @@ pub(crate) mod test {
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<C>),
     ) where
         F: PrimeField + Hash + Serialize + DeserializeOwned,
-        Fs: FoldingScheme<F>,
+        Fs: AccumulationScheme<F>,
         T: TranscriptRead<<Fs::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
             + TranscriptWrite<<Fs::Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk, F>
             + InMemoryTranscript<Param = ()>,

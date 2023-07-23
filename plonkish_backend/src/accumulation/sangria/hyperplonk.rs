@@ -1,11 +1,11 @@
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
+        accumulation::{sangria::Sangria, test::run_folding_scheme},
         backend::hyperplonk::{
             util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_with_lookup_circuit},
             HyperPlonk,
         },
-        folding::{sangria::Sangria, test::run_folding_scheme},
         pcs::{
             multilinear::{MultilinearIpa, MultilinearKzg, MultilinearSimulator},
             univariate::UnivariateKzg,

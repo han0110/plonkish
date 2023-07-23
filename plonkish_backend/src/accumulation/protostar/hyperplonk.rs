@@ -1,16 +1,5 @@
 use crate::{
-    backend::{
-        hyperplonk::{
-            prover::{
-                instance_polys, lookup_compressed_polys, lookup_m_polys, permutation_z_polys,
-                prove_sum_check,
-            },
-            verifier::verify_sum_check,
-            HyperPlonk,
-        },
-        PlonkishCircuit, PlonkishCircuitInfo,
-    },
-    folding::{
+    accumulation::{
         protostar::{
             hyperplonk::{
                 preprocessor::{batch_size, preprocess},
@@ -24,7 +13,18 @@ use crate::{
             ProtostarStrategy::{Compressing, NoCompressing},
             ProtostarVerifierParam,
         },
-        FoldingScheme, PlonkishNark, PlonkishNarkInstance,
+        AccumulationScheme, PlonkishNark, PlonkishNarkInstance,
+    },
+    backend::{
+        hyperplonk::{
+            prover::{
+                instance_polys, lookup_compressed_polys, lookup_m_polys, permutation_z_polys,
+                prove_sum_check,
+            },
+            verifier::verify_sum_check,
+            HyperPlonk,
+        },
+        PlonkishCircuit, PlonkishCircuitInfo,
     },
     pcs::{AdditiveCommitment, CommitmentChunk, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
@@ -42,7 +42,7 @@ use std::{borrow::BorrowMut, hash::Hash, iter};
 mod preprocessor;
 mod prover;
 
-impl<F, Pcs, const STRATEGY: usize> FoldingScheme<F> for Protostar<HyperPlonk<Pcs>, STRATEGY>
+impl<F, Pcs, const STRATEGY: usize> AccumulationScheme<F> for Protostar<HyperPlonk<Pcs>, STRATEGY>
 where
     F: PrimeField + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
@@ -640,11 +640,11 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
+        accumulation::{protostar::Protostar, test::run_folding_scheme},
         backend::hyperplonk::{
             util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_with_lookup_circuit},
             HyperPlonk,
         },
-        folding::{protostar::Protostar, test::run_folding_scheme},
         pcs::{
             multilinear::{MultilinearIpa, MultilinearKzg, MultilinearSimulator},
             univariate::UnivariateKzg,

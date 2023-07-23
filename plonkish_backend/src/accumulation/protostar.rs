@@ -1,9 +1,9 @@
 use crate::{
-    backend::PlonkishBackend,
-    folding::{
+    accumulation::{
         protostar::ProtostarStrategy::{Compressing, NoCompressing},
         PlonkishNark, PlonkishNarkInstance,
     },
+    backend::PlonkishBackend,
     pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
     poly::Polynomial,
     util::{

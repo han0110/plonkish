@@ -201,7 +201,7 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             config.clone(),
             constants.clone(),
         )
-        .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
+        .map_err(|err| crate::Error::InvalidSnark(format!("Synthesize failure: {err:?}")))?;
 
         circuit_info.preprocess_polys = iter::empty()
             .chain(batch_invert_assigned(preprocess_collector.fixeds))
@@ -240,7 +240,7 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             self.config.clone(),
             self.constants.clone(),
         )
-        .map_err(|_| crate::Error::InvalidSnark("Synthesize failure".to_string()))?;
+        .map_err(|err| crate::Error::InvalidSnark(format!("Synthesize failure: {err:?}")))?;
 
         Ok(batch_invert_assigned(witness_collector.advices))
     }

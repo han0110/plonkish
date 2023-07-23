@@ -1,14 +1,14 @@
 use crate::{
     folding::protostar::{ProtostarAccumulatorInstance, ProtostarStrategy},
-    util::arithmetic::PrimeField,
+    util::{arithmetic::PrimeField, Deserialize, Serialize},
 };
 
 #[cfg(feature = "frontend-halo2")]
 pub mod halo2;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProtostarAccumulationVerifierParam<F> {
-    pub(crate) vp_digest: F,
+    pub(crate) vp_digest: Option<F>,
     pub(crate) strategy: ProtostarStrategy,
     pub(crate) num_instances: Vec<usize>,
     pub(crate) num_witness_polys: Vec<usize>,

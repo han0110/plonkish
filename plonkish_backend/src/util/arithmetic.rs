@@ -33,29 +33,24 @@ pub trait MultiMillerLoop: pairing::MultiMillerLoop + Debug + Sync {
 
 impl<M> MultiMillerLoop for M where M: pairing::MultiMillerLoop + Debug + Sync {}
 
-pub trait CurveCycle {
-    type Base: PrimeFieldBits + FromUniformBytes<64>;
-    type Scalar: PrimeFieldBits + FromUniformBytes<64>;
-    type Primary: CurveAffine<Base = Self::Base, ScalarExt = Self::Scalar>;
-    type Secondary: CurveAffine<Base = Self::Scalar, ScalarExt = Self::Base>;
+pub trait TwoChainCurve: CurveAffine {
+    type Secondary: TwoChainCurve<ScalarExt = Self::Base, Base = Self::ScalarExt, Secondary = Self>;
 }
 
-pub struct Bn254Grumpkin;
-
-impl CurveCycle for Bn254Grumpkin {
-    type Base = bn256::Fq;
-    type Scalar = bn256::Fr;
-    type Primary = bn256::G1Affine;
+impl TwoChainCurve for bn256::G1Affine {
     type Secondary = grumpkin::G1Affine;
 }
 
-pub struct Pasta;
+impl TwoChainCurve for grumpkin::G1Affine {
+    type Secondary = bn256::G1Affine;
+}
 
-impl CurveCycle for Pasta {
-    type Base = pallas::Base;
-    type Scalar = pallas::Scalar;
-    type Primary = pallas::Affine;
+impl TwoChainCurve for pallas::Affine {
     type Secondary = vesta::Affine;
+}
+
+impl TwoChainCurve for vesta::Affine {
+    type Secondary = pallas::Affine;
 }
 
 pub fn field_size<F: PrimeField>() -> usize {
@@ -150,6 +145,12 @@ pub fn fe_from_bool<F: Field>(value: bool) -> F {
 
 pub fn fe_mod_from_le_bytes<F: PrimeField>(bytes: impl AsRef<[u8]>) -> F {
     fe_from_le_bytes((BigUint::from_bytes_le(bytes.as_ref()) % modulus::<F>()).to_bytes_le())
+}
+
+pub fn fe_truncated_from_le_bytes<F: PrimeField>(bytes: impl AsRef<[u8]>, num_bits: usize) -> F {
+    let mut big = BigUint::from_bytes_le(bytes.as_ref());
+    (num_bits as u64..big.bits()).for_each(|idx| big.set_bit(idx, false));
+    fe_from_le_bytes(big.to_bytes_le())
 }
 
 pub fn fe_from_le_bytes<F: PrimeField>(bytes: impl AsRef<[u8]>) -> F {

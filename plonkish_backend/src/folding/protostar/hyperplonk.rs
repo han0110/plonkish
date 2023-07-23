@@ -627,7 +627,7 @@ where
                 .collect()
         };
         Self {
-            vp_digest: vp.digest(),
+            vp_digest: None,
             strategy: vp.strategy,
             num_instances: vp.vp.num_instances.clone(),
             num_witness_polys,

@@ -7,10 +7,9 @@ use crate::{
     pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
     poly::Polynomial,
     util::{
-        arithmetic::{fe_mod_from_le_bytes, inner_product, powers, Field, PrimeField},
+        arithmetic::{inner_product, powers, Field},
         chain,
         expression::Expression,
-        hash::{Hash, Keccak256},
         izip, izip_eq,
         transcript::Transcript,
         Deserialize, Itertools, Serialize,
@@ -71,17 +70,6 @@ where
     num_folding_witness_polys: usize,
     num_folding_challenges: usize,
     num_cross_terms: usize,
-}
-
-impl<F, Pb> ProtostarVerifierParam<F, Pb>
-where
-    F: PrimeField + Serialize,
-    Pb: PlonkishBackend<F>,
-{
-    fn digest<N: PrimeField>(&self) -> N {
-        assert!(N::NUM_BITS <= 256);
-        fe_mod_from_le_bytes(Keccak256::digest(bincode::serialize(self).unwrap()))
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -137,7 +137,7 @@ where
             return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }
         let param = Self::ProverParam {
-            num_vars: param.num_vars,
+            num_vars,
             g: param.g[..poly_size].to_vec(),
             h: param.h,
         };

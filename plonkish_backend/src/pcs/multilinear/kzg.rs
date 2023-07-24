@@ -1,23 +1,21 @@
 use crate::{
     pcs::{
-        multilinear::{additive, err_too_many_variates, validate_input},
+        multilinear::{additive, err_too_many_variates, quotients, validate_input},
         AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{
-            div_ceil, fixed_base_msm, variable_base_msm, window_size, window_table, Curve,
-            CurveAffine, Field, MultiMillerLoop, PrimeCurveAffine,
+            fixed_base_msm, variable_base_msm, window_size, window_table, Curve, CurveAffine,
+            Field, MultiMillerLoop, PrimeCurveAffine,
         },
-        end_timer,
-        parallel::{num_threads, parallelize, parallelize_iter},
-        start_timer,
+        izip,
+        parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
-use num_integer::Integer;
 use rand::RngCore;
 use std::{iter, marker::PhantomData, ops::Neg, slice};
 
@@ -62,7 +60,7 @@ pub struct MultilinearKzgProverParams<M: MultiMillerLoop> {
 
 impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
     pub fn num_vars(&self) -> usize {
-        self.eqs.len()
+        self.eqs.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
@@ -74,7 +72,7 @@ impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
     }
 
     pub fn eq(&self, num_vars: usize) -> &[M::G1Affine] {
-        &self.eqs[self.num_vars() - num_vars]
+        &self.eqs[num_vars]
     }
 }
 
@@ -99,7 +97,7 @@ impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
     }
 
     pub fn ss(&self, num_vars: usize) -> &[M::G2Affine] {
-        &self.ss[self.num_vars() - num_vars..]
+        &self.ss[..num_vars]
     }
 }
 
@@ -172,35 +170,25 @@ where
             .take(num_vars)
             .collect_vec();
 
-        let expand_serial = |evals: &mut [M::Scalar], last_evals: &[M::Scalar], s_i: &M::Scalar| {
-            for (evals, last_eval) in evals.chunks_mut(2).zip(last_evals.iter()) {
-                evals[1] = *last_eval * s_i;
-                evals[0] = *last_eval - &evals[1];
-            }
-        };
-
         let g1 = M::G1Affine::generator();
         let eqs = {
-            let mut eqs = Vec::with_capacity(num_vars);
-            let init_evals = vec![M::Scalar::ONE];
-            for s_i in ss.iter().rev() {
-                let last_evals = eqs.last().unwrap_or(&init_evals);
+            let mut eqs = Vec::with_capacity(1 << (num_vars + 1));
+            eqs.push(vec![M::Scalar::ONE]);
+
+            for s_i in ss.iter() {
+                let last_evals = eqs.last().unwrap();
                 let mut evals = vec![M::Scalar::ZERO; 2 * last_evals.len()];
 
-                if evals.len() < 32 {
-                    expand_serial(&mut evals, last_evals, s_i);
-                } else {
-                    let mut chunk_size = div_ceil(evals.len(), num_threads());
-                    if chunk_size.is_odd() {
-                        chunk_size += 1;
-                    }
-                    parallelize_iter(
-                        evals
-                            .chunks_mut(chunk_size)
-                            .zip(last_evals.chunks(chunk_size >> 1)),
-                        |(evals, last_evals)| expand_serial(evals, last_evals, s_i),
-                    );
-                }
+                let (evals_lo, evals_hi) = evals.split_at_mut(last_evals.len());
+
+                parallelize(evals_hi, |(evals_hi, start)| {
+                    izip!(evals_hi, &last_evals[start..])
+                        .for_each(|(eval_hi, last_eval)| *eval_hi = *s_i * last_eval);
+                });
+                parallelize(evals_lo, |(evals_lo, start)| {
+                    izip!(evals_lo, &evals_hi[start..], &last_evals[start..])
+                        .for_each(|(eval_lo, eval_hi, last_eval)| *eval_lo = *last_eval - eval_hi);
+                });
 
                 eqs.push(evals)
             }
@@ -210,7 +198,7 @@ where
             let eqs_projective = fixed_base_msm(
                 window_size,
                 &window_table,
-                eqs.iter().rev().flat_map(|evals| evals.iter()),
+                eqs.iter().flat_map(|evals| evals.iter()),
             );
 
             let mut eqs = vec![M::G1Affine::identity(); eqs_projective.len()];
@@ -218,8 +206,8 @@ where
                 M::G1::batch_normalize(&eqs_projective[start..(start + eqs.len())], eqs);
             });
             let eqs = &mut eqs.drain(..);
-            (0..num_vars)
-                .map(move |idx| eqs.take(1 << (num_vars - idx)).collect_vec())
+            (0..num_vars + 1)
+                .map(move |idx| eqs.take(1 << idx).collect_vec())
                 .collect_vec()
         };
 
@@ -251,12 +239,12 @@ where
         }
         let pp = Self::ProverParam {
             g1: param.g1,
-            eqs: param.eqs[param.num_vars() - num_vars..].to_vec(),
+            eqs: param.eqs[..num_vars + 1].to_vec(),
         };
         let vp = Self::VerifierParam {
             g1: param.g1,
             g2: param.g2,
-            ss: param.ss[param.num_vars() - num_vars..].to_vec(),
+            ss: param.ss[..num_vars].to_vec(),
         };
         Ok((pp, vp))
     }
@@ -300,53 +288,15 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let mut remainder = poly.evals().to_vec();
-        let quotients = point
-            .iter()
-            .enumerate()
-            .map(|(idx, x_i)| {
-                let timer = start_timer(|| "quotients");
-                let mut quotient = vec![M::Scalar::ZERO; remainder.len() >> 1];
-                parallelize(&mut quotient, |(quotient, start)| {
-                    for (quotient, (remainder_0, remainder_1)) in quotient.iter_mut().zip(
-                        remainder[2 * start..]
-                            .iter()
-                            .step_by(2)
-                            .zip(remainder[2 * start + 1..].iter().step_by(2)),
-                    ) {
-                        *quotient = *remainder_1 - remainder_0;
-                    }
-                });
-
-                let mut next_remainder = vec![M::Scalar::ZERO; remainder.len() >> 1];
-                parallelize(&mut next_remainder, |(next_remainder, start)| {
-                    for (next_remainder, (remainder_0, remainder_1)) in
-                        next_remainder.iter_mut().zip(
-                            remainder[2 * start..]
-                                .iter()
-                                .step_by(2)
-                                .zip(remainder[2 * start + 1..].iter().step_by(2)),
-                        )
-                    {
-                        *next_remainder = (*remainder_1 - remainder_0) * x_i + remainder_0;
-                    }
-                });
-                remainder = next_remainder;
-                end_timer(timer);
-
-                if quotient.len() == 1 {
-                    variable_base_msm(&quotient, &[pp.g1]).into()
-                } else {
-                    variable_base_msm(&quotient, pp.eq(poly.num_vars() - idx - 1)).into()
-                }
-            })
-            .collect_vec();
+        let (quotient_comms, remainder) = quotients(poly, point, |num_vars, quotient| {
+            variable_base_msm(&quotient, pp.eq(num_vars)).into()
+        });
 
         if cfg!(feature = "sanity-check") {
-            assert_eq!(&remainder[0], eval);
+            assert_eq!(&remainder, eval);
         }
 
-        transcript.write_commitments(&quotients)?;
+        transcript.write_commitments(&quotient_comms)?;
 
         Ok(())
     }

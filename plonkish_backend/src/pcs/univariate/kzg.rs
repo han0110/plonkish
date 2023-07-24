@@ -25,57 +25,62 @@ impl<M: MultiMillerLoop> UnivariateKzg<M> {
         pp: &UnivariateKzgProverParam<M>,
         coeffs: &[M::Scalar],
     ) -> UnivariateKzgCommitment<M::G1Affine> {
-        UnivariateKzgCommitment(variable_base_msm(coeffs, &pp.powers_of_s[..coeffs.len()]).into())
+        let comm = variable_base_msm(coeffs, &pp.powers_of_s_g1[..coeffs.len()]).into();
+        UnivariateKzgCommitment(comm)
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
-    powers_of_s: Vec<M::G1Affine>,
     g2: M::G2Affine,
-    s_g2: M::G2Affine,
+    powers_of_s_g1: Vec<M::G1Affine>,
+    powers_of_s_g2: Vec<M::G2Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     pub fn degree(&self) -> usize {
-        self.powers_of_s.len() - 1
+        self.powers_of_s_g1.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
         self.g1
     }
 
-    pub fn powers_of_s(&self) -> &[M::G1Affine] {
-        &self.powers_of_s
+    pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
+        &self.powers_of_s_g1
     }
 
     pub fn g2(&self) -> M::G2Affine {
         self.g2
     }
 
-    pub fn s_g2(&self) -> M::G2Affine {
-        self.s_g2
+    pub fn powers_of_s_g2(&self) -> &[M::G2Affine] {
+        &self.powers_of_s_g2
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnivariateKzgProverParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
-    powers_of_s: Vec<M::G1Affine>,
+    powers_of_s_g1: Vec<M::G1Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
+    pub(crate) fn new(g1: M::G1Affine, powers_of_s_g1: Vec<M::G1Affine>) -> Self {
+        Self { g1, powers_of_s_g1 }
+    }
+
     pub fn degree(&self) -> usize {
-        self.powers_of_s.len() - 1
+        self.powers_of_s_g1.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
         self.g1
     }
 
-    pub fn powers_of_s(&self) -> &[M::G1Affine] {
-        &self.powers_of_s
+    pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
+        &self.powers_of_s_g1
     }
 }
 
@@ -166,30 +171,46 @@ where
         let s = M::Scalar::random(rng);
 
         let g1 = M::G1Affine::generator();
-        let powers_of_s = {
-            let powers_of_s = powers(s).take(poly_size).collect_vec();
+        let powers_of_s_g1 = {
+            let powers_of_s_g1 = powers(s).take(poly_size).collect_vec();
             let window_size = window_size(poly_size);
             let window_table = window_table(window_size, g1);
-            let powers_of_s_projective = fixed_base_msm(window_size, &window_table, &powers_of_s);
+            let powers_of_s_projective =
+                fixed_base_msm(window_size, &window_table, &powers_of_s_g1);
 
-            let mut powers_of_s = vec![M::G1Affine::identity(); powers_of_s_projective.len()];
-            parallelize(&mut powers_of_s, |(powers_of_s, starts)| {
+            let mut powers_of_s_g1 = vec![M::G1Affine::identity(); powers_of_s_projective.len()];
+            parallelize(&mut powers_of_s_g1, |(powers_of_s_g1, starts)| {
                 M::G1::batch_normalize(
-                    &powers_of_s_projective[starts..(starts + powers_of_s.len())],
-                    powers_of_s,
+                    &powers_of_s_projective[starts..(starts + powers_of_s_g1.len())],
+                    powers_of_s_g1,
                 );
             });
-            powers_of_s
+            powers_of_s_g1
         };
 
         let g2 = M::G2Affine::generator();
-        let s_g2 = (g2 * s).into();
+        let powers_of_s_g2 = {
+            let powers_of_s_g2 = powers(s).take(poly_size).collect_vec();
+            let window_size = window_size(poly_size);
+            let window_table = window_table(window_size, g2);
+            let powers_of_s_projective =
+                fixed_base_msm(window_size, &window_table, &powers_of_s_g2);
+
+            let mut powers_of_s_g2 = vec![M::G2Affine::identity(); powers_of_s_projective.len()];
+            parallelize(&mut powers_of_s_g2, |(powers_of_s_g2, starts)| {
+                M::G2::batch_normalize(
+                    &powers_of_s_projective[starts..(starts + powers_of_s_g2.len())],
+                    powers_of_s_g2,
+                );
+            });
+            powers_of_s_g2
+        };
 
         Ok(Self::Param {
             g1,
-            powers_of_s,
             g2,
-            s_g2,
+            powers_of_s_g1,
+            powers_of_s_g2,
         })
     }
 
@@ -198,22 +219,22 @@ where
         poly_size: usize,
         _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        if param.powers_of_s.len() < poly_size {
+        if param.powers_of_s_g1.len() < poly_size {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large poly_size to trim to (param supports poly_size up to {} but got {poly_size})",
-                param.powers_of_s.len(),
+                param.powers_of_s_g1.len(),
             )));
         }
 
-        let powers_of_s = param.powers_of_s[..poly_size].to_vec();
+        let powers_of_s_g1 = param.powers_of_s_g1[..poly_size].to_vec();
         let pp = Self::ProverParam {
             g1: param.g1,
-            powers_of_s,
+            powers_of_s_g1,
         };
         let vp = Self::VerifierParam {
-            g1: param.powers_of_s[0],
+            g1: param.g1,
             g2: param.g2,
-            s_g2: param.s_g2,
+            s_g2: param.powers_of_s_g2[1],
         };
         Ok((pp, vp))
     }
@@ -349,10 +370,9 @@ where
         eval: &M::Scalar,
         transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
-        let quotient = transcript.read_commitment()?;
-        let lhs = (quotient * point + comm.0 - vp.g1 * eval).into();
-        let rhs = quotient;
-        M::pairings_product_is_identity(&[(&lhs, &vp.g2.neg().into()), (&rhs, &vp.s_g2.into())])
+        let pi = transcript.read_commitment()?;
+        let c = (pi * point + comm.0 - vp.g1 * eval).into();
+        M::pairings_product_is_identity(&[(&c, &(-vp.g2).into()), (&pi, &vp.s_g2.into())])
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsOpen("Invalid univariate KZG open".to_string()))
     }

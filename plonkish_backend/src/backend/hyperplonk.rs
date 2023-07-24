@@ -381,6 +381,7 @@ mod test {
         pcs::{
             multilinear::{
                 Gemini, MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
+                Zeromorph,
             },
             univariate::UnivariateKzg,
         },
@@ -422,4 +423,5 @@ mod test {
     tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
     tests!(gemini_kzg, Gemini<UnivariateKzg<Bn256>>);
+    tests!(zeromorph_kzg, Zeromorph<UnivariateKzg<Bn256>>);
 }

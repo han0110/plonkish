@@ -1,6 +1,6 @@
 use crate::{
-    poly::multilinear::MultilinearPolynomial,
-    util::{arithmetic::Field, Itertools},
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    util::{arithmetic::Field, end_timer, izip, parallel::parallelize, start_timer, Itertools},
     Error,
 };
 
@@ -9,6 +9,7 @@ mod gemini;
 mod hyrax;
 mod ipa;
 mod kzg;
+mod zeromorph;
 
 pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
@@ -20,6 +21,7 @@ pub use kzg::{
     MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,
     MultilinearKzgVerifierParams,
 };
+pub use zeromorph::{Zeromorph, ZeromorphKzgProverParam, ZeromorphKzgVerifierParam};
 
 fn validate_input<'a, F: Field>(
     function: &str,
@@ -65,6 +67,43 @@ fn err_too_many_variates(function: &str, upto: usize, got: usize) -> Error {
             "Too many variates of poly to {function} (param supports variates up to {upto} but got {got})"
         )
     })
+}
+
+fn quotients<F: Field, T>(
+    poly: &MultilinearPolynomial<F>,
+    point: &[F],
+    f: impl Fn(usize, Vec<F>) -> T,
+) -> (Vec<T>, F) {
+    assert_eq!(poly.num_vars(), point.len());
+
+    let mut remainder = poly.evals().to_vec();
+    let mut quotients = point
+        .iter()
+        .zip(0..poly.num_vars())
+        .rev()
+        .map(|(x_i, num_vars)| {
+            let timer = start_timer(|| "quotients");
+            let (remaimder_lo, remainder_hi) = remainder.split_at_mut(1 << num_vars);
+            let mut quotient = vec![F::ZERO; remaimder_lo.len()];
+
+            parallelize(&mut quotient, |(quotient, start)| {
+                izip!(quotient, &remaimder_lo[start..], &remainder_hi[start..])
+                    .for_each(|(q, r_lo, r_hi)| *q = *r_hi - r_lo);
+            });
+            parallelize(remaimder_lo, |(remaimder_lo, start)| {
+                izip!(remaimder_lo, &remainder_hi[start..])
+                    .for_each(|(r_lo, r_hi)| *r_lo += (*r_hi - r_lo as &_) * x_i);
+            });
+
+            remainder.truncate(1 << num_vars);
+            end_timer(timer);
+
+            f(num_vars, quotient)
+        })
+        .collect_vec();
+    quotients.reverse();
+
+    (quotients, remainder[0])
 }
 
 mod additive {

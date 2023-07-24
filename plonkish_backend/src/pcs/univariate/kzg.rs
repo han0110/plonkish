@@ -31,9 +31,11 @@ impl<M: MultiMillerLoop> UnivariateKzg<M> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "M::G1Affine: Serialize, M::G2Affine: Serialize",
+    deserialize = "M::G1Affine: DeserializeOwned, M::G2Affine: DeserializeOwned",
+))]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
-    g1: M::G1Affine,
-    g2: M::G2Affine,
     powers_of_s_g1: Vec<M::G1Affine>,
     powers_of_s_g2: Vec<M::G2Affine>,
 }
@@ -44,7 +46,7 @@ impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     }
 
     pub fn g1(&self) -> M::G1Affine {
-        self.g1
+        self.powers_of_s_g1[0]
     }
 
     pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
@@ -52,7 +54,7 @@ impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     }
 
     pub fn g2(&self) -> M::G2Affine {
-        self.g2
+        self.powers_of_s_g2[0]
     }
 
     pub fn powers_of_s_g2(&self) -> &[M::G2Affine] {
@@ -61,14 +63,17 @@ impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "M::G1Affine: Serialize",
+    deserialize = "M::G1Affine: DeserializeOwned",
+))]
 pub struct UnivariateKzgProverParam<M: MultiMillerLoop> {
-    g1: M::G1Affine,
     powers_of_s_g1: Vec<M::G1Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
-    pub(crate) fn new(g1: M::G1Affine, powers_of_s_g1: Vec<M::G1Affine>) -> Self {
-        Self { g1, powers_of_s_g1 }
+    pub(crate) fn new(powers_of_s_g1: Vec<M::G1Affine>) -> Self {
+        Self { powers_of_s_g1 }
     }
 
     pub fn degree(&self) -> usize {
@@ -76,7 +81,7 @@ impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
     }
 
     pub fn g1(&self) -> M::G1Affine {
-        self.g1
+        self.powers_of_s_g1[0]
     }
 
     pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
@@ -207,8 +212,6 @@ where
         };
 
         Ok(Self::Param {
-            g1,
-            g2,
             powers_of_s_g1,
             powers_of_s_g2,
         })
@@ -227,13 +230,10 @@ where
         }
 
         let powers_of_s_g1 = param.powers_of_s_g1[..poly_size].to_vec();
-        let pp = Self::ProverParam {
-            g1: param.g1,
-            powers_of_s_g1,
-        };
+        let pp = Self::ProverParam { powers_of_s_g1 };
         let vp = Self::VerifierParam {
-            g1: param.g1,
-            g2: param.g2,
+            g1: param.g1(),
+            g2: param.g2(),
             s_g2: param.powers_of_s_g2[1],
         };
         Ok((pp, vp))

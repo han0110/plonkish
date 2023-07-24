@@ -90,7 +90,7 @@ where
         let offset = param.powers_of_s_g1().len() - poly_size;
         let open_pp = {
             let powers_of_s_g1 = param.powers_of_s_g1()[offset..].to_vec();
-            UnivariateKzgProverParam::new(param.g1(), powers_of_s_g1)
+            UnivariateKzgProverParam::new(powers_of_s_g1)
         };
         let s_offset_g2 = param.powers_of_s_g2()[offset];
 

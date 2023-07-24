@@ -186,7 +186,7 @@ pub(crate) mod test {
     };
     use std::{hash::Hash, ops::Range};
 
-    pub(crate) fn run_folding_scheme<F, Fs, T, C>(
+    pub(crate) fn run_accumulation_scheme<F, Fs, T, C>(
         num_vars_range: Range<usize>,
         circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<C>),
     ) where

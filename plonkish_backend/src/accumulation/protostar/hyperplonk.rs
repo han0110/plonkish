@@ -640,7 +640,7 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        accumulation::{protostar::Protostar, test::run_folding_scheme},
+        accumulation::{protostar::Protostar, test::run_accumulation_scheme},
         backend::hyperplonk::{
             util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_with_lookup_circuit},
             HyperPlonk,
@@ -663,7 +663,7 @@ pub(crate) mod test {
             paste::paste! {
                 #[test]
                 fn [<$name _protostar_hyperplonk_vanilla_plonk>]() {
-                    run_folding_scheme::<_, Protostar<HyperPlonk<$pcs>>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                    run_accumulation_scheme::<_, Protostar<HyperPlonk<$pcs>>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         let (circuit_info, _) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
                         let circuits = iter::repeat_with(|| {
                             let (_, circuit) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
@@ -675,7 +675,7 @@ pub(crate) mod test {
 
                 #[test]
                 fn [<$name _protostar_hyperplonk_vanilla_plonk_with_lookup>]() {
-                    run_folding_scheme::<_, Protostar<HyperPlonk<$pcs>>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                    run_accumulation_scheme::<_, Protostar<HyperPlonk<$pcs>>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         let (circuit_info, _) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
                         let circuits = iter::repeat_with(|| {
                             let (_, circuit) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());

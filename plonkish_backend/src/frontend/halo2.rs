@@ -19,6 +19,8 @@ use std::{
     iter, mem,
 };
 
+#[cfg(test)]
+pub mod chip;
 #[cfg(any(test, feature = "benchmark"))]
 pub mod circuit;
 #[cfg(test)]

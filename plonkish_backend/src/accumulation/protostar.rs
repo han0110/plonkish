@@ -19,6 +19,7 @@ use crate::{
 use std::{iter, marker::PhantomData};
 
 pub mod hyperplonk;
+pub mod ivc;
 
 #[derive(Clone, Debug)]
 pub struct Protostar<Pb, const STRATEGY: usize = { Compressing as usize }>(PhantomData<Pb>);

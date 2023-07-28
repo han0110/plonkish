@@ -8,7 +8,6 @@ use crate::{
                     evaluate_zeta_cross_term_poly, lookup_h_polys, powers_of_zeta_poly,
                 },
             },
-            ivc::ProtostarAccumulationVerifierParam,
             Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance, ProtostarProverParam,
             ProtostarStrategy::{Compressing, NoCompressing},
             ProtostarVerifierParam,
@@ -22,9 +21,9 @@ use crate::{
                 prove_sum_check,
             },
             verifier::verify_sum_check,
-            HyperPlonk, HyperPlonkVerifierParam,
+            HyperPlonk,
         },
-        PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
+        PlonkishCircuit, PlonkishCircuitInfo,
     },
     pcs::{AdditiveCommitment, CommitmentChunk, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
@@ -123,7 +122,7 @@ where
 
         let mut witness_polys = Vec::with_capacity(pp.num_witness_polys.iter().sum());
         let mut witness_comms = Vec::with_capacity(witness_polys.len());
-        let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>());
+        let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum());
         for (round, (num_witness_polys, num_challenges)) in pp
             .num_witness_polys
             .iter()
@@ -297,7 +296,7 @@ where
 
                 let timer = start_timer(|| {
                     let len = cross_term_expressions.len();
-                    format!("evaluate_compressed_cross_term_sums-{len}",)
+                    format!("evaluate_compressed_cross_term_sums-{len}")
                 });
                 let compressed_cross_term_sums = evaluate_compressed_cross_term_sums(
                     cross_term_expressions,
@@ -358,12 +357,12 @@ where
         // Round 0..n
 
         let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
-        let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 4);
-        for (num_polys, num_folding_challenges) in
+        let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum());
+        for (num_polys, num_challenges) in
             vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
         {
             witness_comms.extend(Pcs::read_commitments(&vp.pcs, *num_polys, transcript)?);
-            challenges.extend(transcript.squeeze_challenges(*num_folding_challenges));
+            challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
 
         // Round n
@@ -591,50 +590,6 @@ where
         Pcs::batch_verify(&vp.pcs, comms, &points, &evals, transcript)?;
 
         Ok(())
-    }
-}
-
-impl<F, Pcs, N> From<&ProtostarVerifierParam<F, HyperPlonk<Pcs>>>
-    for ProtostarAccumulationVerifierParam<N>
-where
-    F: PrimeField,
-    N: PrimeField,
-    Pcs: PolynomialCommitmentScheme<F>,
-    HyperPlonk<Pcs>: PlonkishBackend<F, VerifierParam = HyperPlonkVerifierParam<F, Pcs>>,
-{
-    fn from(vp: &ProtostarVerifierParam<F, HyperPlonk<Pcs>>) -> Self {
-        let num_witness_polys = iter::empty()
-            .chain(vp.vp.num_witness_polys.iter().cloned())
-            .chain([vp.vp.num_lookups, 2 * vp.vp.num_lookups])
-            .chain(match vp.strategy {
-                NoCompressing => None,
-                Compressing => Some(1),
-            })
-            .collect();
-        let num_challenges = {
-            let mut num_challenges = iter::empty()
-                .chain(vp.vp.num_challenges.iter().cloned())
-                .map(|num_challenge| vec![1; num_challenge])
-                .collect_vec();
-            num_challenges.last_mut().unwrap().push(vp.num_theta_primes);
-            iter::empty()
-                .chain(num_challenges)
-                .chain([vec![1]])
-                .chain(match vp.strategy {
-                    NoCompressing => None,
-                    Compressing => Some(vec![1]),
-                })
-                .chain([vec![vp.num_alpha_primes]])
-                .collect()
-        };
-        Self {
-            vp_digest: N::ZERO,
-            strategy: vp.strategy,
-            num_instances: vp.vp.num_instances.clone(),
-            num_witness_polys,
-            num_challenges,
-            num_cross_terms: vp.num_cross_terms,
-        }
     }
 }
 

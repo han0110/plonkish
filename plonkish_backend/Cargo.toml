@@ -31,9 +31,6 @@ paste = "1.0.11"
 criterion = "0.4.0"
 pprof = { version = "0.11.0", features = ["criterion", "flamegraph"] }
 
-# frontend-halo2
-halo2_wrong_v2 = { git = "https://github.com/han0110/halo2wrong.git", branch = "feature/for-benchmark-v2", package = "halo2wrong" }
-
 [features]
 default = ["parallel", "frontend-halo2"]
 

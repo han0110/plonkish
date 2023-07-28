@@ -31,7 +31,7 @@ use halo2_proofs::{
 };
 use rand::RngCore;
 use std::{
-    borrow::{Borrow, Cow},
+    borrow::{Borrow, BorrowMut, Cow},
     fmt::Debug,
     hash::Hash,
     iter,
@@ -62,18 +62,18 @@ pub trait TwoChainCurveInstruction<C: TwoChainCurve>: Clone + Debug {
         assigned: &AssignedCell<C::Scalar, C::Scalar>,
     ) -> Result<Self::Assigned, Error>;
 
-    fn constrain_equal(
-        &self,
-        layouter: &mut impl Layouter<C::Scalar>,
-        lhs: &Self::Assigned,
-        rhs: &Self::Assigned,
-    ) -> Result<(), Error>;
-
     fn constrain_instance(
         &self,
         layouter: &mut impl Layouter<C::Scalar>,
         value: &Self::Assigned,
         row: usize,
+    ) -> Result<(), Error>;
+
+    fn constrain_equal(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        lhs: &Self::Assigned,
+        rhs: &Self::Assigned,
     ) -> Result<(), Error>;
 
     fn assign_constant(
@@ -112,12 +112,26 @@ pub trait TwoChainCurveInstruction<C: TwoChainCurve>: Clone + Debug {
         rhs: &Self::Assigned,
     ) -> Result<Self::Assigned, Error>;
 
+    fn sub(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        lhs: &Self::Assigned,
+        rhs: &Self::Assigned,
+    ) -> Result<Self::Assigned, Error>;
+
     fn mul(
         &self,
         layouter: &mut impl Layouter<C::Scalar>,
         lhs: &Self::Assigned,
         rhs: &Self::Assigned,
     ) -> Result<Self::Assigned, Error>;
+
+    fn constrain_equal_base(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<(), Error>;
 
     fn assign_constant_base(
         &self,
@@ -154,12 +168,72 @@ pub trait TwoChainCurveInstruction<C: TwoChainCurve>: Clone + Debug {
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error>;
 
+    fn sub_base(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error>;
+
+    fn neg_base(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        value: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let zero = self.assign_constant_base(layouter, C::Base::ZERO)?;
+        self.sub_base(layouter, &zero, value)
+    }
+
+    fn sum_base<'a>(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        values: impl IntoIterator<Item = &'a Self::AssignedBase>,
+    ) -> Result<Self::AssignedBase, Error>
+    where
+        Self::AssignedBase: 'a,
+    {
+        values.into_iter().fold(
+            self.assign_constant_base(layouter, C::Base::ZERO),
+            |acc, value| self.add_base(layouter, &acc?, value),
+        )
+    }
+
+    fn product_base<'a>(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        values: impl IntoIterator<Item = &'a Self::AssignedBase>,
+    ) -> Result<Self::AssignedBase, Error>
+    where
+        Self::AssignedBase: 'a,
+    {
+        values.into_iter().fold(
+            self.assign_constant_base(layouter, C::Base::ONE),
+            |acc, value| self.mul_base(layouter, &acc?, value),
+        )
+    }
+
     fn mul_base(
         &self,
         layouter: &mut impl Layouter<C::Scalar>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error>;
+
+    fn div_incomplete_base(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error>;
+
+    fn invert_incomplete_base(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        value: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let one = self.assign_constant_base(layouter, C::Base::ONE)?;
+        self.div_incomplete_base(layouter, &one, value)
+    }
 
     fn powers_base(
         &self,
@@ -975,7 +1049,7 @@ where
         }
         self.h_prime = Value::known(Sc::HashChip::hash_state(
             self.hash_config.borrow(),
-            self.avp.vp_digest.unwrap_or_default(),
+            self.avp.vp_digest,
             self.step_circuit.step_idx() + 1,
             self.step_circuit.initial_input(),
             self.step_circuit.output(),
@@ -1000,7 +1074,7 @@ where
 
     fn init(&mut self, vp_digest: C::Scalar) {
         assert_eq!(&self.avp.num_instances, &[2]);
-        self.avp.vp_digest = Some(vp_digest);
+        self.avp.vp_digest = vp_digest;
         self.update::<Cow<C::Secondary>>(
             self.avp.init_accumulator(),
             self.avp.init_accumulator(),
@@ -1084,10 +1158,7 @@ where
 
         let zero = tcc_chip.assign_constant(layouter, C::Scalar::ZERO)?;
         let one = tcc_chip.assign_constant(layouter, C::Scalar::ONE)?;
-        let vp_digest = tcc_chip.assign_witness(
-            layouter,
-            avp.vp_digest.map(Value::known).unwrap_or_default(),
-        )?;
+        let vp_digest = tcc_chip.assign_witness(layouter, Value::known(avp.vp_digest))?;
         let step_idx = tcc_chip.assign_witness(
             layouter,
             Value::known(C::Scalar::from(self.step_circuit.step_idx() as u64)),
@@ -1243,13 +1314,27 @@ where
 {
     vp_digest: C::Scalar,
     primary_vp: ProtostarVerifierParam<C::Scalar, HyperPlonk<P1>>,
-    primary_avp: ProtostarAccumulationVerifierParam<C::Scalar>,
     primary_hp: HP1,
     primary_arity: usize,
     secondary_vp: ProtostarVerifierParam<C::Base, HyperPlonk<P2>>,
     secondary_hp: HP2,
     secondary_arity: usize,
     _marker: PhantomData<C>,
+}
+
+impl<C, P1, P2, HP1, HP2> ProtostarIvcVerifierParam<C, P1, P2, HP1, HP2>
+where
+    C: TwoChainCurve,
+    HyperPlonk<P1>: PlonkishBackend<C::Scalar>,
+    HyperPlonk<P2>: PlonkishBackend<C::Base>,
+{
+    pub fn primary_arity(&self) -> usize {
+        self.primary_arity
+    }
+
+    pub fn secondary_arity(&self) -> usize {
+        self.secondary_arity
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -1349,7 +1434,6 @@ where
         ProtostarIvcVerifierParam {
             vp_digest,
             primary_vp,
-            primary_avp: primary_circuit.circuit().avp.clone(),
             primary_hp: primary_circuit.circuit().hash_config.borrow().clone(),
             primary_arity: S1::arity(),
             secondary_vp,
@@ -1534,16 +1618,16 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn verify_decider<C, P1, P2, H1, H2>(
     ivc_vp: &ProtostarIvcVerifierParam<C, P1, P2, H1::Param, H2::Param>,
+    num_steps: usize,
     primary_initial_input: &[C::Scalar],
     primary_output: &[C::Scalar],
-    primary_acc: ProtostarAccumulatorInstance<C::Scalar, P1::Commitment>,
+    primary_acc: &ProtostarAccumulatorInstance<C::Scalar, P1::Commitment>,
     primary_transcript: &mut impl TranscriptRead<P1::CommitmentChunk, C::Scalar>,
     secondary_initial_input: &[C::Base],
     secondary_output: &[C::Base],
-    mut secondary_acc_before_last: ProtostarAccumulatorInstance<C::Base, P2::Commitment>,
+    secondary_acc_before_last: impl BorrowMut<ProtostarAccumulatorInstance<C::Base, P2::Commitment>>,
     secondary_last_instances: &[Vec<C::Base>],
     secondary_transcript: &mut impl TranscriptRead<P2::CommitmentChunk, C::Base>,
-    num_steps: usize,
     mut rng: impl RngCore,
 ) -> Result<(), crate::Error>
 where
@@ -1571,7 +1655,7 @@ where
         num_steps,
         primary_initial_input,
         primary_output,
-        &secondary_acc_before_last,
+        secondary_acc_before_last.borrow(),
     ) != fe_to_fe(secondary_last_instances[0][0])
     {
         return Err(crate::Error::InvalidSnark(
@@ -1584,7 +1668,7 @@ where
         num_steps,
         secondary_initial_input,
         secondary_output,
-        &primary_acc,
+        primary_acc,
     ) != secondary_last_instances[0][1]
     {
         return Err(crate::Error::InvalidSnark(
@@ -1594,193 +1678,16 @@ where
 
     Protostar::<HyperPlonk<P1>>::verify_decider(
         &ivc_vp.primary_vp,
-        &primary_acc,
+        primary_acc,
         primary_transcript,
         &mut rng,
     )?;
     Protostar::<HyperPlonk<P2>>::verify_decider_with_last_nark(
         &ivc_vp.secondary_vp,
-        &mut secondary_acc_before_last,
+        secondary_acc_before_last,
         secondary_last_instances,
         secondary_transcript,
         &mut rng,
     )?;
     Ok(())
-}
-
-#[derive(Debug)]
-pub struct ProtostarIvcAggregator<C, P1, P2, TccChip, HashChip, HP2>
-where
-    C: TwoChainCurve,
-    HyperPlonk<P1>: PlonkishBackend<C::Scalar>,
-    HyperPlonk<P2>: PlonkishBackend<C::Base>,
-    HashChip: HashInstruction<C>,
-{
-    ivc_vp: ProtostarIvcVerifierParam<C, P1, P2, HashChip::Param, HP2>,
-    tcc_chip: TccChip,
-    hash_chip: HashChip,
-    _marker: PhantomData<(C, P1, P2)>,
-}
-
-impl<C, P1, P2, TccChip, HashChip, HP2> ProtostarIvcAggregator<C, P1, P2, TccChip, HashChip, HP2>
-where
-    C: TwoChainCurve,
-    C::Base: Serialize,
-    HyperPlonk<P1>: PlonkishBackend<C::Scalar>,
-    HyperPlonk<P2>: PlonkishBackend<C::Base>,
-    TccChip: TwoChainCurveInstruction<C>,
-    HashChip: HashInstruction<C, TccChip = TccChip>,
-{
-    fn assign_accumulator_primary(
-        &self,
-        layouter: &mut impl Layouter<C::Scalar>,
-        acc: Value<&ProtostarAccumulatorInstance<C::Scalar, C>>,
-    ) -> Result<
-        AssignedProtostarAccumulatorInstance<TccChip::Assigned, TccChip::AssignedPrimary>,
-        Error,
-    > {
-        let tcc_chip = &self.tcc_chip;
-        let avp = &self.ivc_vp.primary_avp;
-
-        let instances = avp
-            .num_instances
-            .iter()
-            .zip(
-                acc.map(|acc| &acc.instances)
-                    .transpose_vec(avp.num_instances.len()),
-            )
-            .map(|(num_instances, instances)| {
-                instances
-                    .transpose_vec(*num_instances)
-                    .into_iter()
-                    .map(|instance| tcc_chip.assign_witness(layouter, instance.copied()))
-                    .try_collect::<_, Vec<_>, _>()
-            })
-            .try_collect::<_, Vec<_>, _>()?;
-        let witness_comms = acc
-            .map(|acc| &acc.witness_comms)
-            .transpose_vec(avp.num_folding_witness_polys())
-            .into_iter()
-            .map(|witness_comm| tcc_chip.assign_witness_primary(layouter, witness_comm.copied()))
-            .try_collect::<_, Vec<_>, _>()?;
-        let challenges = acc
-            .map(|acc| &acc.challenges)
-            .transpose_vec(avp.num_folding_challenges())
-            .into_iter()
-            .map(|challenge| tcc_chip.assign_witness(layouter, challenge.copied()))
-            .try_collect::<_, Vec<_>, _>()?;
-        let u = tcc_chip.assign_witness(layouter, acc.map(|acc| &acc.u).copied())?;
-        let e_comm = tcc_chip.assign_witness_primary(layouter, acc.map(|acc| acc.e_comm))?;
-        let compressed_e_sum = match avp.strategy {
-            NoCompressing => None,
-            Compressing => Some(
-                tcc_chip.assign_witness(layouter, acc.map(|acc| acc.compressed_e_sum.unwrap()))?,
-            ),
-        };
-
-        Ok(ProtostarAccumulatorInstance {
-            instances,
-            witness_comms,
-            challenges,
-            u,
-            e_comm,
-            compressed_e_sum,
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::type_complexity)]
-    pub fn verify_last_nark(
-        &self,
-        layouter: &mut impl Layouter<C::Scalar>,
-        primary_initial_input: Value<Vec<C::Scalar>>,
-        primary_output: Value<Vec<C::Scalar>>,
-        primary_acc: Value<ProtostarAccumulatorInstance<C::Scalar, C>>,
-        secondary_initial_input: Value<Vec<C::Base>>,
-        secondary_output: Value<Vec<C::Base>>,
-        secondary_acc_before_last: Value<ProtostarAccumulatorInstance<C::Base, C::Secondary>>,
-        secondary_last_instance: Value<[C::Base; 2]>,
-        transcript: &mut impl TranscriptInstruction<C, TccChip = TccChip>,
-        num_steps: Value<usize>,
-    ) -> Result<
-        (
-            AssignedProtostarAccumulatorInstance<TccChip::Assigned, TccChip::AssignedPrimary>,
-            AssignedProtostarAccumulatorInstance<TccChip::AssignedBase, TccChip::AssignedSecondary>,
-        ),
-        Error,
-    > {
-        let primary_avp = &self.ivc_vp.primary_avp;
-        let tcc_chip = &self.tcc_chip;
-        let hash_chip = &self.hash_chip;
-
-        let acc_verifier =
-            ProtostarAccumulationVerifier::new(primary_avp.clone(), tcc_chip.clone());
-
-        let vp_digest = tcc_chip.assign_constant(layouter, primary_avp.vp_digest.unwrap())?;
-        let num_steps = tcc_chip.assign_witness(
-            layouter,
-            num_steps.map(|num_steps| C::Scalar::from(num_steps as u64)),
-        )?;
-
-        let primary_acc = self.assign_accumulator_primary(layouter, primary_acc.as_ref())?;
-        let secondary_acc_before_last =
-            acc_verifier.assign_accumulator(layouter, secondary_acc_before_last.as_ref())?;
-        let (secondary_last_nark, _, secondary_acc) = {
-            let instances = secondary_last_instance
-                .as_ref()
-                .map(|instances| [&instances[0], &instances[1]])
-                .transpose_array();
-            acc_verifier.verify_accumulation_from_nark(
-                layouter,
-                &secondary_acc_before_last,
-                instances,
-                transcript,
-            )?
-        };
-
-        let primary_h = {
-            let initial_input = primary_initial_input
-                .transpose_vec(self.ivc_vp.primary_arity)
-                .into_iter()
-                .map(|input| tcc_chip.assign_witness(layouter, input))
-                .try_collect::<_, Vec<_>, _>()?;
-            let output = primary_output
-                .transpose_vec(self.ivc_vp.primary_arity)
-                .into_iter()
-                .map(|input| tcc_chip.assign_witness(layouter, input))
-                .try_collect::<_, Vec<_>, _>()?;
-            hash_chip.hash_assigned_state(
-                layouter,
-                &vp_digest,
-                &num_steps,
-                &initial_input,
-                &output,
-                &secondary_acc_before_last,
-            )?
-        };
-        let secondary_h = {
-            // TODO: Verify another Hyrax HyperPlonk that proves the stat hash
-            let _initial_input = secondary_initial_input
-                .transpose_vec(self.ivc_vp.secondary_arity)
-                .into_iter()
-                .map(|input| tcc_chip.assign_witness_base(layouter, input))
-                .try_collect::<_, Vec<_>, _>()?;
-            let _output = secondary_output
-                .transpose_vec(self.ivc_vp.secondary_arity)
-                .into_iter()
-                .map(|input| tcc_chip.assign_witness_base(layouter, input))
-                .try_collect::<_, Vec<_>, _>()?;
-            let secondary_h = tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?;
-            tcc_chip.fit_base_in_scalar(layouter, &secondary_h)?
-        };
-
-        let primary_h_from_last_nark =
-            tcc_chip.fit_base_in_scalar(layouter, &secondary_last_nark.instances[0][0])?;
-        let secondary_h_from_last_nark =
-            tcc_chip.fit_base_in_scalar(layouter, &secondary_last_nark.instances[0][1])?;
-        tcc_chip.constrain_equal(layouter, &primary_h, &primary_h_from_last_nark)?;
-        tcc_chip.constrain_equal(layouter, &secondary_h, &secondary_h_from_last_nark)?;
-
-        Ok((primary_acc, secondary_acc))
-    }
 }

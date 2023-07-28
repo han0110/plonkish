@@ -518,7 +518,10 @@ pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>
     }
 }
 
-fn rotation_eval_point_pattern<const NEXT: bool>(num_vars: usize, distance: usize) -> Vec<usize> {
+pub(crate) fn rotation_eval_point_pattern<const NEXT: bool>(
+    num_vars: usize,
+    distance: usize,
+) -> Vec<usize> {
     let bh = BooleanHypercube::new(num_vars);
     let remainder = if NEXT { bh.primitive() } else { bh.x_inv() };
     let mut pattern = vec![0; 1 << distance];
@@ -536,7 +539,10 @@ fn rotation_eval_point_pattern<const NEXT: bool>(num_vars: usize, distance: usiz
     pattern
 }
 
-fn rotation_eval_coeff_pattern<const NEXT: bool>(num_vars: usize, distance: usize) -> Vec<usize> {
+pub(crate) fn rotation_eval_coeff_pattern<const NEXT: bool>(
+    num_vars: usize,
+    distance: usize,
+) -> Vec<usize> {
     let bh = BooleanHypercube::new(num_vars);
     let remainder = if NEXT {
         bh.primitive() - (1 << num_vars)

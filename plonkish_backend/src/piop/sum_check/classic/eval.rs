@@ -313,7 +313,7 @@ impl<F: PrimeField> SumCheckEvaluator<F> {
         state: &ProverState<F>,
         b: usize,
     ) {
-        assert!(evals.0.len() > 2);
+        debug_assert!(evals.0.len() > 2);
 
         self.evaluate_next::<IS_FIRST_ROUND, true>(&mut evals[1], state, cache, b);
         for eval in evals[2..].iter_mut() {

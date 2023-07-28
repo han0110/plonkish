@@ -163,7 +163,7 @@ pub(super) fn points<F: PrimeField>(pcs_query: &BTreeSet<Query>, x: &[F]) -> Vec
         .collect_vec()
 }
 
-pub(super) fn point_offset(pcs_query: &BTreeSet<Query>) -> HashMap<Rotation, usize> {
+pub(crate) fn point_offset(pcs_query: &BTreeSet<Query>) -> HashMap<Rotation, usize> {
     let rotations = pcs_query
         .iter()
         .map(Query::rotation)

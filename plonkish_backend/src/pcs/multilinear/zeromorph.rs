@@ -145,36 +145,26 @@ where
         }
 
         let (quotients, remainder) = quotients(poly, point, |_, q| UnivariatePolynomial::new(q));
+        UnivariateKzg::batch_commit_and_write(&pp.commit_pp, &quotients, transcript)?;
 
         if cfg!(feature = "sanity-check") {
             assert_eq!(&remainder, eval);
         }
 
-        let q_comms = quotients
-            .iter()
-            .map(|q| UnivariateKzg::commit_coeffs(&pp.commit_pp, q.coeffs()))
-            .collect_vec();
-        transcript.write_commitments(q_comms.iter().map(AsRef::as_ref))?;
-
         let y = transcript.squeeze_challenge();
 
-        let powers_of_y = powers(y).take(num_vars).collect_vec();
         let q_hat = {
-            let q_hat = powers_of_y.iter().zip(&quotients).enumerate().fold(
-                vec![M::Scalar::ZERO; 1 << num_vars],
-                |mut q_hat, (idx, (power_of_y, q))| {
-                    let offset = q_hat.len() - (1 << idx);
-                    parallelize(&mut q_hat[offset..], |(q_hat, start)| {
-                        izip!(q_hat, q.coeffs().iter().skip(start))
-                            .for_each(|(q_hat, q)| *q_hat += *power_of_y * q)
-                    });
-                    q_hat
-                },
-            );
+            let mut q_hat = vec![M::Scalar::ZERO; 1 << num_vars];
+            for (idx, (power_of_y, q)) in izip!(powers(y), &quotients).enumerate() {
+                let offset = (1 << num_vars) - (1 << idx);
+                parallelize(&mut q_hat[offset..], |(q_hat, start)| {
+                    izip!(q_hat, q.iter().skip(start))
+                        .for_each(|(q_hat, q)| *q_hat += power_of_y * q)
+                });
+            }
             UnivariatePolynomial::new(q_hat)
         };
-        let q_hat_comm = UnivariateKzg::commit_coeffs(&pp.commit_pp, q_hat.coeffs());
-        transcript.write_commitment(q_hat_comm.as_ref())?;
+        UnivariateKzg::commit_and_write(&pp.commit_pp, &q_hat, transcript)?;
 
         let x = transcript.squeeze_challenge();
         let z = transcript.squeeze_challenge();
@@ -270,8 +260,8 @@ where
     }
 }
 
-fn eval_and_quotient_scalars<F: Field>(y: F, x: F, z: F, point: &[F]) -> (F, Vec<F>) {
-    let num_vars = point.len();
+fn eval_and_quotient_scalars<F: Field>(y: F, x: F, z: F, u: &[F]) -> (F, Vec<F>) {
+    let num_vars = u.len();
 
     let squares_of_x = squares(x).take(num_vars + 1).collect_vec();
     let offsets_of_x = {
@@ -299,12 +289,10 @@ fn eval_and_quotient_scalars<F: Field>(y: F, x: F, z: F, point: &[F]) -> (F, Vec
             .map(|v_denom| v_numer * v_denom)
             .collect_vec()
     };
-    let q_scalars = izip!(powers(y), offsets_of_x, squares_of_x, &vs, &vs[1..], point)
-        .map(
-            |(power_of_y, offset_power_of_x, square_of_x, v_i, v_j, point_i)| {
-                -(power_of_y * offset_power_of_x + z * (square_of_x * v_j - *point_i * v_i))
-            },
-        )
+    let q_scalars = izip!(powers(y), offsets_of_x, squares_of_x, &vs, &vs[1..], u)
+        .map(|(power_of_y, offset_of_x, square_of_x, v_i, v_j, u_i)| {
+            -(power_of_y * offset_of_x + z * (square_of_x * v_j - *u_i * v_i))
+        })
         .collect_vec();
 
     (-vs[0] * z, q_scalars)

@@ -130,13 +130,13 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
 }
 
 #[derive(Clone, Debug)]
-pub struct Evaluation<F: Field> {
+pub struct Evaluation<F> {
     poly: usize,
     point: usize,
     value: F,
 }
 
-impl<F: Field> Evaluation<F> {
+impl<F> Evaluation<F> {
     pub fn new(poly: usize, point: usize, value: F) -> Self {
         Self { poly, point, value }
     }

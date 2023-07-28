@@ -1,7 +1,11 @@
 use crate::{
-    accumulation::protostar::ivc::halo2::{
-        preprocess, prove_decider, prove_steps, verify_decider, HashInstruction, StepCircuit,
-        TranscriptInstruction, TwoChainCurveInstruction,
+    accumulation::protostar::{
+        ivc::halo2::{
+            preprocess, prove_decider, prove_steps, verify_decider, HashInstruction,
+            ProtostarIvcVerifierParam, StepCircuit, TranscriptInstruction,
+            TwoChainCurveInstruction,
+        },
+        ProtostarAccumulatorInstance,
     },
     frontend::halo2::CircuitExt,
     pcs::{
@@ -13,7 +17,7 @@ use crate::{
     util::{
         arithmetic::{CurveAffine, FromUniformBytes, PrimeFieldBits, TwoChainCurve},
         test::seeded_std_rng,
-        transcript::{InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite},
+        transcript::InMemoryTranscript,
         DeserializeOwned, Serialize,
     },
 };
@@ -25,7 +29,7 @@ use halo2_proofs::{
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner},
     plonk::{Circuit, ConstraintSystem, Error},
 };
-use std::{fmt::Debug, hash::Hash, io::Cursor, marker::PhantomData};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData};
 
 #[derive(Clone, Debug, Default)]
 struct TrivialCircuit<C> {
@@ -126,7 +130,29 @@ where
     }
 }
 
-fn run_protostar_hyperplonk_ivc<C, P1, P2>(num_vars: usize, num_steps: usize)
+#[allow(clippy::type_complexity)]
+fn run_protostar_hyperplonk_ivc<C, P1, P2>(
+    num_vars: usize,
+    num_steps: usize,
+) -> (
+    ProtostarIvcVerifierParam<
+        C,
+        P1,
+        P2,
+        <strawman::Chip<C> as HashInstruction<C>>::Param,
+        <strawman::Chip<C::Secondary> as HashInstruction<C::Secondary>>::Param,
+    >,
+    usize,
+    Vec<C::Scalar>,
+    Vec<C::Scalar>,
+    ProtostarAccumulatorInstance<C::Scalar, P1::Commitment>,
+    Vec<u8>,
+    Vec<C::Base>,
+    Vec<C::Base>,
+    ProtostarAccumulatorInstance<C::Base, P2::Commitment>,
+    Vec<C::Base>,
+    Vec<u8>,
+)
 where
     C: TwoChainCurve,
     C::Base: FromUniformBytes<64> + PrimeFieldBits + Hash + Serialize + DeserializeOwned,
@@ -143,10 +169,6 @@ where
         CommitmentChunk = C::Secondary,
     >,
     P2::Commitment: AdditiveCommitment<C::Base> + AsRef<C::Secondary> + From<C::Secondary>,
-    Keccak256Transcript<Cursor<Vec<u8>>>: TranscriptRead<C, C::Scalar>
-        + TranscriptWrite<C, C::Scalar>
-        + TranscriptRead<C::Secondary, C::Base>
-        + TranscriptWrite<C::Secondary, C::Base>,
 {
     let primary_num_vars = num_vars;
     let primary_atp = strawman::accumulation_transcript_param();
@@ -181,6 +203,9 @@ where
     )
     .unwrap();
 
+    let primary_dtp = strawman::decider_transcript_param();
+    let secondary_dtp = strawman::decider_transcript_param();
+
     let (
         primary_acc,
         primary_initial_input,
@@ -193,8 +218,8 @@ where
     ) = {
         let secondary_acc_before_last = secondary_acc.instance.clone();
 
-        let mut primary_transcript = Keccak256Transcript::default();
-        let mut secondary_transcript = Keccak256Transcript::default();
+        let mut primary_transcript = strawman::PoseidonTranscript::new(primary_dtp.clone());
+        let mut secondary_transcript = strawman::PoseidonTranscript::new(secondary_dtp.clone());
         prove_decider(
             &ivc_pp,
             &primary_acc,
@@ -219,29 +244,44 @@ where
     };
 
     let result = {
-        let mut primary_transcript = Keccak256Transcript::from_proof((), primary_proof.as_slice());
+        let mut primary_transcript =
+            strawman::PoseidonTranscript::from_proof(primary_dtp, primary_proof.as_slice());
         let mut secondary_transcript =
-            Keccak256Transcript::from_proof((), secondary_proof.as_slice());
+            strawman::PoseidonTranscript::from_proof(secondary_dtp, secondary_proof.as_slice());
         verify_decider::<_, _, _, strawman::Chip<_>, strawman::Chip<_>>(
             &ivc_vp,
+            num_steps,
             primary_initial_input,
             primary_output,
-            primary_acc,
+            &primary_acc,
             &mut primary_transcript,
             secondary_initial_input,
             secondary_output,
-            secondary_acc_before_last,
-            &[secondary_last_instances],
+            secondary_acc_before_last.clone(),
+            &[secondary_last_instances.clone()],
             &mut secondary_transcript,
-            num_steps,
             seeded_std_rng(),
         )
     };
     assert_eq!(result, Ok(()));
+
+    (
+        ivc_vp,
+        num_steps,
+        primary_initial_input.to_vec(),
+        primary_output.to_vec(),
+        primary_acc,
+        primary_proof,
+        secondary_initial_input.to_vec(),
+        secondary_output.to_vec(),
+        secondary_acc_before_last,
+        secondary_last_instances,
+        secondary_proof,
+    )
 }
 
 #[test]
-fn kzg_protostar_folding_verifier() {
+fn gemini_kzg_ipa_protostar_hyperplonk_ivc() {
     const NUM_VARS: usize = 16;
     const NUM_STEPS: usize = 3;
     run_protostar_hyperplonk_ivc::<
@@ -340,6 +380,10 @@ mod strawman {
     }
 
     pub fn accumulation_transcript_param<F: FromUniformBytes<64>>() -> Spec<F, T, RATE> {
+        Spec::new(R_F, R_P)
+    }
+
+    pub fn decider_transcript_param<F: FromUniformBytes<64>>() -> Spec<F, T, RATE> {
         Spec::new(R_F, R_P)
     }
 
@@ -514,10 +558,10 @@ mod strawman {
     #[derive(Clone, Debug)]
     pub struct Chip<C: CurveAffine> {
         rns: Rns<C::Base, C::Scalar, NUM_LIMBS, NUM_LIMB_BITS, NUM_SUBLIMBS>,
-        main_gate: MainGate<C::Scalar, NUM_LOOKUPS>,
-        collector: Rc<RefCell<Collector<C::Scalar>>>,
-        cell_map: Rc<RefCell<BTreeMap<u32, AssignedCell<C::Scalar, C::Scalar>>>>,
-        instance: Column<Instance>,
+        pub main_gate: MainGate<C::Scalar, NUM_LOOKUPS>,
+        pub collector: Rc<RefCell<Collector<C::Scalar>>>,
+        pub cell_map: Rc<RefCell<BTreeMap<u32, AssignedCell<C::Scalar, C::Scalar>>>>,
+        pub instance: Column<Instance>,
         poseidon_spec: Spec<C::Scalar, T, RATE>,
         _marker: PhantomData<C>,
     }
@@ -753,16 +797,6 @@ mod strawman {
             Ok(self.collector.borrow_mut().new_external(value))
         }
 
-        fn constrain_equal(
-            &self,
-            _: &mut impl Layouter<C::Scalar>,
-            lhs: &Self::Assigned,
-            rhs: &Self::Assigned,
-        ) -> Result<(), Error> {
-            self.collector.borrow_mut().equal(lhs, rhs);
-            Ok(())
-        }
-
         fn constrain_instance(
             &self,
             layouter: &mut impl Layouter<C::Scalar>,
@@ -785,6 +819,19 @@ mod strawman {
 
             layouter.constrain_instance(cell, self.instance, row)?;
 
+            Ok(())
+        }
+
+        fn constrain_equal(
+            &self,
+            _: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<(), Error> {
+            lhs.value()
+                .zip(rhs.value())
+                .assert_if_known(|(lhs, rhs)| lhs == rhs);
+            self.collector.borrow_mut().equal(lhs, rhs);
             Ok(())
         }
 
@@ -842,6 +889,16 @@ mod strawman {
             Ok(collector.add(lhs, rhs))
         }
 
+        fn sub(
+            &self,
+            _: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<Self::Assigned, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            Ok(collector.sub(lhs, rhs))
+        }
+
         fn mul(
             &self,
             _: &mut impl Layouter<C::Scalar>,
@@ -850,6 +907,22 @@ mod strawman {
         ) -> Result<Self::Assigned, Error> {
             let collector = &mut self.collector.borrow_mut();
             Ok(collector.mul(lhs, rhs))
+        }
+
+        fn constrain_equal_base(
+            &self,
+            _: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<(), Error> {
+            lhs.scalar
+                .value()
+                .zip(rhs.scalar.value())
+                .assert_if_known(|(lhs, rhs)| lhs == rhs);
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            integer_chip.assert_equal(&lhs.scalar, &rhs.scalar);
+            Ok(())
         }
 
         fn assign_constant_base(
@@ -925,6 +998,20 @@ mod strawman {
             Ok(AssignedBase { scalar, limbs })
         }
 
+        fn sub_base(
+            &self,
+            _: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.sub(&lhs.scalar, &rhs.scalar);
+            let scalar = integer_chip.reduce(&scalar);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedBase { scalar, limbs })
+        }
+
         fn mul_base(
             &self,
             _: &mut impl Layouter<C::Scalar>,
@@ -934,6 +1021,19 @@ mod strawman {
             let collector = &mut self.collector.borrow_mut();
             let mut integer_chip = IntegerChip::new(collector, &self.rns);
             let scalar = integer_chip.mul(&lhs.scalar, &rhs.scalar);
+            let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+            Ok(AssignedBase { scalar, limbs })
+        }
+
+        fn div_incomplete_base(
+            &self,
+            _: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error> {
+            let collector = &mut self.collector.borrow_mut();
+            let mut integer_chip = IntegerChip::new(collector, &self.rns);
+            let scalar = integer_chip.div_incomplete(&lhs.scalar, &rhs.scalar);
             let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
             Ok(AssignedBase { scalar, limbs })
         }

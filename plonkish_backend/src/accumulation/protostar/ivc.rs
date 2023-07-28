@@ -8,7 +8,7 @@ pub mod halo2;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProtostarAccumulationVerifierParam<F> {
-    pub(crate) vp_digest: Option<F>,
+    pub(crate) vp_digest: F,
     pub(crate) strategy: ProtostarStrategy,
     pub(crate) num_instances: Vec<usize>,
     pub(crate) num_witness_polys: Vec<usize>,

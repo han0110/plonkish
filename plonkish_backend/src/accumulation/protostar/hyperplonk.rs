@@ -22,9 +22,9 @@ use crate::{
                 prove_sum_check,
             },
             verifier::verify_sum_check,
-            HyperPlonk,
+            HyperPlonk, HyperPlonkVerifierParam,
         },
-        PlonkishCircuit, PlonkishCircuitInfo,
+        PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
     },
     pcs::{AdditiveCommitment, CommitmentChunk, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
@@ -597,9 +597,10 @@ where
 impl<F, Pcs, N> From<&ProtostarVerifierParam<F, HyperPlonk<Pcs>>>
     for ProtostarAccumulationVerifierParam<N>
 where
-    F: PrimeField + Hash + Serialize + DeserializeOwned,
-    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+    F: PrimeField,
     N: PrimeField,
+    Pcs: PolynomialCommitmentScheme<F>,
+    HyperPlonk<Pcs>: PlonkishBackend<F, VerifierParam = HyperPlonkVerifierParam<F, Pcs>>,
 {
     fn from(vp: &ProtostarVerifierParam<F, HyperPlonk<Pcs>>) -> Self {
         let num_witness_polys = iter::empty()
@@ -627,7 +628,7 @@ where
                 .collect()
         };
         Self {
-            vp_digest: None,
+            vp_digest: N::ZERO,
             strategy: vp.strategy,
             num_instances: vp.vp.num_instances.clone(),
             num_witness_polys,

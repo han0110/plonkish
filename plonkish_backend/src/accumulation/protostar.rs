@@ -42,7 +42,7 @@ impl From<usize> for ProtostarStrategy {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtostarProverParam<F, Pb>
 where
     F: Field,
@@ -57,7 +57,7 @@ where
     cross_term_expressions: Vec<Expression<F>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtostarVerifierParam<F, Pb>
 where
     F: Field,
@@ -187,6 +187,12 @@ pub struct ProtostarAccumulatorInstance<F, C> {
     compressed_e_sum: Option<F>,
 }
 
+impl<F, C> ProtostarAccumulatorInstance<F, C> {
+    fn instances(&self) -> &[Vec<F>] {
+        &self.instances
+    }
+}
+
 impl<F, C> ProtostarAccumulatorInstance<F, C>
 where
     F: Field,
@@ -215,10 +221,6 @@ where
 
     fn claimed_sum(&self) -> F {
         self.compressed_e_sum.unwrap_or(F::ZERO)
-    }
-
-    fn instances(&self) -> &[Vec<F>] {
-        &self.instances
     }
 
     fn absorb_into<CommitmentChunk>(

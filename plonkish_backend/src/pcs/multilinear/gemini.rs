@@ -1,3 +1,6 @@
+//! Implementation of section 2.4.2 of 2022/420, with improvement ported from Aztec's Barretenberg
+//! https://github.com/AztecProtocol/barretenberg/blob/master/cpp/src/barretenberg/honk/pcs/gemini/gemini.cpp.
+
 use crate::{
     pcs::{
         multilinear::additive,

@@ -1,37 +1,35 @@
 use crate::{
+    poly::Polynomial,
     util::{
         arithmetic::{variable_base_msm, Curve, CurveAffine, Field},
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
 use rand::RngCore;
-use std::{fmt::Debug, ops::AddAssign};
+use std::fmt::Debug;
 
 pub mod multilinear;
 pub mod univariate;
 
-pub trait Polynomial<F: Field>: Clone + Debug + for<'a> AddAssign<(&'a F, &'a Self)> {
-    type Point: Clone + Debug;
-
-    fn from_evals(evals: Vec<F>) -> Self;
-
-    fn into_evals(self) -> Vec<F>;
-
-    fn evals(&self) -> &[F];
-
-    fn evaluate(&self, point: &Self::Point) -> F;
-}
-
 pub type Point<F, P> = <P as Polynomial<F>>::Point;
 
+pub type Commitment<F, Pcs> = <Pcs as PolynomialCommitmentScheme<F>>::Commitment;
+
+pub type CommitmentChunk<F, Pcs> = <Pcs as PolynomialCommitmentScheme<F>>::CommitmentChunk;
+
 pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
-    type Param: Debug;
-    type ProverParam: Debug;
-    type VerifierParam: Debug;
-    type Polynomial: Polynomial<F>;
-    type Commitment: Clone + Debug + Default + AsRef<[Self::CommitmentChunk]>;
+    type Param: Clone + Debug + Serialize + DeserializeOwned;
+    type ProverParam: Clone + Debug + Serialize + DeserializeOwned;
+    type VerifierParam: Clone + Debug + Serialize + DeserializeOwned;
+    type Polynomial: Polynomial<F> + Serialize + DeserializeOwned;
+    type Commitment: Clone
+        + Debug
+        + Default
+        + AsRef<[Self::CommitmentChunk]>
+        + Serialize
+        + DeserializeOwned;
     type CommitmentChunk: Clone + Debug + Default;
 
     fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error>;
@@ -132,13 +130,13 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
 }
 
 #[derive(Clone, Debug)]
-pub struct Evaluation<F: Field> {
+pub struct Evaluation<F> {
     poly: usize,
     point: usize,
     value: F,
 }
 
-impl<F: Field> Evaluation<F> {
+impl<F> Evaluation<F> {
     pub fn new(poly: usize, point: usize, value: F) -> Self {
         Self { poly, point, value }
     }

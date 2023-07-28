@@ -1,11 +1,11 @@
 use crate::{
-    pcs::Polynomial,
+    poly::Polynomial,
     util::{
         arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field},
         expression::Rotation,
         impl_index,
         parallel::{num_threads, parallelize, parallelize_iter},
-        BitIndex, Itertools,
+        BitIndex, Deserialize, Itertools, Serialize,
     },
 };
 use num_integer::Integer;
@@ -17,7 +17,7 @@ use std::{
     ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearPolynomial<F> {
     evals: Vec<F>,
     num_vars: usize,
@@ -518,7 +518,10 @@ pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>
     }
 }
 
-fn rotation_eval_point_pattern<const NEXT: bool>(num_vars: usize, distance: usize) -> Vec<usize> {
+pub(crate) fn rotation_eval_point_pattern<const NEXT: bool>(
+    num_vars: usize,
+    distance: usize,
+) -> Vec<usize> {
     let bh = BooleanHypercube::new(num_vars);
     let remainder = if NEXT { bh.primitive() } else { bh.x_inv() };
     let mut pattern = vec![0; 1 << distance];
@@ -536,7 +539,10 @@ fn rotation_eval_point_pattern<const NEXT: bool>(num_vars: usize, distance: usiz
     pattern
 }
 
-fn rotation_eval_coeff_pattern<const NEXT: bool>(num_vars: usize, distance: usize) -> Vec<usize> {
+pub(crate) fn rotation_eval_coeff_pattern<const NEXT: bool>(
+    num_vars: usize,
+    distance: usize,
+) -> Vec<usize> {
     let bh = BooleanHypercube::new(num_vars);
     let remainder = if NEXT {
         bh.primitive() - (1 << num_vars)
@@ -626,8 +632,10 @@ pub(crate) use zip_self;
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::Polynomial,
-        poly::multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
+        poly::{
+            multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
+            Polynomial,
+        },
         util::{
             arithmetic::{BooleanHypercube, Field},
             expression::Rotation,

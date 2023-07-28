@@ -7,6 +7,8 @@ pub use sha3::{
     Keccak256,
 };
 
+pub use poseidon::{self, Poseidon};
+
 pub trait Hash:
     'static + Sized + Clone + Debug + FixedOutputReset + Default + Update + HashMarker
 {
@@ -16,6 +18,12 @@ pub trait Hash:
 
     fn update_field_element(&mut self, field: &impl PrimeField) {
         Digest::update(self, field.to_repr());
+    }
+
+    fn digest(data: impl AsRef<[u8]>) -> Output<Self> {
+        let mut hasher = Self::default();
+        hasher.update(data.as_ref());
+        hasher.finalize()
     }
 }
 

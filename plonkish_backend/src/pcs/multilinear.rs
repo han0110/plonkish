@@ -1,25 +1,27 @@
 use crate::{
-    poly::multilinear::MultilinearPolynomial,
-    util::{arithmetic::Field, Itertools},
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    util::{arithmetic::Field, end_timer, izip, parallel::parallelize, start_timer, Itertools},
     Error,
 };
 
 mod brakedown;
+mod gemini;
 mod hyrax;
 mod ipa;
 mod kzg;
-mod simulator;
+mod zeromorph;
 
 pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
 };
+pub use gemini::Gemini;
 pub use hyrax::{MultilinearHyrax, MultilinearHyraxCommitment, MultilinearHyraxParams};
 pub use ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParams};
 pub use kzg::{
     MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,
     MultilinearKzgVerifierParams,
 };
-pub use simulator::MultilinearSimulator;
+pub use zeromorph::{Zeromorph, ZeromorphKzgProverParam, ZeromorphKzgVerifierParam};
 
 fn validate_input<'a, F: Field>(
     function: &str,
@@ -67,17 +69,54 @@ fn err_too_many_variates(function: &str, upto: usize, got: usize) -> Error {
     })
 }
 
+fn quotients<F: Field, T>(
+    poly: &MultilinearPolynomial<F>,
+    point: &[F],
+    f: impl Fn(usize, Vec<F>) -> T,
+) -> (Vec<T>, F) {
+    assert_eq!(poly.num_vars(), point.len());
+
+    let mut remainder = poly.evals().to_vec();
+    let mut quotients = point
+        .iter()
+        .zip(0..poly.num_vars())
+        .rev()
+        .map(|(x_i, num_vars)| {
+            let timer = start_timer(|| "quotients");
+            let (remaimder_lo, remainder_hi) = remainder.split_at_mut(1 << num_vars);
+            let mut quotient = vec![F::ZERO; remaimder_lo.len()];
+
+            parallelize(&mut quotient, |(quotient, start)| {
+                izip!(quotient, &remaimder_lo[start..], &remainder_hi[start..])
+                    .for_each(|(q, r_lo, r_hi)| *q = *r_hi - r_lo);
+            });
+            parallelize(remaimder_lo, |(remaimder_lo, start)| {
+                izip!(remaimder_lo, &remainder_hi[start..])
+                    .for_each(|(r_lo, r_hi)| *r_lo += (*r_hi - r_lo as &_) * x_i);
+            });
+
+            remainder.truncate(1 << num_vars);
+            end_timer(timer);
+
+            f(num_vars, quotient)
+        })
+        .collect_vec();
+    quotients.reverse();
+
+    (quotients, remainder[0])
+}
+
 mod additive {
     use crate::{
         pcs::{
-            multilinear::validate_input, AdditiveCommitment, Evaluation, Point, Polynomial,
+            multilinear::validate_input, AdditiveCommitment, Evaluation, Point,
             PolynomialCommitmentScheme,
         },
         piop::sum_check::{
             classic::{ClassicSumCheck, CoefficientsProver},
             eq_xy_eval, SumCheck as _, VirtualPolynomial,
         },
-        poly::multilinear::MultilinearPolynomial,
+        poly::{multilinear::MultilinearPolynomial, Polynomial},
         util::{
             arithmetic::{inner_product, PrimeField},
             end_timer,
@@ -257,7 +296,7 @@ mod test {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::CommitmentChunk, F>
             + TranscriptWrite<Pcs::CommitmentChunk, F>
-            + InMemoryTranscript,
+            + InMemoryTranscript<Param = ()>,
     {
         for num_vars in 3..16 {
             // Setup
@@ -269,7 +308,7 @@ mod test {
             };
             // Commit and open
             let proof = {
-                let mut transcript = T::default();
+                let mut transcript = T::new(());
                 let poly = MultilinearPolynomial::rand(num_vars, OsRng);
                 let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
                 let point = transcript.squeeze_challenges(num_vars);
@@ -280,7 +319,7 @@ mod test {
             };
             // Verify
             let result = {
-                let mut transcript = T::from_proof(proof.as_slice());
+                let mut transcript = T::from_proof((), proof.as_slice());
                 Pcs::verify(
                     &vp,
                     &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
@@ -299,7 +338,7 @@ mod test {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
         T: TranscriptRead<Pcs::CommitmentChunk, F>
             + TranscriptWrite<Pcs::CommitmentChunk, F>
-            + InMemoryTranscript,
+            + InMemoryTranscript<Param = ()>,
     {
         for num_vars in 3..16 {
             let batch_size = 8;
@@ -321,7 +360,7 @@ mod test {
             .unique()
             .collect_vec();
             let proof = {
-                let mut transcript = T::default();
+                let mut transcript = T::new(());
                 let polys = iter::repeat_with(|| MultilinearPolynomial::rand(num_vars, OsRng))
                     .take(batch_size)
                     .collect_vec();
@@ -346,7 +385,7 @@ mod test {
             };
             // Batch verify
             let result = {
-                let mut transcript = T::from_proof(proof.as_slice());
+                let mut transcript = T::from_proof((), proof.as_slice());
                 Pcs::batch_verify(
                     &vp,
                     &Pcs::read_commitments(&vp, batch_size, &mut transcript).unwrap(),

@@ -1,5 +1,6 @@
 use crate::backend::{
-    hyperplonk::{test::run_hyperplonk, util, HyperPlonk},
+    hyperplonk::{util, HyperPlonk},
+    test::run_plonkish_backend,
     PlonkishCircuit,
 };
 use crate::{
@@ -29,13 +30,9 @@ fn vanilla_plonk_circuit_info() {
 
 #[test]
 fn e2e_vanilla_plonk() {
-    run_hyperplonk::<_, MultilinearKzg<Bn256>, Keccak256Transcript<_>, _>(3..16, |num_vars| {
-        let circuit =
-            Halo2Circuit::new::<HyperPlonk<()>>(num_vars, VanillaPlonk::rand(num_vars, OsRng));
-        (
-            circuit.circuit_info().unwrap(),
-            circuit.instances(),
-            circuit,
-        )
+    type Pb = HyperPlonk<MultilinearKzg<Bn256>>;
+    run_plonkish_backend::<_, Pb, Keccak256Transcript<_>, _>(3..16, |num_vars| {
+        let circuit = Halo2Circuit::new::<Pb>(num_vars, VanillaPlonk::rand(num_vars, OsRng));
+        (circuit.circuit_info().unwrap(), circuit)
     });
 }

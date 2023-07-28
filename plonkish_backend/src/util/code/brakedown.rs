@@ -7,7 +7,7 @@
 use crate::util::{
     arithmetic::{horner, steps, Field, PrimeField},
     code::LinearCodes,
-    Itertools,
+    Deserialize, Itertools, Serialize,
 };
 use rand::{distributions::Uniform, Rng, RngCore};
 use std::{
@@ -17,7 +17,7 @@ use std::{
     iter,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Brakedown<F> {
     row_len: usize,
     codeword_len: usize,
@@ -259,7 +259,7 @@ impl_spec_128!(
     (BrakedownSpec6, 0.2380, 0.1205, 1.720)
 );
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SparseMatrixDimension {
     n: usize,
     m: usize,
@@ -272,7 +272,7 @@ impl SparseMatrixDimension {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SparseMatrix<F> {
     dimension: SparseMatrixDimension,
     cells: Vec<(usize, F)>,

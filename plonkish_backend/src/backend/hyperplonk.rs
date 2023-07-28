@@ -18,18 +18,16 @@ use crate::{
         expression::Expression,
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
 use rand::RngCore;
-use std::{borrow::BorrowMut, fmt::Debug, hash::Hash, iter, marker::PhantomData};
+use std::{fmt::Debug, hash::Hash, iter, marker::PhantomData};
 
-mod preprocessor;
-mod prover;
-mod verifier;
-
-pub mod folding;
+pub(crate) mod preprocessor;
+pub(crate) mod prover;
+pub(crate) mod verifier;
 
 #[cfg(any(test, feature = "benchmark"))]
 pub mod util;
@@ -37,53 +35,52 @@ pub mod util;
 #[derive(Clone, Debug)]
 pub struct HyperPlonk<Pcs>(PhantomData<Pcs>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperPlonkProverParam<F, Pcs>
 where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    pcs: Pcs::ProverParam,
-    num_instances: Vec<usize>,
-    num_witness_polys: Vec<usize>,
-    num_challenges: Vec<usize>,
-    lookups: Vec<Vec<(Expression<F>, Expression<F>)>>,
-    num_permutation_z_polys: usize,
-    num_vars: usize,
-    expression: Expression<F>,
-    preprocess_polys: Vec<MultilinearPolynomial<F>>,
-    preprocess_comms: Vec<Pcs::Commitment>,
-    permutation_polys: Vec<(usize, MultilinearPolynomial<F>)>,
-    permutation_comms: Vec<Pcs::Commitment>,
+    pub(crate) pcs: Pcs::ProverParam,
+    pub(crate) num_instances: Vec<usize>,
+    pub(crate) num_witness_polys: Vec<usize>,
+    pub(crate) num_challenges: Vec<usize>,
+    pub(crate) lookups: Vec<Vec<(Expression<F>, Expression<F>)>>,
+    pub(crate) num_permutation_z_polys: usize,
+    pub(crate) num_vars: usize,
+    pub(crate) expression: Expression<F>,
+    pub(crate) preprocess_polys: Vec<MultilinearPolynomial<F>>,
+    pub(crate) preprocess_comms: Vec<Pcs::Commitment>,
+    pub(crate) permutation_polys: Vec<(usize, MultilinearPolynomial<F>)>,
+    pub(crate) permutation_comms: Vec<Pcs::Commitment>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperPlonkVerifierParam<F, Pcs>
 where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    pcs: Pcs::VerifierParam,
-    num_instances: Vec<usize>,
-    num_witness_polys: Vec<usize>,
-    num_challenges: Vec<usize>,
-    num_lookups: usize,
-    num_permutation_z_polys: usize,
-    num_vars: usize,
-    expression: Expression<F>,
-    preprocess_comms: Vec<Pcs::Commitment>,
-    permutation_comms: Vec<(usize, Pcs::Commitment)>,
+    pub(crate) pcs: Pcs::VerifierParam,
+    pub(crate) num_instances: Vec<usize>,
+    pub(crate) num_witness_polys: Vec<usize>,
+    pub(crate) num_challenges: Vec<usize>,
+    pub(crate) num_lookups: usize,
+    pub(crate) num_permutation_z_polys: usize,
+    pub(crate) num_vars: usize,
+    pub(crate) expression: Expression<F>,
+    pub(crate) preprocess_comms: Vec<Pcs::Commitment>,
+    pub(crate) permutation_comms: Vec<(usize, Pcs::Commitment)>,
 }
 
-impl<F, Pcs> PlonkishBackend<F, Pcs> for HyperPlonk<Pcs>
+impl<F, Pcs> PlonkishBackend<F> for HyperPlonk<Pcs>
 where
-    F: PrimeField + Hash,
+    F: PrimeField + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
+    type Pcs = Pcs;
     type ProverParam = HyperPlonkProverParam<F, Pcs>;
     type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
-    type ProverState = ();
-    type VerifierState = ();
 
     fn setup(
         circuit_info: &PlonkishCircuitInfo<F>,
@@ -166,19 +163,20 @@ where
 
     fn prove(
         pp: &Self::ProverParam,
-        _: impl BorrowMut<Self::ProverState>,
-        instances: &[&[F]],
         circuit: &impl PlonkishCircuit<F>,
         transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
-        for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
-            assert_eq!(instances.len(), *num_instances);
-            for instance in instances.iter() {
-                transcript.common_field_element(instance)?;
+        let instance_polys = {
+            let instances = circuit.instances();
+            for (num_instances, instances) in pp.num_instances.iter().zip_eq(instances) {
+                assert_eq!(instances.len(), *num_instances);
+                for instance in instances.iter() {
+                    transcript.common_field_element(instance)?;
+                }
             }
-        }
-        let instance_polys = instance_polys(pp.num_vars, instances.iter().cloned());
+            instance_polys(pp.num_vars, instances)
+        };
 
         // Round 0..n
 
@@ -294,8 +292,7 @@ where
 
     fn verify(
         vp: &Self::VerifierParam,
-        _: impl BorrowMut<Self::VerifierState>,
-        instances: &[&[F]],
+        instances: &[Vec<F>],
         transcript: &mut impl TranscriptRead<Pcs::CommitmentChunk, F>,
         _: impl RngCore,
     ) -> Result<(), Error> {
@@ -372,105 +369,45 @@ impl<Pcs> WitnessEncoding for HyperPlonk<Pcs> {
 }
 
 #[cfg(test)]
-pub(crate) mod test {
+mod test {
     use crate::{
         backend::{
             hyperplonk::{
                 util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_with_lookup_circuit},
                 HyperPlonk,
             },
-            PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
+            test::run_plonkish_backend,
         },
         pcs::{
             multilinear::{
-                MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
-                MultilinearSimulator,
+                Gemini, MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
+                Zeromorph,
             },
             univariate::UnivariateKzg,
-            PolynomialCommitmentScheme,
         },
-        poly::multilinear::MultilinearPolynomial,
         util::{
-            arithmetic::PrimeField,
-            code::BrakedownSpec6,
-            end_timer,
-            hash::Keccak256,
-            start_timer,
-            test::seeded_std_rng,
-            transcript::{
-                InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite,
-            },
-            Itertools,
+            code::BrakedownSpec6, hash::Keccak256, test::seeded_std_rng,
+            transcript::Keccak256Transcript,
         },
     };
     use halo2_curves::{
         bn256::{self, Bn256},
         grumpkin,
     };
-    use std::{hash::Hash, ops::Range};
-
-    pub(crate) fn run_hyperplonk<F, Pcs, T, C>(
-        num_vars_range: Range<usize>,
-        circuit_fn: impl Fn(usize) -> (PlonkishCircuitInfo<F>, Vec<Vec<F>>, C),
-    ) where
-        F: PrimeField + Hash,
-        Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-        T: TranscriptRead<Pcs::CommitmentChunk, F>
-            + TranscriptWrite<Pcs::CommitmentChunk, F>
-            + InMemoryTranscript,
-        C: PlonkishCircuit<F>,
-    {
-        for num_vars in num_vars_range {
-            let (circuit_info, instances, circuit) = circuit_fn(num_vars);
-            let instances = instances.iter().map(Vec::as_slice).collect_vec();
-
-            let timer = start_timer(|| format!("setup-{num_vars}"));
-            let param = HyperPlonk::<Pcs>::setup(&circuit_info, seeded_std_rng()).unwrap();
-            end_timer(timer);
-
-            let timer = start_timer(|| format!("preprocess-{num_vars}"));
-            let (pp, vp) = HyperPlonk::<Pcs>::preprocess(&param, &circuit_info).unwrap();
-            end_timer(timer);
-
-            let timer = start_timer(|| format!("prove-{num_vars}"));
-            let proof = {
-                let mut transcript = T::default();
-                HyperPlonk::<Pcs>::prove(
-                    &pp,
-                    (),
-                    &instances,
-                    &circuit,
-                    &mut transcript,
-                    seeded_std_rng(),
-                )
-                .unwrap();
-                transcript.into_proof()
-            };
-            end_timer(timer);
-
-            let timer = start_timer(|| format!("verify-{num_vars}"));
-            let result = {
-                let mut transcript = T::from_proof(proof.as_slice());
-                HyperPlonk::<Pcs>::verify(&vp, (), &instances, &mut transcript, seeded_std_rng())
-            };
-            assert_eq!(result, Ok(()));
-            end_timer(timer);
-        }
-    }
 
     macro_rules! tests {
         ($name:ident, $pcs:ty, $num_vars_range:expr) => {
             paste::paste! {
                 #[test]
                 fn [<$name _hyperplonk_vanilla_plonk>]() {
-                    run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                    run_plonkish_backend::<_, HyperPlonk<$pcs>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         rand_vanilla_plonk_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
 
                 #[test]
                 fn [<$name _hyperplonk_vanilla_plonk_with_lookup>]() {
-                    run_hyperplonk::<_, $pcs, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                    run_plonkish_backend::<_, HyperPlonk<$pcs>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         rand_vanilla_plonk_with_lookup_circuit(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
@@ -485,5 +422,6 @@ pub(crate) mod test {
     tests!(hyrax, MultilinearHyrax<grumpkin::G1Affine>, 5..16);
     tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
     tests!(kzg, MultilinearKzg<Bn256>);
-    tests!(sim_kzg, MultilinearSimulator<UnivariateKzg<Bn256>>);
+    tests!(gemini_kzg, Gemini<UnivariateKzg<Bn256>>);
+    tests!(zeromorph_kzg, Zeromorph<UnivariateKzg<Bn256>>);
 }

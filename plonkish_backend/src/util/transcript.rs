@@ -1,12 +1,16 @@
 use crate::{
     util::{
-        arithmetic::{fe_from_bytes_le, Coordinates, CurveAffine, PrimeField},
+        arithmetic::{fe_mod_from_le_bytes, Coordinates, CurveAffine, PrimeField},
         hash::{Hash, Keccak256, Output, Update},
+        Itertools,
     },
     Error,
 };
 use halo2_curves::{bn256, grumpkin, pasta};
-use std::io::{self, Cursor};
+use std::{
+    fmt::Debug,
+    io::{self, Cursor},
+};
 
 pub trait FieldTranscript<F> {
     fn squeeze_challenge(&mut self) -> F;
@@ -16,6 +20,12 @@ pub trait FieldTranscript<F> {
     }
 
     fn common_field_element(&mut self, fe: &F) -> Result<(), Error>;
+
+    fn common_field_elements(&mut self, fes: &[F]) -> Result<(), Error> {
+        fes.iter()
+            .map(|fe| self.common_field_element(fe))
+            .try_collect()
+    }
 }
 
 pub trait FieldTranscriptRead<F>: FieldTranscript<F> {
@@ -45,6 +55,13 @@ pub trait FieldTranscriptWrite<F>: FieldTranscript<F> {
 
 pub trait Transcript<C, F>: FieldTranscript<F> {
     fn common_commitment(&mut self, comm: &C) -> Result<(), Error>;
+
+    fn common_commitments(&mut self, comms: &[C]) -> Result<(), Error> {
+        comms
+            .iter()
+            .map(|comm| self.common_commitment(comm))
+            .try_collect()
+    }
 }
 
 pub trait TranscriptRead<C, F>: Transcript<C, F> + FieldTranscriptRead<F> {
@@ -69,10 +86,14 @@ pub trait TranscriptWrite<C, F>: Transcript<C, F> + FieldTranscriptWrite<F> {
     }
 }
 
-pub trait InMemoryTranscript: Default {
+pub trait InMemoryTranscript {
+    type Param: Clone + Debug;
+
+    fn new(param: Self::Param) -> Self;
+
     fn into_proof(self) -> Vec<u8>;
 
-    fn from_proof(proof: &[u8]) -> Self;
+    fn from_proof(param: Self::Param, proof: &[u8]) -> Self;
 }
 
 pub type Keccak256Transcript<S> = FiatShamirTranscript<Keccak256, S>;
@@ -84,11 +105,17 @@ pub struct FiatShamirTranscript<H, S> {
 }
 
 impl<H: Hash> InMemoryTranscript for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
+    type Param = ();
+
+    fn new(_: Self::Param) -> Self {
+        Self::default()
+    }
+
     fn into_proof(self) -> Vec<u8> {
         self.stream.into_inner()
     }
 
-    fn from_proof(proof: &[u8]) -> Self {
+    fn from_proof(_: Self::Param, proof: &[u8]) -> Self {
         Self {
             state: H::default(),
             stream: Cursor::new(proof.to_vec()),
@@ -98,9 +125,9 @@ impl<H: Hash> InMemoryTranscript for FiatShamirTranscript<H, Cursor<Vec<u8>>> {
 
 impl<H: Hash, F: PrimeField, S> FieldTranscript<F> for FiatShamirTranscript<H, S> {
     fn squeeze_challenge(&mut self) -> F {
-        let challenge = self.state.finalize_fixed_reset();
-        self.state.update(&challenge);
-        fe_from_bytes_le(&challenge)
+        let hash = self.state.finalize_fixed_reset();
+        self.state.update(&hash);
+        fe_mod_from_le_bytes(hash)
     }
 
     fn common_field_element(&mut self, fe: &F) -> Result<(), Error> {

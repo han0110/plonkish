@@ -380,10 +380,6 @@ mod aggregation {
             }
         }
 
-        fn num_instances() -> Vec<usize> {
-            vec![4 * LIMBS]
-        }
-
         fn instances(&self) -> Vec<Vec<M::Scalar>> {
             vec![self.instances.clone()]
         }
@@ -474,10 +470,6 @@ mod sha256 {
                 [33, 65, 129, 257, 513, 1025][k - 17]
             };
             Self { input_size }
-        }
-
-        fn num_instances() -> Vec<usize> {
-            Vec::new()
         }
 
         fn instances(&self) -> Vec<Vec<Fr>> {

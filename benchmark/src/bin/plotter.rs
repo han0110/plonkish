@@ -339,6 +339,10 @@ impl Log {
         let mut stack = Vec::new();
         logs.iter().fold(Vec::new(), |mut logs, log| {
             let (indent, log) = log.rsplit_once('·').unwrap_or(("", log));
+            if log.len() < 9 {
+                return logs;
+            }
+
             let (prefix, log) = log.split_at(9);
             let depth = (indent.len() + 2) / 4;
             if depth == stack.len() && prefix.starts_with("Start:") {

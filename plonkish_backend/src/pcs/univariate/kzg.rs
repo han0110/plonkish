@@ -4,13 +4,13 @@ use crate::{
     util::{
         arithmetic::{
             barycentric_interpolate, barycentric_weights, fixed_base_msm, inner_product, powers,
-            variable_base_msm, window_size, window_table, Curve, Field, MultiMillerLoop,
-            PrimeCurveAffine,
+            variable_base_msm, window_size, window_table, Curve, CurveAffine, Field,
+            MultiMillerLoop, PrimeCurveAffine,
         },
         chain, izip, izip_eq,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -24,62 +24,72 @@ impl<M: MultiMillerLoop> UnivariateKzg<M> {
     pub(crate) fn commit_coeffs(
         pp: &UnivariateKzgProverParam<M>,
         coeffs: &[M::Scalar],
-    ) -> UnivariateKzgCommitment<M> {
-        UnivariateKzgCommitment(variable_base_msm(coeffs, &pp.powers_of_s[..coeffs.len()]).into())
+    ) -> UnivariateKzgCommitment<M::G1Affine> {
+        let comm = variable_base_msm(coeffs, &pp.powers_of_s_g1[..coeffs.len()]).into();
+        UnivariateKzgCommitment(comm)
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "M::G1Affine: Serialize, M::G2Affine: Serialize",
+    deserialize = "M::G1Affine: DeserializeOwned, M::G2Affine: DeserializeOwned",
+))]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
-    g1: M::G1Affine,
-    powers_of_s: Vec<M::G1Affine>,
-    g2: M::G2Affine,
-    s_g2: M::G2Affine,
+    powers_of_s_g1: Vec<M::G1Affine>,
+    powers_of_s_g2: Vec<M::G2Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     pub fn degree(&self) -> usize {
-        self.powers_of_s.len() - 1
+        self.powers_of_s_g1.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
-        self.g1
+        self.powers_of_s_g1[0]
     }
 
-    pub fn powers_of_s(&self) -> &[M::G1Affine] {
-        &self.powers_of_s
+    pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
+        &self.powers_of_s_g1
     }
 
     pub fn g2(&self) -> M::G2Affine {
-        self.g2
+        self.powers_of_s_g2[0]
     }
 
-    pub fn s_g2(&self) -> M::G2Affine {
-        self.s_g2
+    pub fn powers_of_s_g2(&self) -> &[M::G2Affine] {
+        &self.powers_of_s_g2
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "M::G1Affine: Serialize",
+    deserialize = "M::G1Affine: DeserializeOwned",
+))]
 pub struct UnivariateKzgProverParam<M: MultiMillerLoop> {
-    g1: M::G1Affine,
-    powers_of_s: Vec<M::G1Affine>,
+    powers_of_s_g1: Vec<M::G1Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
+    pub(crate) fn new(powers_of_s_g1: Vec<M::G1Affine>) -> Self {
+        Self { powers_of_s_g1 }
+    }
+
     pub fn degree(&self) -> usize {
-        self.powers_of_s.len() - 1
+        self.powers_of_s_g1.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
-        self.g1
+        self.powers_of_s_g1[0]
     }
 
-    pub fn powers_of_s(&self) -> &[M::G1Affine] {
-        &self.powers_of_s
+    pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
+        &self.powers_of_s_g1
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnivariateKzgVerifierParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     g2: M::G2Affine,
@@ -100,32 +110,44 @@ impl<M: MultiMillerLoop> UnivariateKzgVerifierParam<M> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct UnivariateKzgCommitment<M: MultiMillerLoop>(pub M::G1Affine);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UnivariateKzgCommitment<C: CurveAffine>(pub C);
 
-impl<M: MultiMillerLoop> Default for UnivariateKzgCommitment<M> {
+impl<C: CurveAffine> Default for UnivariateKzgCommitment<C> {
     fn default() -> Self {
-        Self(M::G1Affine::identity())
+        Self(C::identity())
     }
 }
 
-impl<M: MultiMillerLoop> PartialEq for UnivariateKzgCommitment<M> {
+impl<C: CurveAffine> PartialEq for UnivariateKzgCommitment<C> {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq(&other.0)
     }
 }
 
-impl<M: MultiMillerLoop> Eq for UnivariateKzgCommitment<M> {}
+impl<C: CurveAffine> Eq for UnivariateKzgCommitment<C> {}
 
-impl<M: MultiMillerLoop> AsRef<[M::G1Affine]> for UnivariateKzgCommitment<M> {
-    fn as_ref(&self) -> &[M::G1Affine] {
+impl<C: CurveAffine> AsRef<[C]> for UnivariateKzgCommitment<C> {
+    fn as_ref(&self) -> &[C] {
         slice::from_ref(&self.0)
     }
 }
 
-impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for UnivariateKzgCommitment<M> {
+impl<C: CurveAffine> AsRef<C> for UnivariateKzgCommitment<C> {
+    fn as_ref(&self) -> &C {
+        &self.0
+    }
+}
+
+impl<C: CurveAffine> From<C> for UnivariateKzgCommitment<C> {
+    fn from(comm: C) -> Self {
+        Self(comm)
+    }
+}
+
+impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for UnivariateKzgCommitment<C> {
     fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a M::Scalar> + 'a,
+        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
         bases: impl IntoIterator<Item = &'a Self> + 'a,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
@@ -136,42 +158,62 @@ impl<M: MultiMillerLoop> AdditiveCommitment<M::Scalar> for UnivariateKzgCommitme
     }
 }
 
-impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg<M> {
+impl<M> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg<M>
+where
+    M: MultiMillerLoop,
+    M::Scalar: Serialize + DeserializeOwned,
+    M::G1Affine: Serialize + DeserializeOwned,
+    M::G2Affine: Serialize + DeserializeOwned,
+{
     type Param = UnivariateKzgParam<M>;
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
     type Polynomial = UnivariatePolynomial<M::Scalar, CoefficientBasis>;
+    type Commitment = UnivariateKzgCommitment<M::G1Affine>;
     type CommitmentChunk = M::G1Affine;
-    type Commitment = UnivariateKzgCommitment<M>;
 
     fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         let s = M::Scalar::random(rng);
 
         let g1 = M::G1Affine::generator();
-        let powers_of_s = {
-            let powers_of_s = powers(s).take(poly_size).collect_vec();
+        let powers_of_s_g1 = {
+            let powers_of_s_g1 = powers(s).take(poly_size).collect_vec();
             let window_size = window_size(poly_size);
             let window_table = window_table(window_size, g1);
-            let powers_of_s_projective = fixed_base_msm(window_size, &window_table, &powers_of_s);
+            let powers_of_s_projective =
+                fixed_base_msm(window_size, &window_table, &powers_of_s_g1);
 
-            let mut powers_of_s = vec![M::G1Affine::identity(); powers_of_s_projective.len()];
-            parallelize(&mut powers_of_s, |(powers_of_s, starts)| {
+            let mut powers_of_s_g1 = vec![M::G1Affine::identity(); powers_of_s_projective.len()];
+            parallelize(&mut powers_of_s_g1, |(powers_of_s_g1, starts)| {
                 M::G1::batch_normalize(
-                    &powers_of_s_projective[starts..(starts + powers_of_s.len())],
-                    powers_of_s,
+                    &powers_of_s_projective[starts..(starts + powers_of_s_g1.len())],
+                    powers_of_s_g1,
                 );
             });
-            powers_of_s
+            powers_of_s_g1
         };
 
         let g2 = M::G2Affine::generator();
-        let s_g2 = (g2 * s).into();
+        let powers_of_s_g2 = {
+            let powers_of_s_g2 = powers(s).take(poly_size).collect_vec();
+            let window_size = window_size(poly_size);
+            let window_table = window_table(window_size, g2);
+            let powers_of_s_projective =
+                fixed_base_msm(window_size, &window_table, &powers_of_s_g2);
+
+            let mut powers_of_s_g2 = vec![M::G2Affine::identity(); powers_of_s_projective.len()];
+            parallelize(&mut powers_of_s_g2, |(powers_of_s_g2, starts)| {
+                M::G2::batch_normalize(
+                    &powers_of_s_projective[starts..(starts + powers_of_s_g2.len())],
+                    powers_of_s_g2,
+                );
+            });
+            powers_of_s_g2
+        };
 
         Ok(Self::Param {
-            g1,
-            powers_of_s,
-            g2,
-            s_g2,
+            powers_of_s_g1,
+            powers_of_s_g2,
         })
     }
 
@@ -180,22 +222,19 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         poly_size: usize,
         _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        if param.powers_of_s.len() < poly_size {
+        if param.powers_of_s_g1.len() < poly_size {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large poly_size to trim to (param supports poly_size up to {} but got {poly_size})",
-                param.powers_of_s.len(),
+                param.powers_of_s_g1.len(),
             )));
         }
 
-        let powers_of_s = param.powers_of_s[..poly_size].to_vec();
-        let pp = Self::ProverParam {
-            g1: param.g1,
-            powers_of_s,
-        };
+        let powers_of_s_g1 = param.powers_of_s_g1[..poly_size].to_vec();
+        let pp = Self::ProverParam { powers_of_s_g1 };
         let vp = Self::VerifierParam {
-            g1: param.powers_of_s[0],
-            g2: param.g2,
-            s_g2: param.s_g2,
+            g1: param.g1(),
+            g2: param.g2(),
+            s_g2: param.powers_of_s_g2[1],
         };
         Ok((pp, vp))
     }
@@ -331,10 +370,9 @@ impl<M: MultiMillerLoop> PolynomialCommitmentScheme<M::Scalar> for UnivariateKzg
         eval: &M::Scalar,
         transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
-        let quotient = transcript.read_commitment()?;
-        let lhs = (quotient * point + comm.0 - vp.g1 * eval).into();
-        let rhs = quotient;
-        M::pairings_product_is_identity(&[(&lhs, &vp.g2.neg().into()), (&rhs, &vp.s_g2.into())])
+        let pi = transcript.read_commitment()?;
+        let c = (pi * point + comm.0 - vp.g1 * eval).into();
+        M::pairings_product_is_identity(&[(&c, &(-vp.g2).into()), (&pi, &vp.s_g2.into())])
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsOpen("Invalid univariate KZG open".to_string()))
     }
@@ -559,7 +597,7 @@ mod test {
             };
             // Verify
             let result = {
-                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
                 Pcs::verify(
                     &vp,
                     &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
@@ -617,7 +655,7 @@ mod test {
             };
             // Batch verify
             let result = {
-                let mut transcript = Keccak256Transcript::from_proof(proof.as_slice());
+                let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
                 Pcs::batch_verify(
                     &vp,
                     &Pcs::read_commitments(&vp, batch_size, &mut transcript).unwrap(),

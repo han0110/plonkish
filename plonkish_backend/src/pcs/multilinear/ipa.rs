@@ -1,9 +1,9 @@
 use crate::{
     pcs::{
         multilinear::{additive, err_too_many_variates, validate_input},
-        AdditiveCommitment, Evaluation, Point, Polynomial, PolynomialCommitmentScheme,
+        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{
             inner_product, variable_base_msm, Curve, CurveAffine, CurveExt, Field, Group,
@@ -11,7 +11,7 @@ use crate::{
         chain,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
-        Itertools,
+        Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
@@ -22,7 +22,7 @@ use std::{iter, marker::PhantomData, slice};
 #[derive(Clone, Debug)]
 pub struct MultilinearIpa<C: CurveAffine>(PhantomData<C>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultilinearIpaParams<C: CurveAffine> {
     num_vars: usize,
     g: Vec<C>,
@@ -43,7 +43,7 @@ impl<C: CurveAffine> MultilinearIpaParams<C> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultilinearIpaCommitment<C: CurveAffine>(pub C);
 
 impl<C: CurveAffine> Default for MultilinearIpaCommitment<C> {
@@ -55,6 +55,18 @@ impl<C: CurveAffine> Default for MultilinearIpaCommitment<C> {
 impl<C: CurveAffine> AsRef<[C]> for MultilinearIpaCommitment<C> {
     fn as_ref(&self) -> &[C] {
         slice::from_ref(&self.0)
+    }
+}
+
+impl<C: CurveAffine> AsRef<C> for MultilinearIpaCommitment<C> {
+    fn as_ref(&self) -> &C {
+        &self.0
+    }
+}
+
+impl<C: CurveAffine> From<C> for MultilinearIpaCommitment<C> {
+    fn from(comm: C) -> Self {
+        Self(comm)
     }
 }
 
@@ -71,13 +83,17 @@ impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearIpaCommitment<
     }
 }
 
-impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C> {
+impl<C> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
+where
+    C: CurveAffine + Serialize + DeserializeOwned,
+    C::ScalarExt: Serialize + DeserializeOwned,
+{
     type Param = MultilinearIpaParams<C>;
     type ProverParam = MultilinearIpaParams<C>;
     type VerifierParam = MultilinearIpaParams<C>;
     type Polynomial = MultilinearPolynomial<C::Scalar>;
-    type CommitmentChunk = C;
     type Commitment = MultilinearIpaCommitment<C>;
+    type CommitmentChunk = C;
 
     fn setup(poly_size: usize, _: usize, _: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());
@@ -121,7 +137,7 @@ impl<C: CurveAffine> PolynomialCommitmentScheme<C::Scalar> for MultilinearIpa<C>
             return Err(err_too_many_variates("trim", param.num_vars(), num_vars));
         }
         let param = Self::ProverParam {
-            num_vars: param.num_vars,
+            num_vars,
             g: param.g[..poly_size].to_vec(),
             h: param.h,
         };

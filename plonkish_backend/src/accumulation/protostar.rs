@@ -7,7 +7,7 @@ use crate::{
     pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
     poly::Polynomial,
     util::{
-        arithmetic::{inner_product, powers, Field},
+        arithmetic::{inner_product, powers, CurveAffine, Field},
         chain,
         expression::Expression,
         izip, izip_eq,
@@ -307,5 +307,24 @@ where
                 [rhs.compressed_e_sum.as_ref().unwrap()]
             ],
         );
+    }
+}
+
+impl<F, Comm> ProtostarAccumulatorInstance<F, Comm>
+where
+    F: Field,
+{
+    pub fn unwrap_comm<C: CurveAffine>(self) -> ProtostarAccumulatorInstance<F, C>
+    where
+        Comm: AsRef<C>,
+    {
+        ProtostarAccumulatorInstance {
+            instances: self.instances,
+            witness_comms: chain![self.witness_comms.iter().map(AsRef::as_ref).copied()].collect(),
+            challenges: self.challenges,
+            u: self.u,
+            e_comm: *self.e_comm.as_ref(),
+            compressed_e_sum: self.compressed_e_sum,
+        }
     }
 }

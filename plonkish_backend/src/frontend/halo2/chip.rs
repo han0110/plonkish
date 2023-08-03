@@ -4,6 +4,7 @@ pub mod halo2_wrong {
         hash::poseidon::{self, SparseMDSMatrix, Spec as PoseidonSpec},
         Itertools,
     };
+    use halo2_proofs::circuit::Value;
     use halo2_wrong_v2::{
         integer::{chip::IntegerChip, rns::Rns, Integer},
         maingate::operations::Collector,
@@ -121,6 +122,7 @@ pub mod halo2_wrong {
     pub struct PoseidonChip<F: PrimeField, const T: usize, const RATE: usize> {
         spec: PoseidonSpec<F, T, RATE>,
         state: PoseidonState<F, T, RATE>,
+        mock: poseidon::Poseidon<F, T, RATE>,
         buf: Vec<Witness<F>>,
     }
 
@@ -132,14 +134,16 @@ pub mod halo2_wrong {
             Self {
                 spec: PoseidonSpec::new(r_f, r_p),
                 state: PoseidonState::new(collector),
+                mock: poseidon::Poseidon::new(r_f, r_p),
                 buf: Vec::new(),
             }
         }
 
         pub fn from_spec(collector: &mut Collector<F>, spec: PoseidonSpec<F, T, RATE>) -> Self {
             Self {
-                spec,
+                spec: spec.clone(),
                 state: PoseidonState::new(collector),
+                mock: poseidon::Poseidon::new_with_spec(spec),
                 buf: Vec::new(),
             }
         }
@@ -149,20 +153,23 @@ pub mod halo2_wrong {
         }
 
         pub fn squeeze(&mut self, collector: &mut Collector<F>) -> Witness<F> {
-            let buf = mem::take(&mut self.buf);
-            let exact = buf.len() % RATE == 0;
+            // TODO
+            let buf = mem::take(&mut self.buf)
+                .iter()
+                .map(|witness| {
+                    let mut tmp = F::ZERO;
+                    witness.value().map(|value| tmp = value);
+                    tmp
+                })
+                .collect_vec();
+            self.mock.update(&buf);
+            let hash = self.mock.squeeze();
 
-            for chunk in buf.chunks(RATE) {
-                self.permutation(collector, chunk);
-            }
-            if exact {
-                self.permutation(collector, &[]);
-            }
-
-            self.state.inner[1]
+            let tmp = collector.new_witness(Value::known(hash));
+            collector.add_constant(&tmp, F::ZERO)
         }
 
-        fn permutation(&mut self, collector: &mut Collector<F>, inputs: &[Witness<F>]) {
+        pub fn permutation(&mut self, collector: &mut Collector<F>, inputs: &[Witness<F>]) {
             let r_f = self.spec.r_f() / 2;
             let mds = self.spec.mds_matrices().mds().rows();
             let pre_sparse_mds = self.spec.mds_matrices().pre_sparse_mds().rows();

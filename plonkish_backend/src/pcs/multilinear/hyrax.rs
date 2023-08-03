@@ -52,6 +52,10 @@ impl<C: CurveAffine> MultilinearHyraxParams<C> {
         1 << (self.num_vars - self.row_num_vars)
     }
 
+    pub fn ipa(&self) -> &MultilinearIpaParams<C> {
+        &self.ipa
+    }
+
     pub fn g(&self) -> &[C] {
         self.ipa.g()
     }

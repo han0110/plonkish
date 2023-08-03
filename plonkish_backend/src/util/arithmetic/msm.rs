@@ -1,5 +1,5 @@
 use crate::util::{
-    arithmetic::{div_ceil, field_size, CurveAffine, Field, Group, PrimeField},
+    arithmetic::{div_ceil, CurveAffine, Field, Group, PrimeField},
     parallel::{num_threads, parallelize, parallelize_iter},
     start_timer, Itertools,
 };
@@ -14,7 +14,7 @@ pub fn window_size(num_scalars: usize) -> usize {
 }
 
 pub fn window_table<C: CurveAffine>(window_size: usize, generator: C) -> Vec<Vec<C>> {
-    let scalar_size = field_size::<C::Scalar>();
+    let scalar_size = C::Scalar::NUM_BITS as usize;
     let num_windows = div_ceil(scalar_size, window_size);
     let mut table = vec![vec![C::identity(); (1 << window_size) - 1]; num_windows];
     parallelize(&mut table, |(table, start)| {

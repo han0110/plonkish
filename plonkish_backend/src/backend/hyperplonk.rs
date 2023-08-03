@@ -182,7 +182,7 @@ where
 
         let mut witness_polys = Vec::with_capacity(pp.num_witness_polys.iter().sum());
         let mut witness_comms = Vec::with_capacity(witness_polys.len());
-        let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>() + 4);
+        let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>() + 3);
         for (round, (num_witness_polys, num_challenges)) in pp
             .num_witness_polys
             .iter()
@@ -306,7 +306,7 @@ where
         // Round 0..n
 
         let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
-        let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 4);
+        let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 3);
         for (num_polys, num_challenges) in
             vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
         {

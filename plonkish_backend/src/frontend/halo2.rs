@@ -19,6 +19,8 @@ use std::{
     iter, mem,
 };
 
+pub mod layouter;
+
 #[cfg(test)]
 pub mod chip;
 #[cfg(any(test, feature = "benchmark"))]

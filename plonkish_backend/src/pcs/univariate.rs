@@ -1,4 +1,4 @@
-mod kzg;
+pub(crate) mod kzg;
 
 pub use kzg::{
     UnivariateKzg, UnivariateKzgCommitment, UnivariateKzgParam, UnivariateKzgProverParam,

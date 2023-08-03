@@ -53,12 +53,6 @@ impl TwoChainCurve for vesta::Affine {
     type Secondary = pallas::Affine;
 }
 
-pub fn field_size<F: PrimeField>() -> usize {
-    let neg_one = (-F::ONE).to_repr();
-    let bytes = neg_one.as_ref();
-    8 * bytes.len() - bytes.last().unwrap().leading_zeros() as usize
-}
-
 pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
     coeffs
         .iter()
@@ -192,15 +186,4 @@ pub fn div_rem(dividend: usize, divisor: usize) -> (usize, usize) {
 
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
     Integer::div_ceil(&dividend, &divisor)
-}
-
-#[cfg(test)]
-mod test {
-    use crate::util::arithmetic;
-    use halo2_curves::bn256;
-
-    #[test]
-    fn field_size() {
-        assert_eq!(arithmetic::field_size::<bn256::Fr>(), 254);
-    }
 }

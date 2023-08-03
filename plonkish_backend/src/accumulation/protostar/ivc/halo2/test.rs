@@ -2,23 +2,31 @@ use crate::{
     accumulation::protostar::{
         ivc::halo2::{
             preprocess, prove_decider, prove_steps, verify_decider, HashInstruction,
-            ProtostarIvcVerifierParam, StepCircuit, TranscriptInstruction,
-            TwoChainCurveInstruction,
+            ProtostarHyperPlonkUtil, ProtostarIvcAggregator, ProtostarIvcVerifierParam,
+            StepCircuit, TranscriptInstruction, TwoChainCurveInstruction,
         },
-        ProtostarAccumulatorInstance,
+        ProtostarAccumulatorInstance, ProtostarVerifierParam,
     },
-    frontend::halo2::CircuitExt,
+    backend::{
+        hyperplonk::{HyperPlonk, HyperPlonkVerifierParam},
+        PlonkishBackend, PlonkishCircuit,
+    },
+    frontend::halo2::{layouter::InstanceExtractor, CircuitExt, Halo2Circuit},
     pcs::{
-        multilinear::{Gemini, MultilinearIpa},
+        multilinear::{Gemini, MultilinearHyrax, MultilinearIpa},
         univariate::UnivariateKzg,
         AdditiveCommitment, PolynomialCommitmentScheme,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{CurveAffine, FromUniformBytes, PrimeFieldBits, TwoChainCurve},
+        arithmetic::{
+            fe_to_fe, CurveAffine, Field, FromUniformBytes, MultiMillerLoop, PrimeFieldBits,
+            TwoChainCurve,
+        },
+        chain,
         test::seeded_std_rng,
         transcript::InMemoryTranscript,
-        DeserializeOwned, Serialize,
+        DeserializeOwned, Itertools, Serialize,
     },
 };
 use halo2_curves::{
@@ -26,7 +34,7 @@ use halo2_curves::{
     grumpkin,
 };
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, SimpleFloorPlanner},
+    circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::{Circuit, ConstraintSystem, Error},
 };
 use std::{fmt::Debug, hash::Hash, marker::PhantomData};
@@ -127,6 +135,214 @@ where
         Error,
     > {
         Ok((Vec::new(), Vec::new()))
+    }
+}
+
+#[derive(Clone)]
+struct SecondaryAggregationCircuit {
+    vp_digest: grumpkin::Fr,
+    vp: ProtostarVerifierParam<bn256::Fr, HyperPlonk<Gemini<UnivariateKzg<bn256::Bn256>>>>,
+    arity: usize,
+    instances: Vec<grumpkin::Fr>,
+    num_steps: Value<usize>,
+    initial_input: Value<Vec<grumpkin::Fr>>,
+    output: Value<Vec<grumpkin::Fr>>,
+    acc: Value<ProtostarAccumulatorInstance<bn256::Fr, bn256::G1Affine>>,
+    proof: Value<Vec<u8>>,
+}
+
+impl Circuit<grumpkin::Fr> for SecondaryAggregationCircuit {
+    type Config = strawman::Config<grumpkin::Fr>;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        self.clone()
+    }
+
+    fn configure(meta: &mut ConstraintSystem<grumpkin::Fr>) -> Self::Config {
+        strawman::Config::configure::<grumpkin::G1Affine>(meta)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<grumpkin::Fr>,
+    ) -> Result<(), Error> {
+        let chip = <strawman::Chip<grumpkin::G1Affine> as TwoChainCurveInstruction<
+            grumpkin::G1Affine,
+        >>::new(config);
+        let aggregator = ProtostarIvcAggregator::new(
+            self.vp_digest,
+            self.vp.clone(),
+            self.arity,
+            chip.clone(),
+            chip.clone(),
+        );
+
+        let mut transcript = strawman::PoseidonTranscriptChip::new(
+            strawman::decider_transcript_param(),
+            chip.clone(),
+            self.proof.clone(),
+        );
+        let (num_steps, initial_input, output, h, lhs, rhs) = aggregator.aggregate_gemini_kzg_ivc(
+            &mut layouter,
+            self.num_steps,
+            self.initial_input.clone(),
+            self.output.clone(),
+            self.acc.clone(),
+            &mut transcript,
+        )?;
+
+        let zero = chip.assign_constant(&mut layouter, grumpkin::Fr::ZERO)?;
+        chip.constrain_equal(&mut layouter, lhs.is_identity(), &zero)?;
+        chip.constrain_equal(&mut layouter, rhs.is_identity(), &zero)?;
+
+        let cell_map = chip.layout_and_clear(&mut layouter)?;
+        for (idx, witness) in chain![
+            [num_steps],
+            initial_input,
+            output,
+            [h, *lhs.x(), *lhs.y(), *rhs.x(), *rhs.y()]
+        ]
+        .enumerate()
+        {
+            layouter.constrain_instance(cell_map[&witness.id()].cell(), chip.instance, idx)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl CircuitExt<grumpkin::Fr> for SecondaryAggregationCircuit {
+    fn instances(&self) -> Vec<Vec<grumpkin::Fr>> {
+        vec![self.instances.clone()]
+    }
+}
+
+#[derive(Clone)]
+struct PrimaryAggregationCircuit {
+    vp_digest: bn256::Fr,
+    vp: ProtostarVerifierParam<grumpkin::Fr, HyperPlonk<MultilinearIpa<grumpkin::G1Affine>>>,
+    primary_arity: usize,
+    secondary_arity: usize,
+    instances: Vec<bn256::Fr>,
+    num_steps: Value<usize>,
+    initial_input: Value<Vec<bn256::Fr>>,
+    output: Value<Vec<bn256::Fr>>,
+    acc_before_last: Value<ProtostarAccumulatorInstance<grumpkin::Fr, grumpkin::G1Affine>>,
+    last_instance: Value<[grumpkin::Fr; 2]>,
+    proof: Value<Vec<u8>>,
+    secondary_aggregation_vp:
+        HyperPlonkVerifierParam<grumpkin::Fr, MultilinearHyrax<grumpkin::G1Affine>>,
+    secondary_aggregation_instances: Value<Vec<grumpkin::Fr>>,
+    secondary_aggregation_proof: Value<Vec<u8>>,
+}
+
+impl Circuit<bn256::Fr> for PrimaryAggregationCircuit {
+    type Config = strawman::Config<bn256::Fr>;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        self.clone()
+    }
+
+    fn configure(meta: &mut ConstraintSystem<bn256::Fr>) -> Self::Config {
+        strawman::Config::configure::<bn256::G1Affine>(meta)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<bn256::Fr>,
+    ) -> Result<(), Error> {
+        let chip =
+            <strawman::Chip<bn256::G1Affine> as TwoChainCurveInstruction<bn256::G1Affine>>::new(
+                config,
+            );
+        let aggregator = ProtostarIvcAggregator::new(
+            self.vp_digest,
+            self.vp.clone(),
+            self.primary_arity,
+            chip.clone(),
+            chip.clone(),
+        );
+
+        let mut transcript = strawman::PoseidonTranscriptChip::new(
+            strawman::decider_transcript_param(),
+            chip.clone(),
+            self.proof.clone(),
+        );
+        let (primary_num_steps, primary_initial_input, primary_output, h_ohs_from_last_nark) =
+            aggregator.verify_ipa_grumpkin_ivc_with_last_nark(
+                &mut layouter,
+                self.num_steps,
+                self.initial_input.clone(),
+                self.output.clone(),
+                self.acc_before_last.clone(),
+                self.last_instance,
+                &mut transcript,
+            )?;
+
+        let (secondary_initial_input, secondary_output, pairing_acc) = {
+            let mut transcript = strawman::PoseidonTranscriptChip::new(
+                strawman::decider_transcript_param(),
+                chip.clone(),
+                self.secondary_aggregation_proof.clone(),
+            );
+            let secondary_aggregation_instance = chip.verify_hyrax_hyperplonk(
+                &mut layouter,
+                &self.secondary_aggregation_vp,
+                self.secondary_aggregation_instances
+                    .as_ref()
+                    .map(Vec::as_slice),
+                &mut transcript,
+            )?;
+
+            let secondary_num_steps =
+                chip.fit_base_in_scalar(&mut layouter, &secondary_aggregation_instance[0])?;
+            chip.constrain_equal(&mut layouter, &primary_num_steps, &secondary_num_steps)?;
+
+            let h = chip.fit_base_in_scalar(
+                &mut layouter,
+                &secondary_aggregation_instance[1 + 2 * self.secondary_arity],
+            )?;
+            chip.constrain_equal(&mut layouter, &h_ohs_from_last_nark, &h)?;
+
+            let iter = &mut secondary_aggregation_instance.iter();
+            let mut instances = |skip: usize, take: usize| {
+                iter.skip(skip)
+                    .take(take)
+                    .map(|base| chip.to_repr_base(&mut layouter, base))
+                    .try_collect::<_, Vec<_>, _>()
+            };
+            (
+                instances(1, self.secondary_arity)?,
+                instances(0, self.secondary_arity)?,
+                instances(1, 4 * strawman::NUM_LIMBS)?,
+            )
+        };
+
+        let cell_map = chip.layout_and_clear(&mut layouter)?;
+        for (idx, witness) in chain![
+            [primary_num_steps],
+            primary_initial_input,
+            primary_output,
+            secondary_initial_input.into_iter().flatten(),
+            secondary_output.into_iter().flatten(),
+            pairing_acc.into_iter().flatten(),
+        ]
+        .enumerate()
+        {
+            layouter.constrain_instance(cell_map[&witness.id()].cell(), chip.instance, idx)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl CircuitExt<bn256::Fr> for PrimaryAggregationCircuit {
+    fn instances(&self) -> Vec<Vec<bn256::Fr>> {
+        vec![self.instances.clone()]
     }
 }
 
@@ -282,13 +498,139 @@ where
 
 #[test]
 fn gemini_kzg_ipa_protostar_hyperplonk_ivc() {
-    const NUM_VARS: usize = 16;
+    const NUM_VARS: usize = 14;
     const NUM_STEPS: usize = 3;
     run_protostar_hyperplonk_ivc::<
         bn256::G1Affine,
         Gemini<UnivariateKzg<Bn256>>,
         MultilinearIpa<grumpkin::G1Affine>,
     >(NUM_VARS, NUM_STEPS);
+}
+
+#[test]
+fn gemini_kzg_ipa_protostar_hyperplonk_ivc_with_aggregation() {
+    const NUM_VARS: usize = 14;
+    const NUM_STEPS: usize = 3;
+    let (
+        ivc_vp,
+        num_steps,
+        primary_initial_input,
+        primary_output,
+        primary_acc,
+        primary_proof,
+        secondary_initial_input,
+        secondary_output,
+        secondary_acc_before_last,
+        secondary_last_instances,
+        secondary_proof,
+    ) = run_protostar_hyperplonk_ivc::<
+        bn256::G1Affine,
+        Gemini<UnivariateKzg<Bn256>>,
+        MultilinearIpa<grumpkin::G1Affine>,
+    >(NUM_VARS, NUM_STEPS);
+
+    let (secondary_aggregation_vp, secondary_aggregation_instances, secondary_aggregation_proof) = {
+        let mut circuit = SecondaryAggregationCircuit {
+            vp_digest: fe_to_fe(ivc_vp.vp_digest),
+            vp: ivc_vp.primary_vp.clone(),
+            arity: ivc_vp.secondary_arity,
+            instances: Vec::new(),
+            num_steps: Value::known(num_steps),
+            initial_input: Value::known(secondary_initial_input),
+            output: Value::known(secondary_output),
+            acc: Value::known(primary_acc.unwrap_comm()),
+            proof: Value::known(primary_proof),
+        };
+        circuit.instances = InstanceExtractor::extract(&circuit)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(
+            circuit.instances[1 + 2 * ivc_vp.secondary_arity],
+            secondary_last_instances[1]
+        );
+
+        type HyraxHyperPlonk = HyperPlonk<MultilinearHyrax<grumpkin::G1Affine>>;
+        let circuit = Halo2Circuit::new::<HyraxHyperPlonk>(17, circuit);
+        let circuit_info = circuit.circuit_info().unwrap();
+
+        let param = HyraxHyperPlonk::setup(&circuit_info, seeded_std_rng()).unwrap();
+        let (pp, vp) = HyraxHyperPlonk::preprocess(&param, &circuit_info).unwrap();
+        let dtp = strawman::decider_transcript_param();
+        let proof = {
+            let mut transcript = strawman::PoseidonTranscript::new(dtp.clone());
+            HyraxHyperPlonk::prove(&pp, &circuit, &mut transcript, seeded_std_rng()).unwrap();
+            transcript.into_proof()
+        };
+        let result = {
+            let mut transcript = strawman::PoseidonTranscript::from_proof(dtp, proof.as_slice());
+            HyraxHyperPlonk::verify(&vp, circuit.instances(), &mut transcript, seeded_std_rng())
+        };
+        assert_eq!(result, Ok(()));
+
+        (vp, circuit.instances().to_vec(), proof)
+    };
+
+    {
+        let mut circuit = PrimaryAggregationCircuit {
+            vp_digest: fe_to_fe(ivc_vp.vp_digest),
+            vp: ivc_vp.secondary_vp.clone(),
+            primary_arity: ivc_vp.primary_arity,
+            secondary_arity: ivc_vp.secondary_arity,
+            instances: Vec::new(),
+            num_steps: Value::known(num_steps),
+            initial_input: Value::known(primary_initial_input),
+            output: Value::known(primary_output),
+            acc_before_last: Value::known(secondary_acc_before_last.unwrap_comm()),
+            last_instance: Value::known([secondary_last_instances[0], secondary_last_instances[1]]),
+            proof: Value::known(secondary_proof),
+            secondary_aggregation_vp,
+            secondary_aggregation_instances: Value::known(
+                secondary_aggregation_instances[0].clone(),
+            ),
+            secondary_aggregation_proof: Value::known(secondary_aggregation_proof),
+        };
+        circuit.instances = InstanceExtractor::extract(&circuit)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        type GeminiHyperPlonk = HyperPlonk<Gemini<UnivariateKzg<Bn256>>>;
+        let circuit = Halo2Circuit::new::<GeminiHyperPlonk>(21, circuit);
+        let circuit_info = circuit.circuit_info().unwrap();
+
+        let param = GeminiHyperPlonk::setup(&circuit_info, seeded_std_rng()).unwrap();
+        let (pp, vp) = GeminiHyperPlonk::preprocess(&param, &circuit_info).unwrap();
+        let dtp = strawman::decider_transcript_param();
+        let proof = {
+            let mut transcript = strawman::PoseidonTranscript::new(dtp.clone());
+            GeminiHyperPlonk::prove(&pp, &circuit, &mut transcript, seeded_std_rng()).unwrap();
+            transcript.into_proof()
+        };
+        let result = {
+            let mut transcript = strawman::PoseidonTranscript::from_proof(dtp, proof.as_slice());
+            GeminiHyperPlonk::verify(&vp, circuit.instances(), &mut transcript, seeded_std_rng())
+        };
+        assert_eq!(result, Ok(()));
+
+        let pairing_acc =
+            &circuit.instances()[0][circuit.instances()[0].len() - 4 * strawman::NUM_LIMBS..];
+        let [lhs_x, lhs_y, rhs_x, rhs_y] = [0, 1, 2, 3].map(|idx| {
+            let offset = idx * strawman::NUM_LIMBS;
+            strawman::fe_from_limbs(
+                &pairing_acc[offset..offset + strawman::NUM_LIMBS],
+                strawman::NUM_LIMB_BITS,
+            )
+        });
+        let lhs = bn256::G1Affine::from_xy(lhs_x, lhs_y).unwrap();
+        let rhs = bn256::G1Affine::from_xy(rhs_x, rhs_y).unwrap();
+        assert!(Bn256::pairings_product_is_identity(&[
+            (&lhs, &(-ivc_vp.primary_vp.vp.pcs.g2()).into()),
+            (&rhs, &ivc_vp.primary_vp.vp.pcs.s_g2().into()),
+        ]));
+    }
 }
 
 mod strawman {
@@ -306,10 +648,11 @@ mod strawman {
         util::{
             arithmetic::{
                 fe_from_bool, fe_from_le_bytes, fe_to_fe, fe_truncated, BitField, CurveAffine,
-                Field, FromUniformBytes, PrimeCurveAffine, PrimeField, PrimeFieldBits,
+                Field, FromUniformBytes, Group, PrimeCurveAffine, PrimeField, PrimeFieldBits,
                 TwoChainCurve,
             },
             hash::{poseidon::Spec, Poseidon},
+            izip_eq,
             transcript::{
                 FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscript,
                 Transcript, TranscriptRead, TranscriptWrite,
@@ -341,8 +684,8 @@ mod strawman {
         rc::Rc,
     };
 
-    const NUM_LIMBS: usize = 4;
-    const NUM_LIMB_BITS: usize = 65;
+    pub const NUM_LIMBS: usize = 4;
+    pub const NUM_LIMB_BITS: usize = 65;
     const NUM_SUBLIMBS: usize = 5;
     const NUM_LOOKUPS: usize = 1;
 
@@ -371,6 +714,15 @@ mod strawman {
             })
             .take(NUM_LIMBS)
             .collect()
+    }
+
+    pub fn fe_from_limbs<F1: PrimeFieldBits, F2: PrimeField>(
+        limbs: &[F1],
+        num_limb_bits: usize,
+    ) -> F2 {
+        limbs.iter().rev().fold(F2::ZERO, |acc, limb| {
+            acc * F2::from_u128(1 << num_limb_bits) + fe_to_fe::<F1, F2>(*limb)
+        })
     }
 
     fn x_y_is_identity<C: CurveAffine>(ec_point: &C) -> [C::Base; 3] {
@@ -567,50 +919,14 @@ mod strawman {
     }
 
     impl<C: TwoChainCurve> Chip<C> {
-        fn negate_ec_point(
+        #[allow(clippy::type_complexity)]
+        pub fn layout_and_clear(
             &self,
-            value: &AssignedEcPoint<C::Secondary>,
-        ) -> AssignedEcPoint<C::Secondary> {
-            let collector = &mut self.collector.borrow_mut();
-            let y = collector.sub_from_constant(C::Scalar::ZERO, value.y());
-            let mut out = value.clone();
-            out.y = y;
-            out.ec_point = out.ec_point.map(|ec_point| -ec_point);
-            out
-        }
-
-        fn add_ec_point_incomplete(
-            &self,
-            lhs: &AssignedEcPoint<C::Secondary>,
-            rhs: &AssignedEcPoint<C::Secondary>,
-        ) -> AssignedEcPoint<C::Secondary> {
-            let collector = &mut self.collector.borrow_mut();
-            let x_diff = collector.sub(rhs.x(), lhs.x());
-            let y_diff = collector.sub(rhs.y(), lhs.y());
-            let (x_diff_inv, _) = collector.inv(&x_diff);
-            let lambda = collector.mul(&y_diff, &x_diff_inv);
-            let lambda_square = collector.mul(&lambda, &lambda);
-            let out_x = sum_with_coeff(
-                collector,
-                [
-                    (&lambda_square, C::Scalar::ONE),
-                    (lhs.x(), -C::Scalar::ONE),
-                    (rhs.x(), -C::Scalar::ONE),
-                ],
-            );
-            let out_y = {
-                let x_diff = collector.sub(lhs.x(), &out_x);
-                let lambda_x_diff = collector.mul(&lambda, &x_diff);
-                collector.sub(&lambda_x_diff, lhs.y())
-            };
-            let out_is_identity = collector.register_constant(C::Scalar::ZERO);
-
-            AssignedEcPoint {
-                ec_point: (lhs.ec_point + rhs.ec_point).map(Into::into),
-                x: out_x,
-                y: out_y,
-                is_identity: out_is_identity,
-            }
+            layouter: &mut impl Layouter<C::Scalar>,
+        ) -> Result<BTreeMap<u32, AssignedCell<C::Scalar, C::Scalar>>, Error> {
+            let cell_map = self.main_gate.layout(layouter, &self.collector.borrow())?;
+            *self.collector.borrow_mut() = Default::default();
+            Ok(cell_map)
         }
 
         fn double_ec_point_incomplete(
@@ -740,15 +1056,15 @@ mod strawman {
     }
 
     impl<C: CurveAffine> AssignedEcPoint<C> {
-        fn x(&self) -> &Witness<C::Base> {
+        pub fn x(&self) -> &Witness<C::Base> {
             &self.x
         }
 
-        fn y(&self) -> &Witness<C::Base> {
+        pub fn y(&self) -> &Witness<C::Base> {
             &self.y
         }
 
-        fn is_identity(&self) -> &Witness<C::Base> {
+        pub fn is_identity(&self) -> &Witness<C::Base> {
             &self.is_identity
         }
 
@@ -984,6 +1300,14 @@ mod strawman {
             ))
         }
 
+        fn to_repr_base(
+            &self,
+            _: &mut impl Layouter<C::Scalar>,
+            value: &Self::AssignedBase,
+        ) -> Result<Vec<Self::Assigned>, Error> {
+            Ok(value.limbs.clone())
+        }
+
         fn add_base(
             &self,
             _: &mut impl Layouter<C::Scalar>,
@@ -1036,6 +1360,18 @@ mod strawman {
             let scalar = integer_chip.div_incomplete(&lhs.scalar, &rhs.scalar);
             let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
             Ok(AssignedBase { scalar, limbs })
+        }
+
+        fn constrain_equal_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedSecondary,
+            rhs: &Self::AssignedSecondary,
+        ) -> Result<(), Error> {
+            self.constrain_equal(layouter, lhs.x(), rhs.x())?;
+            self.constrain_equal(layouter, lhs.y(), rhs.y())?;
+            self.constrain_equal(layouter, lhs.is_identity(), rhs.is_identity())?;
+            Ok(())
         }
 
         fn assign_constant_secondary(
@@ -1151,42 +1487,58 @@ mod strawman {
             base: &Self::AssignedSecondary,
             le_bits: &[Self::Assigned],
         ) -> Result<Self::AssignedSecondary, Error> {
-            assert!(le_bits.len() < (C::Scalar::NUM_BITS - 2) as usize);
-
-            let base_neg = self.negate_ec_point(base);
-
-            let mut acc = base.clone();
-            let mut base = base.clone();
-
-            for bit in le_bits.iter().skip(1) {
-                base = self.double_ec_point_incomplete(&base);
-                let acc_plus_base = self.add_ec_point_incomplete(&acc, &base);
-                acc.x = self.select(layouter, bit, acc_plus_base.x(), &acc.x)?;
-                acc.y = self.select(layouter, bit, acc_plus_base.y(), &acc.y)?;
+            // TODO
+            let mut out = C::Secondary::identity().to_curve();
+            for bit in le_bits.iter().rev() {
+                bit.value().zip(base.ec_point).map(|(bit, ec_point)| {
+                    out = out.double();
+                    if bit == C::Scalar::ONE {
+                        out += ec_point;
+                    }
+                });
             }
-
-            let acc_minus_base = self.add_ec_point_incomplete(&acc, &base_neg);
-            let out = self.select_secondary(layouter, &le_bits[0], &acc, &acc_minus_base)?;
-            let identity = self.assign_constant_secondary(layouter, C::Secondary::identity())?;
-            self.select_secondary(layouter, base.is_identity(), &identity, &out)
+            self.assign_witness_secondary(layouter, Value::known(out.into()))
         }
 
-        fn fixed_base_msm_secondary(
+        fn fixed_base_msm_secondary<'a, 'b>(
             &self,
-            _layouter: &mut impl Layouter<C::Scalar>,
-            _bases: &[C::Secondary],
-            _scalars: &[Self::AssignedBase],
-        ) -> Result<Self::AssignedSecondary, Error> {
-            todo!()
+            layouter: &mut impl Layouter<C::Scalar>,
+            bases: impl IntoIterator<Item = &'a C::Secondary>,
+            scalars: impl IntoIterator<Item = &'b Self::AssignedBase>,
+        ) -> Result<Self::AssignedSecondary, Error>
+        where
+            Self::AssignedBase: 'b,
+        {
+            // TODO
+            let output = izip_eq!(bases, scalars).fold(
+                Value::known(C::Secondary::identity()),
+                |acc, (base, scalar)| {
+                    acc.zip(scalar.scalar.value())
+                        .map(|(acc, scalar)| (acc.to_curve() + *base * scalar).into())
+                },
+            );
+            self.assign_witness_secondary(layouter, output)
         }
 
-        fn variable_base_msm_secondary(
+        fn variable_base_msm_secondary<'a, 'b>(
             &self,
-            _layouter: &mut impl Layouter<C::Scalar>,
-            _bases: &[Self::AssignedSecondary],
-            _scalars: &[Self::AssignedBase],
-        ) -> Result<Self::AssignedSecondary, Error> {
-            todo!()
+            layouter: &mut impl Layouter<C::Scalar>,
+            bases: impl IntoIterator<Item = &'a Self::AssignedSecondary>,
+            scalars: impl IntoIterator<Item = &'b Self::AssignedBase>,
+        ) -> Result<Self::AssignedSecondary, Error>
+        where
+            Self::AssignedSecondary: 'a,
+            Self::AssignedBase: 'b,
+        {
+            // TODO
+            let output = izip_eq!(bases, scalars).fold(
+                Value::known(C::Secondary::identity()),
+                |acc, (base, scalar)| {
+                    acc.zip(base.ec_point.zip(scalar.scalar.value()))
+                        .map(|(acc, (base, scalar))| (acc.to_curve() + base * scalar).into())
+                },
+            );
+            self.assign_witness_secondary(layouter, output)
         }
     }
 
@@ -1287,10 +1639,21 @@ mod strawman {
         proof: Value<Cursor<Vec<u8>>>,
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone)]
     pub struct Challenge<F: PrimeField, N: PrimeField> {
         le_bits: Vec<Witness<N>>,
         scalar: AssignedBase<F, N>,
+    }
+
+    impl<F: PrimeField, N: PrimeField> Debug for Challenge<F, N> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let mut f = f.debug_struct("Challenge");
+            self.scalar
+                .scalar
+                .value()
+                .map(|scalar| f.field("scalar", &scalar));
+            f.finish()
+        }
     }
 
     impl<F: PrimeField, N: PrimeField> AsRef<AssignedBase<F, N>> for Challenge<F, N> {

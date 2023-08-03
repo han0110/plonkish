@@ -6,9 +6,9 @@ use crate::{
     poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{
-            inner_product, variable_base_msm, Curve, CurveAffine, CurveExt, Field, Group,
+            inner_product, product, variable_base_msm, Curve, CurveAffine, CurveExt, Field, Group,
         },
-        chain,
+        chain, izip_eq,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
@@ -304,7 +304,7 @@ where
         ) + comm.0;
         let h = MultilinearPolynomial::new(h_coeffs(&xis));
 
-        (c_k == variable_base_msm(&[c, c * h.evaluate(point) * xi_0], [&g_k, vp.h()])
+        (c_k == variable_base_msm(&[c, c * h_eval(point, &xis) * xi_0], [&g_k, vp.h()])
             && g_k == variable_base_msm(h.evals(), vp.g()).to_affine())
         .then_some(())
         .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
@@ -322,13 +322,13 @@ where
     }
 }
 
-fn h_coeffs<F: Field>(xi: &[F]) -> Vec<F> {
-    assert!(!xi.is_empty());
+fn h_coeffs<F: Field>(xis: &[F]) -> Vec<F> {
+    assert!(!xis.is_empty());
 
-    let mut coeffs = vec![F::ZERO; 1 << xi.len()];
+    let mut coeffs = vec![F::ZERO; 1 << xis.len()];
     coeffs[0] = F::ONE;
 
-    for (len, xi) in xi.iter().rev().enumerate().map(|(i, xi)| (1 << i, xi)) {
+    for (len, xi) in xis.iter().rev().enumerate().map(|(i, xi)| (1 << i, xi)) {
         let (left, right) = coeffs.split_at_mut(len);
         let right = &mut right[0..len];
         right.copy_from_slice(left);
@@ -340,6 +340,12 @@ fn h_coeffs<F: Field>(xi: &[F]) -> Vec<F> {
     }
 
     coeffs
+}
+
+fn h_eval<F: Field>(point: &[F], xis: &[F]) -> F {
+    product(
+        izip_eq!(point, xis.iter().rev()).map(|(point_i, xi)| (F::ONE - point_i + *point_i * xi)),
+    )
 }
 
 #[cfg(test)]

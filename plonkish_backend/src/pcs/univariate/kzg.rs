@@ -420,11 +420,11 @@ where
 }
 
 #[derive(Debug)]
-struct EvaluationSet<F: Field> {
-    polys: Vec<usize>,
-    points: Vec<usize>,
-    diffs: Vec<usize>,
-    evals: Vec<Vec<F>>,
+pub(crate) struct EvaluationSet<F> {
+    pub(crate) polys: Vec<usize>,
+    pub(crate) points: Vec<usize>,
+    pub(crate) diffs: Vec<usize>,
+    pub(crate) evals: Vec<Vec<F>>,
 }
 
 impl<F: Field> EvaluationSet<F> {
@@ -451,9 +451,11 @@ impl<F: Field> EvaluationSet<F> {
     }
 }
 
-fn eval_sets<F: Field>(evals: &[Evaluation<F>]) -> (Vec<EvaluationSet<F>>, BTreeSet<usize>) {
+pub(crate) fn eval_sets<F: Clone>(
+    evals: &[Evaluation<F>],
+) -> (Vec<EvaluationSet<F>>, BTreeSet<usize>) {
     let (poly_shifts, superset) = evals.iter().fold(
-        (Vec::<(usize, Vec<usize>, Vec<F>)>::new(), BTreeSet::new()),
+        (Vec::<(usize, Vec<usize>, Vec<&F>)>::new(), BTreeSet::new()),
         |(mut poly_shifts, mut superset), eval| {
             if let Some(pos) = poly_shifts
                 .iter()
@@ -462,10 +464,10 @@ fn eval_sets<F: Field>(evals: &[Evaluation<F>]) -> (Vec<EvaluationSet<F>>, BTree
                 let (_, points, evals) = &mut poly_shifts[pos];
                 if !points.contains(&eval.point) {
                     points.push(eval.point);
-                    evals.push(*eval.value());
+                    evals.push(eval.value());
                 }
             } else {
-                poly_shifts.push((eval.poly, vec![eval.point], vec![*eval.value()]));
+                poly_shifts.push((eval.poly, vec![eval.point], vec![eval.value()]));
             }
             superset.insert(eval.point());
             (poly_shifts, superset)
@@ -486,7 +488,7 @@ fn eval_sets<F: Field>(evals: &[Evaluation<F>]) -> (Vec<EvaluationSet<F>>, BTree
                             .iter()
                             .map(|lhs| {
                                 let idx = points.iter().position(|rhs| lhs == rhs).unwrap();
-                                evals[idx]
+                                evals[idx].clone()
                             })
                             .collect(),
                     );
@@ -501,7 +503,7 @@ fn eval_sets<F: Field>(evals: &[Evaluation<F>]) -> (Vec<EvaluationSet<F>>, BTree
                     polys: vec![poly],
                     points,
                     diffs,
-                    evals: vec![evals],
+                    evals: vec![evals.into_iter().cloned().collect()],
                 });
             }
             sets

@@ -127,7 +127,12 @@ mod additive {
         },
         Error,
     };
-    use std::{borrow::Cow, collections::HashMap, ops::Deref, ptr::addr_of};
+    use std::{
+        borrow::Cow,
+        collections::{BTreeMap, HashMap},
+        ops::Deref,
+        ptr::addr_of,
+    };
 
     type SumCheck<F> = ClassicSumCheck<CoefficientsProver<F>>;
 
@@ -263,13 +268,22 @@ mod additive {
             .map(|point| eq_xy_eval(&challenges, point))
             .collect_vec();
         let g_prime_comm = {
-            let scalars = evals
+            let scalars = evals.iter().zip(eq_xt.evals()).fold(
+                BTreeMap::<_, _>::new(),
+                |mut scalars, (eval, eq_xt_i)| {
+                    let rhs = eq_xy_evals[eval.point()] * eq_xt_i;
+                    scalars
+                        .entry(eval.poly())
+                        .and_modify(|lhs| *lhs += rhs)
+                        .or_insert(rhs);
+                    scalars
+                },
+            );
+            let (bases, scalars) = scalars
                 .iter()
-                .zip(eq_xt.evals())
-                .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
-                .collect_vec();
-            let bases = evals.iter().map(|eval| comms[eval.poly()]);
-            Pcs::Commitment::sum_with_scalar(&scalars, bases)
+                .map(|(poly, scalar)| (comms[*poly], scalar))
+                .unzip::<_, _, Vec<_>, Vec<_>>();
+            Pcs::Commitment::sum_with_scalar(scalars, bases)
         };
         Pcs::verify(vp, &g_prime_comm, &challenges, &g_prime_eval, transcript)
     }

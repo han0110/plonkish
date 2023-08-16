@@ -75,7 +75,7 @@ pub(super) fn powers_of_zeta_poly<F: PrimeField>(
     num_vars: usize,
     zeta: F,
 ) -> MultilinearPolynomial<F> {
-    let powers_of_zeta = powers(zeta).take(1 << num_vars).collect_vec();
+    let powers_of_zeta: Vec<F> = powers(zeta).take(1 << num_vars).collect_vec();
     let nth_map = BooleanHypercube::new(num_vars).nth_map();
     MultilinearPolynomial::new(par_map_collect(&nth_map, |b| powers_of_zeta[*b]))
 }

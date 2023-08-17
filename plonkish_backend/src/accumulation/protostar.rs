@@ -1,6 +1,6 @@
 use crate::{
     accumulation::{
-        protostar::ProtostarStrategy::{Compressing, NoCompressing},
+        protostar::ProtostarStrategy::{Compressing, NoCompressing, CompressingWithSqrtPowers},
         PlonkishNark, PlonkishNarkInstance,
     },
     backend::PlonkishBackend,
@@ -33,12 +33,12 @@ pub enum ProtostarStrategy {
     Compressing = 1,
     // TODO:
     // Compressing verification with square-root optimization applied as described in 2023/620 section 3.5
-    // CompressingWithSqrtPowers = 3,
+    CompressingWithSqrtPowers = 3,
 }
 
 impl From<usize> for ProtostarStrategy {
     fn from(strategy: usize) -> Self {
-        [NoCompressing, Compressing][strategy]
+        [NoCompressing, Compressing, CompressingWithSqrtPowers][strategy]
     }
 }
 
@@ -171,32 +171,6 @@ where
         izip!(powers(*r).skip(1), [zeta_cross_term_poly, &rhs.e_poly])
             .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));
     }
-
-    fn fold_compressed_sqrt(
-        &mut self,
-        rhs: &Self,
-        zeta_cross_term_poly: &Pcs::Polynomial,
-        zeta_cross_term_comm: &Pcs::Commitment,
-        compressed_cross_term_sums: &[F],
-        r: &F,
-    ) where
-        Pcs::Commitment: AdditiveCommitment<F>,
-    {
-        self.instance.fold_compressed_sqrt(
-            &rhs.instance,
-            zeta_cross_term_comm,
-            compressed_cross_term_sums,
-            r,
-        );
-        izip_eq!(&mut self.witness_polys, &rhs.witness_polys)
-            .for_each(|(lhs, rhs)| *lhs += (r, rhs));
-        izip!(powers(*r).skip(1), [zeta_cross_term_poly, &rhs.e_poly])
-            .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));
-    }
-
-    pub fn instance(&self) -> &ProtostarAccumulatorInstance<F, Pcs::Commitment> {
-        &self.instance
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,6 +211,7 @@ where
             compressed_e_sum: match strategy {
                 NoCompressing => None,
                 Compressing => Some(F::ZERO),
+                CompressingWithSqrtPowers => Some(F::ZERO),
             },
         }
     }
@@ -277,6 +252,7 @@ where
             compressed_e_sum: match strategy {
                 NoCompressing => None,
                 Compressing => Some(F::ZERO),
+                CompressingWithSqrtPowers => Some(F::ZERO),
             },
         }
     }

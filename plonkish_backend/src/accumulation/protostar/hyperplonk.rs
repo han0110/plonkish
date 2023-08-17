@@ -207,12 +207,16 @@ where
                 )
             },
             CompressingWithSqrtPowers => {
-                assert_eq!((pp.num_vars as f64).sqrt().fract(), 0.0, "The number is not a perfect square");
+                assert_eq!((2**pp.num_vars as f64).sqrt().fract(), 0.0, "The number is not a perfect square");
                 
                 let zeta = transcript.squeeze_challenge();
 
+                // check if this is optimal
                 let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
-                let powers_of_zeta_poly = powers_of_zeta_poly(pp.num_vars, zeta);
+                let l_sqrt = (2**pp.num_vars as f64).sqrt();
+                let powers_of_zeta_first_poly = powers_of_zeta_poly((l_sqrt-1).log2(), zeta);
+                let powers_of_zeta_second_poly = powers_of_zeta_poly((l_sqrt-1).log2(), zeta**l_sqrt);
+                let powers_of_zeta_poly = powers_of_zeta_first_poly.add(powers_of_zeta_second_poly);
                 end_timer(timer);
 
                 let powers_of_zeta_comm =
@@ -346,8 +350,9 @@ where
             }
             CompressingWithSqrtPowers => {
                 let timer = start_timer(|| "evaluate_zeta_cross_term_poly");
+                let l_sqrt = (2**pp.num_vars as f64).sqrt();
                 let zeta_cross_term_poly = evaluate_zeta_cross_term_poly(
-                    pp.num_vars,
+                    2*l_sqrt,
                     *num_alpha_primes,
                     accumulator,
                     incoming,
@@ -360,7 +365,7 @@ where
                 });
                 let compressed_cross_term_sums = evaluate_compressed_cross_term_sums(
                     cross_term_expressions,
-                    pp.num_vars,
+                    2*l_sqrt,
                     &pp.preprocess_polys,
                     accumulator,
                     incoming,
@@ -375,7 +380,7 @@ where
 
                 let r = transcript.squeeze_challenge();
 
-                let timer = start_timer(|| "fold_compressed");
+                let timer = start_timer(|| "fold_compressed_sqrt");
                 accumulator.fold_compressed(
                     incoming,
                     &zeta_cross_term_poly,

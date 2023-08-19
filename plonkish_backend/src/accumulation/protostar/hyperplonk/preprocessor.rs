@@ -40,6 +40,9 @@ pub(crate) fn batch_size<F: PrimeField>(
             Compressing => {
                 vec![1]
             }
+            CompressingWithSqrtPowers => {
+                vec![1]
+            }
         },
         [2 * num_lookups + div_ceil(num_permutation_polys, max_degree(circuit_info, None) - 1)],
         [1],

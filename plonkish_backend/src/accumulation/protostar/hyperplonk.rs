@@ -207,13 +207,13 @@ where
                 )
             },
             CompressingWithSqrtPowers => {
-                assert_eq!((2**pp.num_vars as f64).sqrt().fract(), 0.0, "The number is not a perfect square");
+                assert_eq!((2**pp.num_vars as f64).sqrt().fract(), 0.0, "L is not a perfect square");
                 
                 let zeta = transcript.squeeze_challenge();
 
                 // check if this is optimal
                 let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
-                let l_sqrt = (2**pp.num_vars as f64).sqrt();
+                let l_sqrt = (2**pp.num_vars as f64).sqrt() as usize;
                 let powers_of_zeta_first_poly = powers_of_zeta_poly((l_sqrt-1).log2(), zeta);
                 let powers_of_zeta_second_poly = powers_of_zeta_poly((l_sqrt-1).log2(), zeta**l_sqrt);
                 let powers_of_zeta_poly = powers_of_zeta_first_poly.add(powers_of_zeta_second_poly);
@@ -350,7 +350,7 @@ where
             }
             CompressingWithSqrtPowers => {
                 let timer = start_timer(|| "evaluate_zeta_cross_term_poly");
-                let l_sqrt = (2**pp.num_vars as f64).sqrt();
+                let l_sqrt = (2**pp.num_vars as f64).sqrt() as usize;
                 let zeta_cross_term_poly = evaluate_zeta_cross_term_poly(
                     2*l_sqrt,
                     *num_alpha_primes,

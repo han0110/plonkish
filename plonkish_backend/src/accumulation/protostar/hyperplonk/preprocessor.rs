@@ -1,7 +1,7 @@
 use crate::{
     accumulation::protostar::{
         ProtostarProverParam, ProtostarStrategy,
-        ProtostarStrategy::{Compressing, NoCompressing},
+        ProtostarStrategy::{Compressing, NoCompressing, CompressingWithSqrtPowers},
         ProtostarVerifierParam,
     },
     backend::{
@@ -220,6 +220,93 @@ where
             };
             let powers_of_zeta_constraint = powers_of_zeta_constraint(zeta, powers_of_zeta);
             let zeta_products = products(&poly_set.preprocess, &powers_of_zeta_constraint);
+
+            let num_folding_challenges = alpha_prime_offset + num_alpha_primes;
+            let cross_term_expressions =
+                cross_term_expressions(&poly_set, &compressed_products, num_folding_challenges);
+
+            let u = num_folding_challenges;
+            let relexed_compressed_constraint = relaxed_expression(&compressed_products, u);
+            let relexed_zeta_constraint = {
+                let e = powers_of_zeta + num_permutation_z_polys + 1;
+                relaxed_expression(&zeta_products, u)
+                    - Expression::Polynomial(Query::new(e, Rotation::cur()))
+            };
+
+            (
+                num_builtin_witness_polys,
+                alpha_prime_offset,
+                cross_term_expressions,
+                Some(relexed_compressed_constraint),
+                relexed_zeta_constraint,
+            )
+        }
+        CompressingWithSqrtPowers => {
+            let zeta = challenge_offset + num_theta_primes + 1;
+            let alpha_prime_offset = zeta + 1;
+            let num_builtin_witness_polys = 3 * circuit_info.lookups.len() + 1;
+            let builtin_witness_poly_offset =
+                witness_poly_offset + num_witness_polys + circuit_info.permutation_polys().len();
+
+            let poly_set = PolynomialSet {
+                preprocess: iter::empty()
+                    .chain(
+                        (circuit_info.num_instances.len()..)
+                            .take(circuit_info.preprocess_polys.len()),
+                    )
+                    .collect(),
+                folding: iter::empty()
+                    .chain(0..circuit_info.num_instances.len())
+                    .chain((witness_poly_offset..).take(num_witness_polys))
+                    .chain((builtin_witness_poly_offset..).take(num_builtin_witness_polys))
+                    .collect(),
+            };
+
+            let powers_of_zeta = builtin_witness_poly_offset + circuit_info.lookups.len() * 3;
+            assert_eq!((powers_of_zeta as f64).sqrt().fract(), 0.0, "L is not a perfect square");
+            let l_sqrt = (powers_of_zeta as f64).sqrt() as usize;
+            let powers_of_zeta_sqrt = l_sqrt - 1;
+            let compressed_products = {
+                let mut constraints = iter::empty()
+                    .chain(circuit_info.constraints.iter())
+                    .chain(lookup_constraints.iter())
+                    .collect_vec();
+                let folding_degrees = constraints
+                    .iter()
+                    .map(|constraint| folding_degree(&poly_set.preprocess, constraint))
+                    .enumerate()
+                    .sorted_by(|a, b| b.1.cmp(&a.1))
+                    .collect_vec();
+                if let &[a, b, ..] = &folding_degrees[..] {
+                    if a.1 != b.1 {
+                        constraints.swap(0, a.0);
+                    }
+                }
+                let powers_of_zeta_sqrt =
+                    Expression::<F>::Polynomial(Query::new(powers_of_zeta_sqrt, Rotation::cur()));
+                let compressed_constraint = iter::empty()
+                    .chain(constraints.first().cloned().cloned())
+                    .chain(
+                        constraints
+                            .into_iter()
+                            .skip(1)
+                            .zip((alpha_prime_offset..).map(Expression::Challenge))
+                            .map(|(constraint, challenge)| constraint * challenge),
+                    )
+                    .sum::<Expression<_>>()
+                    * powers_of_zeta_sqrt;
+                products(&poly_set.preprocess, &compressed_constraint)
+            };
+            let powers_of_zeta_sqrt1_constraint = powers_of_zeta_constraint(zeta, powers_of_zeta_sqrt);
+            let zeta_sqrt1_products = products(&poly_set.preprocess, &powers_of_zeta_sqrt1_constraint);
+
+            let powers_of_zeta_sqrt2_constraint = powers_of_zeta_constraint(zeta**l_sqrt, powers_of_zeta_sqrt);
+            let zeta_sqrt2_products = products(&poly_set.preprocess, &powers_of_zeta_sqrt2_constraint);
+
+            let zeta_products = iter::empty()
+            .chain(*zeta_sqrt1_products.iter())
+            .chain(*zeta_sqrt2_products.iter())
+            .collect_vec(); 
 
             let num_folding_challenges = alpha_prime_offset + num_alpha_primes;
             let cross_term_expressions =

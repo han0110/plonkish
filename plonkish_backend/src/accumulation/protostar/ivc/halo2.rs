@@ -4,7 +4,7 @@ use crate::{
             ivc::ProtostarAccumulationVerifierParam,
             PlonkishNarkInstance, Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance,
             ProtostarProverParam,
-            ProtostarStrategy::{Compressing, NoCompressing},
+            ProtostarStrategy::{Compressing, NoCompressing, CompressingWithSqrtPowers},
             ProtostarVerifierParam,
         },
         AccumulationScheme,
@@ -437,6 +437,7 @@ pub trait TranscriptInstruction<C: TwoChainCurve>: Debug {
             + match avp.strategy {
                 NoCompressing => avp.num_cross_terms * uncompressed_comm_size,
                 Compressing => uncompressed_comm_size + avp.num_cross_terms * scalar_size,
+                CompressingWithSqrtPowers => uncompressed_comm_size + avp.num_cross_terms * scalar_size,
             };
         vec![0; proof_size]
     }
@@ -625,6 +626,7 @@ where
         let compressed_e_sum = match self.avp.strategy {
             NoCompressing => None,
             Compressing => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
+            CompressingWithSqrtPowers => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
         };
 
         Ok(ProtostarAccumulatorInstance {
@@ -683,6 +685,10 @@ where
                 tcc_chip
                     .assign_witness_base(layouter, acc.map(|acc| acc.compressed_e_sum.unwrap()))?,
             ),
+            CompressingWithSqrtPowers => Some(
+                tcc_chip
+                    .assign_witness_base(layouter, acc.map(|acc| acc.compressed_e_sum.unwrap()))?,
+            ),
         };
 
         Ok(ProtostarAccumulatorInstance {
@@ -715,6 +721,7 @@ where
         let compressed_e_sum = match self.avp.strategy {
             NoCompressing => None,
             Compressing => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
+            CompressingWithSqrtPowers => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
         };
 
         Ok(ProtostarAccumulatorInstance {
@@ -786,6 +793,13 @@ where
                 (cross_term_comms, None)
             }
             Compressing => {
+                let zeta_cross_term_comm = vec![transcript.read_commitment(layouter)?];
+                let compressed_cross_term_sums =
+                    transcript.read_field_elements(layouter, *num_cross_terms)?;
+
+                (zeta_cross_term_comm, Some(compressed_cross_term_sums))
+            }
+            CompressingWithSqrtPowers => {
                 let zeta_cross_term_comm = vec![transcript.read_commitment(layouter)?];
                 let compressed_cross_term_sums =
                     transcript.read_field_elements(layouter, *num_cross_terms)?;
@@ -908,6 +922,18 @@ where
                         &rhs,
                     )?)
                 }
+                CompressingWithSqrtPowers => {
+                    let rhs = tcc_chip.inner_product_base(
+                        layouter,
+                        &powers_of_r[1..],
+                        compressed_cross_term_sums.unwrap(),
+                    )?;
+                    Some(tcc_chip.add_base(
+                        layouter,
+                        acc.compressed_e_sum.as_ref().unwrap(),
+                        &rhs,
+                    )?)
+                }
             };
 
             ProtostarAccumulatorInstance {
@@ -970,6 +996,12 @@ where
         let compressed_e_sum = match self.avp.strategy {
             NoCompressing => None,
             Compressing => Some(tcc_chip.select_base(
+                layouter,
+                condition,
+                when_true.compressed_e_sum.as_ref().unwrap(),
+                when_false.compressed_e_sum.as_ref().unwrap(),
+            )?),
+            CompressingWithSqrtPowers => Some(tcc_chip.select_base(
                 layouter,
                 condition,
                 when_true.compressed_e_sum.as_ref().unwrap(),

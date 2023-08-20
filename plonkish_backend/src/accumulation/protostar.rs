@@ -169,8 +169,12 @@ where
         izip_eq!(&mut self.witness_polys, &rhs.witness_polys)
             .for_each(|(lhs, rhs)| *lhs += (r, rhs));
         izip!(powers(*r).skip(1), [zeta_cross_term_poly, &rhs.e_poly])
-            .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));
+            .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));   
     }
+    
+        pub fn instance(&self) -> &ProtostarAccumulatorInstance<F, Pcs::Commitment> {
+            &self.instance
+        }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

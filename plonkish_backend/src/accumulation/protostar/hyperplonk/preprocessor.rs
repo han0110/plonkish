@@ -300,12 +300,12 @@ where
             let powers_of_zeta_sqrt1_constraint = powers_of_zeta_constraint(zeta, powers_of_zeta_sqrt);
             let zeta_sqrt1_products = products(&poly_set.preprocess, &powers_of_zeta_sqrt1_constraint);
 
-            let powers_of_zeta_sqrt2_constraint = powers_of_zeta_constraint(zeta**l_sqrt, powers_of_zeta_sqrt);
+            let powers_of_zeta_sqrt2_constraint = powers_of_zeta_constraint(zeta.pow(l_sqrt as u32), powers_of_zeta_sqrt);
             let zeta_sqrt2_products = products(&poly_set.preprocess, &powers_of_zeta_sqrt2_constraint);
 
             let zeta_products = iter::empty()
-            .chain(*zeta_sqrt1_products.iter())
-            .chain(*zeta_sqrt2_products.iter())
+            .chain(zeta_sqrt1_products.iter().cloned())
+            .chain(zeta_sqrt2_products.iter().cloned())
             .collect_vec(); 
 
             let num_folding_challenges = alpha_prime_offset + num_alpha_primes;

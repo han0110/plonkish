@@ -45,3 +45,8 @@ sanity-check = []
 name = "zero_check"
 harness = false
 required-features = ["benchmark"]
+
+[[bench]]
+name = "pcs"
+harness = false
+required-features = ["benchmark"]

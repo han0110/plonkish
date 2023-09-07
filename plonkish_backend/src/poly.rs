@@ -14,4 +14,12 @@ pub trait Polynomial<F: Field>: Clone + Debug + for<'a> AddAssign<(&'a F, &'a Se
     fn evals(&self) -> &[F];
 
     fn evaluate(&self, point: &Self::Point) -> F;
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn rand(n: usize, rng: &mut impl rand::RngCore) -> Self {
+        Self::from_evals(crate::util::test::rand_vec(n, rng))
+    }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn rand_point(k: usize, rng: &mut impl rand::RngCore) -> Self::Point;
 }

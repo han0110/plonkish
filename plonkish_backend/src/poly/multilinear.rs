@@ -80,6 +80,11 @@ impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
     fn evaluate(&self, point: &Self::Point) -> F {
         MultilinearPolynomial::evaluate(self, point.as_slice())
     }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn rand_point(k: usize, rng: &mut impl rand::RngCore) -> Self::Point {
+        crate::util::test::rand_vec(k, rng)
+    }
 }
 
 impl<F: Field> MultilinearPolynomial<F> {

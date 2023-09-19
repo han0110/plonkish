@@ -81,6 +81,11 @@ impl<F: Field> Polynomial<F> for UnivariatePolynomial<F, CoefficientBasis> {
     fn evaluate(&self, point: &Self::Point) -> F {
         UnivariatePolynomial::evaluate(self, point)
     }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn rand_point(_: usize, rng: &mut impl rand::RngCore) -> F {
+        F::random(rng)
+    }
 }
 
 impl<F: Field> UnivariatePolynomial<F, CoefficientBasis> {

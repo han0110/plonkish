@@ -1,17 +1,17 @@
 use crate::{
     piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
-    poly::multilinear::zip_self,
+    poly::multilinear::{zip_self, MultilinearPolynomial},
     util::{
         arithmetic::{div_ceil, horner, PrimeField},
         expression::{CommonPolynomial, Expression, Rotation},
-        impl_index,
+        impl_index, izip_eq,
         parallel::{num_threads, parallelize_iter},
         transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         Itertools,
     },
     Error,
 };
-use std::{fmt::Debug, iter, ops::AddAssign};
+use std::{array, fmt::Debug, iter, ops::AddAssign};
 
 #[derive(Debug)]
 pub struct Coefficients<F>(Vec<F>);
@@ -63,7 +63,10 @@ impl<'rhs, F: PrimeField> AddAssign<(&'rhs F, &'rhs Coefficients<F>)> for Coeffi
 impl_index!(Coefficients, 0);
 
 #[derive(Clone, Debug)]
-pub struct CoefficientsProver<F: PrimeField>(F, Vec<(F, Vec<Expression<F>>)>);
+pub struct CoefficientsProver<F: PrimeField> {
+    constant: F,
+    products: Vec<(F, Vec<Expression<F>>)>,
+}
 
 impl<F> ClassicSumCheckProver<F> for CoefficientsProver<F>
 where
@@ -72,7 +75,7 @@ where
     type RoundMessage = Coefficients<F>;
 
     fn new(state: &ProverState<F>) -> Self {
-        let (constant, flattened) = state.expression.evaluate(
+        let (constant, products) = state.expression.evaluate(
             &|constant| (constant, vec![]),
             &|poly| {
                 (
@@ -127,21 +130,21 @@ where
                 (constant * &rhs, products)
             },
         );
-        Self(constant, flattened)
+        Self { constant, products }
     }
 
     fn prove_round(&self, state: &ProverState<F>) -> Self::RoundMessage {
         let mut coeffs = Coefficients(vec![F::ZERO; state.expression.degree() + 1]);
-        coeffs += &(F::from(state.size() as u64) * &self.0);
-        if self.1.iter().all(|(_, products)| products.len() == 2) {
-            for (scalar, products) in self.1.iter() {
-                let [lhs, rhs] = [0, 1].map(|idx| &products[idx]);
-                coeffs += (scalar, &self.karatsuba::<true>(state, lhs, rhs));
+        coeffs += &(F::from(state.size() as u64) * &self.constant);
+
+        for (scalar, products) in self.products.iter() {
+            match products.len() {
+                2 => coeffs += (scalar, &self.karatsuba::<true>(state, products)),
+                _ => unimplemented!(),
             }
-            coeffs[1] = state.sum - coeffs[0].double() - coeffs[2];
-        } else {
-            unimplemented!()
         }
+
+        coeffs[1] = state.sum - coeffs.sum();
         coeffs
     }
 }
@@ -150,60 +153,64 @@ impl<F: PrimeField> CoefficientsProver<F> {
     fn karatsuba<const LAZY: bool>(
         &self,
         state: &ProverState<F>,
-        lhs: &Expression<F>,
-        rhs: &Expression<F>,
+        items: &[Expression<F>],
     ) -> Coefficients<F> {
-        let mut coeffs = [F::ZERO; 3];
-        match (lhs, rhs) {
-            (
-                Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)),
-                Expression::Polynomial(query),
+        debug_assert_eq!(items.len(), 2);
+
+        let [lhs, rhs] = array::from_fn(|idx| poly(state, &items[idx]));
+        let evaluate_serial = |coeffs: &mut [F; 3], start: usize, n: usize| {
+            izip_eq!(
+                zip_self!(lhs.iter(), 2, start),
+                zip_self!(rhs.iter(), 2, start)
             )
-            | (
-                Expression::Polynomial(query),
-                Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)),
-            ) if query.rotation() == Rotation::cur() => {
-                let lhs = &state.eq_xys[*idx];
-                let rhs = &state.polys[query.poly()][state.num_vars];
+            .take(n)
+            .for_each(|((lhs_0, lhs_1), (rhs_0, rhs_1))| {
+                let eval_0 = *lhs_0 * rhs_0;
+                let eval_2 = (*lhs_1 - lhs_0) * &(*rhs_1 - rhs_0);
+                coeffs[0] += &eval_0;
+                coeffs[2] += &eval_2;
+                if !LAZY {
+                    coeffs[1] += &(*lhs_1 * rhs_1 - &eval_0 - &eval_2);
+                }
+            });
+        };
 
-                let evaluate_serial = |coeffs: &mut [F; 3], start: usize, n: usize| {
-                    zip_self!(lhs.iter(), 2, start)
-                        .zip(zip_self!(rhs.iter(), 2, start))
-                        .take(n)
-                        .for_each(|((lhs_0, lhs_1), (rhs_0, rhs_1))| {
-                            let coeff_0 = *lhs_0 * rhs_0;
-                            let coeff_2 = (*lhs_1 - lhs_0) * &(*rhs_1 - rhs_0);
-                            coeffs[0] += &coeff_0;
-                            coeffs[2] += &coeff_2;
-                            if !LAZY {
-                                coeffs[1] += &(*lhs_1 * rhs_1 - &coeff_0 - &coeff_2);
-                            }
-                        });
-                };
+        let mut coeffs = [F::ZERO; 3];
 
-                let num_threads = num_threads();
-                if state.size() < num_threads {
-                    evaluate_serial(&mut coeffs, 0, state.size());
-                } else {
-                    let chunk_size = div_ceil(state.size(), num_threads);
-                    let mut partials = vec![[F::ZERO; 3]; num_threads];
-                    parallelize_iter(
-                        partials.iter_mut().zip((0..).step_by(chunk_size << 1)),
-                        |(partial, start)| {
-                            evaluate_serial(partial, start, chunk_size);
-                        },
-                    );
-                    partials.iter().for_each(|partial| {
-                        coeffs[0] += partial[0];
-                        coeffs[2] += partial[2];
-                        if !LAZY {
-                            coeffs[1] += partial[1];
-                        }
-                    })
-                };
-            }
-            _ => unimplemented!(),
-        }
+        let num_threads = num_threads();
+        if state.size() < 16 {
+            evaluate_serial(&mut coeffs, 0, state.size());
+        } else {
+            let chunk_size = div_ceil(state.size(), num_threads);
+            let mut partials = vec![[F::ZERO; 3]; num_threads];
+            parallelize_iter(
+                partials.iter_mut().zip((0..).step_by(chunk_size << 1)),
+                |(partial, start)| {
+                    evaluate_serial(partial, start, chunk_size);
+                },
+            );
+            partials.iter().for_each(|partial| {
+                coeffs[0] += partial[0];
+                coeffs[2] += partial[2];
+                if !LAZY {
+                    coeffs[1] += partial[1];
+                }
+            })
+        };
+
         Coefficients(coeffs.to_vec())
+    }
+}
+
+fn poly<'a, F: PrimeField>(
+    state: &'a ProverState<F>,
+    expr: &Expression<F>,
+) -> &'a MultilinearPolynomial<F> {
+    match expr {
+        Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)) => &state.eq_xys[*idx],
+        Expression::Polynomial(query) if query.rotation() == Rotation::cur() => {
+            &state.polys[query.poly()][state.num_vars]
+        }
+        _ => unimplemented!(),
     }
 }

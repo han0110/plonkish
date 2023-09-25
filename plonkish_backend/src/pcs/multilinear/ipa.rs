@@ -235,7 +235,6 @@ where
             zs.truncate(mid);
         }
 
-        transcript.write_commitment(&bases[0])?;
         transcript.write_field_element(&coeffs[0])?;
 
         Ok(())
@@ -289,25 +288,21 @@ where
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
-        let g_k = transcript.read_commitment()?;
-        let c = transcript.read_field_element()?;
+        let neg_c = -transcript.read_field_element()?;
 
         let xi_invs = {
             let mut xi_invs = xis.clone();
             xi_invs.iter_mut().batch_invert();
             xi_invs
         };
-        let eval_prime = xi_0 * eval;
-        let c_k = variable_base_msm(
-            chain![&xi_invs, &xis, Some(&eval_prime)],
-            chain![&ls, &rs, Some(vp.h())],
-        ) + comm.0;
         let h = MultilinearPolynomial::new(h_coeffs(&xis));
-
-        (c_k == variable_base_msm(&[c, c * h.evaluate(point) * xi_0], [&g_k, vp.h()])
-            && g_k == variable_base_msm(h.evals(), vp.g()).to_affine())
-        .then_some(())
-        .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
+        let hc = h.evals().iter().map(|h| *h * neg_c).collect_vec();
+        let u = &(xi_0 * (neg_c * h.evaluate(point) + eval));
+        let scalars = chain![&xi_invs, &xis, &hc, Some(u)];
+        let bases = chain![&ls, &rs, vp.g(), Some(vp.h())];
+        bool::from((variable_base_msm(scalars, bases) + comm.0).is_identity())
+            .then_some(())
+            .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
     }
 
     fn batch_verify<'a>(

@@ -235,7 +235,6 @@ where
             zs.truncate(mid);
         }
 
-        transcript.write_commitment(&bases[0])?;
         transcript.write_field_element(&coeffs[0])?;
 
         Ok(())
@@ -289,25 +288,20 @@ where
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
-        let g_k = transcript.read_commitment()?;
-        let c = transcript.read_field_element()?;
+        let neg_c = -transcript.read_field_element()?;
 
         let xi_invs = {
             let mut xi_invs = xis.clone();
             xi_invs.iter_mut().batch_invert();
             xi_invs
         };
-        let eval_prime = xi_0 * eval;
-        let c_k = variable_base_msm(
-            chain![&xi_invs, &xis, Some(&eval_prime)],
-            chain![&ls, &rs, Some(vp.h())],
-        ) + comm.0;
-        let h = MultilinearPolynomial::new(h_coeffs(&xis));
-
-        (c_k == variable_base_msm(&[c, c * h.evaluate(point) * xi_0], [&g_k, vp.h()])
-            && g_k == variable_base_msm(h.evals(), vp.g()).to_affine())
-        .then_some(())
-        .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
+        let neg_c_h = MultilinearPolynomial::new(h_coeffs(neg_c, &xis));
+        let u = &(xi_0 * (neg_c_h.evaluate(point) + eval));
+        let scalars = chain![&xi_invs, &xis, neg_c_h.evals(), Some(u)];
+        let bases = chain![&ls, &rs, vp.g(), Some(vp.h())];
+        bool::from((variable_base_msm(scalars, bases) + comm.0).is_identity())
+            .then_some(())
+            .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
     }
 
     fn batch_verify<'a>(
@@ -322,11 +316,11 @@ where
     }
 }
 
-fn h_coeffs<F: Field>(xi: &[F]) -> Vec<F> {
+fn h_coeffs<F: Field>(scalar: F, xi: &[F]) -> Vec<F> {
     assert!(!xi.is_empty());
 
     let mut coeffs = vec![F::ZERO; 1 << xi.len()];
-    coeffs[0] = F::ONE;
+    coeffs[0] = scalar;
 
     for (len, xi) in xi.iter().rev().enumerate().map(|(i, xi)| (1 << i, xi)) {
         let (left, right) = coeffs.split_at_mut(len);

@@ -1,3 +1,3 @@
-mod fractional_sum;
+mod fractional_sum_check;
 
-pub use fractional_sum::{prove_fractional_sum, verify_fractional_sum};
+pub use fractional_sum_check::{prove_fractional_sum_check, verify_fractional_sum_check};

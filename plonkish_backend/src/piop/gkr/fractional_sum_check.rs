@@ -86,7 +86,7 @@ impl<F: PrimeField> Layer<F> {
 }
 
 #[allow(clippy::type_complexity)]
-pub fn prove_fractional_sum<'a, F: PrimeField>(
+pub fn prove_fractional_sum_check<'a, F: PrimeField>(
     claimed_p_0s: impl IntoIterator<Item = Option<F>>,
     claimed_q_0s: impl IntoIterator<Item = Option<F>>,
     ps: impl IntoIterator<Item = &'a MultilinearPolynomial<F>>,
@@ -190,7 +190,7 @@ pub fn prove_fractional_sum<'a, F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub fn verify_fractional_sum<F: PrimeField>(
+pub fn verify_fractional_sum_check<F: PrimeField>(
     num_vars: usize,
     claimed_p_0s: impl IntoIterator<Item = Option<F>>,
     claimed_q_0s: impl IntoIterator<Item = Option<F>>,
@@ -310,7 +310,9 @@ fn err_unmatched_sum_check_output() -> Error {
 #[cfg(test)]
 mod test {
     use crate::{
-        piop::gkr::fractional_sum::{prove_fractional_sum, verify_fractional_sum},
+        piop::gkr::fractional_sum_check::{
+            prove_fractional_sum_check, verify_fractional_sum_check,
+        },
         poly::multilinear::MultilinearPolynomial,
         util::{
             chain, izip_eq,
@@ -323,7 +325,7 @@ mod test {
     use std::iter;
 
     #[test]
-    fn fractional_sum() {
+    fn fractional_sum_check() {
         let num_batching = 3;
         for num_vars in 1..16 {
             let mut rng = seeded_std_rng();
@@ -338,14 +340,25 @@ mod test {
 
             let proof = {
                 let mut transcript = Keccak256Transcript::new(());
-                prove_fractional_sum::<Fr>(p_0s.to_vec(), q_0s.to_vec(), ps, qs, &mut transcript)
-                    .unwrap();
+                prove_fractional_sum_check::<Fr>(
+                    p_0s.to_vec(),
+                    q_0s.to_vec(),
+                    ps,
+                    qs,
+                    &mut transcript,
+                )
+                .unwrap();
                 transcript.into_proof()
             };
 
             let result = {
                 let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
-                verify_fractional_sum::<Fr>(num_vars, p_0s.to_vec(), q_0s.to_vec(), &mut transcript)
+                verify_fractional_sum_check::<Fr>(
+                    num_vars,
+                    p_0s.to_vec(),
+                    q_0s.to_vec(),
+                    &mut transcript,
+                )
             };
             assert_eq!(result.as_ref().map(|_| ()), Ok(()));
 

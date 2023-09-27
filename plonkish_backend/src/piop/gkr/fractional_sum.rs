@@ -6,11 +6,11 @@
 use crate::{
     piop::sum_check::{
         classic::{ClassicSumCheck, EvaluationsProver},
-        eq_xy_eval, SumCheck, VirtualPolynomial,
+        evaluate, SumCheck as _, VirtualPolynomial,
     },
     poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
-        arithmetic::{div_ceil, PrimeField},
+        arithmetic::{div_ceil, inner_product, powers, PrimeField},
         chain,
         expression::{Expression, Query, Rotation},
         izip,
@@ -20,7 +20,9 @@ use crate::{
     },
     Error,
 };
-use std::{array, iter};
+use std::{array, collections::HashMap, iter};
+
+type SumCheck<F> = ClassicSumCheck<EvaluationsProver<F>>;
 
 struct Layer<F> {
     p_l: MultilinearPolynomial<F>,
@@ -37,8 +39,8 @@ impl<F> From<[Vec<F>; 4]> for Layer<F> {
 }
 
 impl<F: PrimeField> Layer<F> {
-    fn initial(p: &[F], q: &[F]) -> Self {
-        let mid = p.len() >> 1;
+    fn bottom((p, q): (&&MultilinearPolynomial<F>, &&MultilinearPolynomial<F>)) -> Self {
+        let mid = p.evals().len() >> 1;
         [&p[..mid], &p[mid..], &q[..mid], &q[mid..]]
             .map(ToOwned::to_owned)
             .into()
@@ -56,188 +58,249 @@ impl<F: PrimeField> Layer<F> {
         let [p_l, p_r, q_l, q_r] = self.polys().map(|poly| poly.evals().chunks(chunk_size));
         izip!(p_l, p_r, q_l, q_r)
     }
+
+    fn up(&self) -> Self {
+        assert!(self.num_vars() != 0);
+
+        let len = 1 << self.num_vars();
+        let chunk_size = div_ceil(len, num_threads()).next_power_of_two();
+
+        let mut outputs: [_; 4] = array::from_fn(|_| vec![F::ZERO; len >> 1]);
+        let (p, q) = outputs.split_at_mut(2);
+        parallelize_iter(
+            izip!(
+                chain![p].flat_map(|p| p.chunks_mut(chunk_size)),
+                chain![q].flat_map(|q| q.chunks_mut(chunk_size)),
+                self.poly_chunks(chunk_size),
+            ),
+            |(p, q, (p_l, p_r, q_l, q_r))| {
+                izip!(p, q, p_l, p_r, q_l, q_r).for_each(|(p, q, p_l, p_r, q_l, q_r)| {
+                    *p = *p_l * q_r + *p_r * q_l;
+                    *q = *q_l * q_r;
+                })
+            },
+        );
+
+        outputs.into()
+    }
 }
 
-pub fn prove_fractional_sum<F: PrimeField>(
-    claimed_p: Option<F>,
-    claimed_q: Option<F>,
-    p: &[F],
-    q: &[F],
+#[allow(clippy::type_complexity)]
+pub fn prove_fractional_sum<'a, F: PrimeField>(
+    claimed_p_0s: impl IntoIterator<Item = Option<F>>,
+    claimed_q_0s: impl IntoIterator<Item = Option<F>>,
+    ps: impl IntoIterator<Item = &'a MultilinearPolynomial<F>>,
+    qs: impl IntoIterator<Item = &'a MultilinearPolynomial<F>>,
     transcript: &mut impl FieldTranscriptWrite<F>,
-) -> Result<(F, F, F, F, Vec<F>), Error> {
-    assert_eq!(p.len(), q.len());
-    assert!(p.len().is_power_of_two());
+) -> Result<(Vec<F>, Vec<F>, Vec<F>), Error> {
+    let claimed_p_0s = claimed_p_0s.into_iter().collect_vec();
+    let claimed_q_0s = claimed_q_0s.into_iter().collect_vec();
+    let ps = ps.into_iter().collect_vec();
+    let qs = qs.into_iter().collect_vec();
+    let num_batching = claimed_p_0s.len();
 
-    let num_threads = num_threads();
+    assert!(num_batching != 0);
+    assert_eq!(num_batching, claimed_q_0s.len());
+    assert_eq!(num_batching, ps.len());
+    assert_eq!(num_batching, qs.len());
+    for poly in chain![&ps, &qs] {
+        assert_eq!(poly.num_vars(), ps[0].num_vars());
+    }
 
-    let initial_layer = Layer::initial(p, q);
-    let layers = iter::successors(Some(initial_layer), |layer| {
-        let len = 1 << layer.num_vars();
-        let chunk_size = div_ceil(len, num_threads).next_power_of_two();
-        (len > 1).then(|| {
-            let mut outputs: [_; 4] = array::from_fn(|_| vec![F::ZERO; len >> 1]);
-            let (p, q) = outputs.split_at_mut(2);
-            parallelize_iter(
-                izip!(
-                    chain![p].flat_map(|p| p.chunks_mut(chunk_size)),
-                    chain![q].flat_map(|q| q.chunks_mut(chunk_size)),
-                    layer.poly_chunks(chunk_size),
-                ),
-                |(p, q, (p_l, p_r, q_l, q_r))| {
-                    izip!(p, q, p_l, p_r, q_l, q_r).for_each(|(p, q, p_l, p_r, q_l, q_r)| {
-                        *p = *p_l * q_r + *p_r * q_l;
-                        *q = *q_l * q_r;
-                    })
-                },
-            );
-            outputs.into()
-        })
+    let bottom_layers = izip!(&ps, &qs).map(Layer::bottom).collect_vec();
+    let layers = iter::successors(bottom_layers.into(), |layers| {
+        (layers[0].num_vars() > 0).then(|| layers.iter().map(Layer::up).collect())
     })
     .collect_vec();
 
-    let [claimed_p, claimed_q]: [_; 2] = {
-        let [p_l, p_r, q_l, q_r] = layers.last().unwrap().polys().map(|poly| poly[0]);
-        let (p, q) = (p_l * q_r + p_r * q_l, q_l * q_r);
-
-        [(claimed_p, p), (claimed_q, q)]
-            .into_iter()
-            .map(|(claimed, computed)| match claimed {
-                Some(claimed) => {
-                    if cfg!(feature = "sanity-check") {
-                        assert_eq!(claimed, computed)
-                    }
-                    transcript.common_field_element(&computed).map(|_| claimed)
-                }
-                None => transcript.write_field_element(&computed).map(|_| computed),
+    let [claimed_p_0s, claimed_q_0s]: [_; 2] = {
+        let (p_0s, q_0s) = chain![layers.last().unwrap()]
+            .map(|layer| {
+                let [p_l, p_r, q_l, q_r] = layer.polys().map(|poly| poly[0]);
+                (p_l * q_r + p_r * q_l, q_l * q_r)
             })
-            .try_collect::<_, Vec<_>, _>()?
-            .try_into()
-            .unwrap()
+            .unzip::<_, _, Vec<_>, Vec<_>>();
+
+        let mut hash_to_transcript = |claimed: Vec<_>, computed: Vec<_>| {
+            izip!(claimed, computed)
+                .map(|(claimed, computed)| match claimed {
+                    Some(claimed) => {
+                        if cfg!(feature = "sanity-check") {
+                            assert_eq!(claimed, computed)
+                        }
+                        transcript.common_field_element(&computed).map(|_| computed)
+                    }
+                    None => transcript.write_field_element(&computed).map(|_| computed),
+                })
+                .try_collect::<_, Vec<_>, _>()
+        };
+
+        [
+            hash_to_transcript(claimed_p_0s, p_0s)?,
+            hash_to_transcript(claimed_q_0s, q_0s)?,
+        ]
     };
 
-    let expression = {
-        let [p_l, p_r, q_l, q_r] =
-            &array::from_fn(|idx| Expression::Polynomial(Query::new(idx, Rotation::cur())));
-        let eq_xy = &Expression::eq_xy(0);
-        let gamma = &Expression::Challenge(0);
-        (p_l * q_r + p_r * q_l + gamma * q_l * q_r) * eq_xy
-    };
+    let expression = sum_check_expression(num_batching);
 
-    let (p, q, challenges) =
-        layers
-            .iter()
-            .rev()
-            .fold(Ok((claimed_p, claimed_q, Vec::new())), |result, layer| {
-                let (claimed_p, claimed_q, y) = result?;
-                let num_vars = layer.num_vars();
+    let (p_xs, q_xs, x) = layers.iter().rev().fold(
+        Ok((claimed_p_0s, claimed_q_0s, Vec::new())),
+        |result, layers| {
+            let (claimed_p_ys, claimed_q_ys, y) = result?;
 
-                let (mut challenges, evals) = if num_vars == 0 {
-                    (vec![], layer.polys().map(|poly| poly[0]))
-                } else {
-                    let gamma = transcript.squeeze_challenge();
+            let num_vars = layers[0].num_vars();
+            let polys = layers.iter().flat_map(|layer| layer.polys());
 
-                    let claim = claimed_p + gamma * claimed_q;
-                    let (challenges, evals) = ClassicSumCheck::<EvaluationsProver<_>>::prove(
+            let (mut x, evals) = if num_vars == 0 {
+                (vec![], polys.map(|poly| poly[0]).collect_vec())
+            } else {
+                let gamma = transcript.squeeze_challenge();
+
+                let (x, evals) = {
+                    let claim = sum_check_claim(&claimed_p_ys, &claimed_q_ys, gamma);
+                    SumCheck::prove(
                         &(),
                         num_vars,
-                        VirtualPolynomial::new(&expression, layer.polys(), &[gamma], &[y]),
+                        VirtualPolynomial::new(&expression, polys, &[gamma], &[y]),
                         claim,
                         transcript,
-                    )?;
-
-                    (challenges, evals.try_into().unwrap())
+                    )?
                 };
 
-                transcript.write_field_elements(&evals)?;
+                (x, evals)
+            };
 
-                let mu = transcript.squeeze_challenge();
+            transcript.write_field_elements(&evals)?;
 
-                let [p_l, p_r, q_l, q_r] = evals;
-                let p = p_l + mu * (p_r - p_l);
-                let q = q_l + mu * (q_r - q_l);
-                challenges.push(mu);
+            let mu = transcript.squeeze_challenge();
 
-                Ok((p, q, challenges))
-            })?;
+            let (p_xs, q_xs) = layer_down_claim(&evals, mu);
+            x.push(mu);
+
+            Ok((p_xs, q_xs, x))
+        },
+    )?;
 
     if cfg!(feature = "sanity-check") {
-        let [p_l, p_r, q_l, q_r] = layers[0].polys().map(|poly| poly.evals().to_vec());
-        let p_poly = MultilinearPolynomial::new([p_l, p_r].concat());
-        let q_poly = MultilinearPolynomial::new([q_l, q_r].concat());
-        assert_eq!(p_poly.evaluate(&challenges), p);
-        assert_eq!(q_poly.evaluate(&challenges), q);
+        izip!(chain![ps, qs], chain![&p_xs, &q_xs])
+            .for_each(|(poly, eval)| assert_eq!(poly.evaluate(&x), *eval));
     }
 
-    Ok((claimed_p, claimed_q, p, q, challenges))
+    Ok((p_xs, q_xs, x))
 }
 
+#[allow(clippy::type_complexity)]
 pub fn verify_fractional_sum<F: PrimeField>(
     num_vars: usize,
-    claimed_p: Option<F>,
-    claimed_q: Option<F>,
+    claimed_p_0s: impl IntoIterator<Item = Option<F>>,
+    claimed_q_0s: impl IntoIterator<Item = Option<F>>,
     transcript: &mut impl FieldTranscriptRead<F>,
-) -> Result<(F, F, F, F, Vec<F>), Error> {
-    let [claimed_p, claimed_q]: [_; 2] = {
-        [claimed_p, claimed_q]
+) -> Result<(Vec<F>, Vec<F>, Vec<F>), Error> {
+    let claimed_p_0s = claimed_p_0s.into_iter().collect_vec();
+    let claimed_q_0s = claimed_q_0s.into_iter().collect_vec();
+    let num_batching = claimed_p_0s.len();
+
+    assert!(num_batching != 0);
+    assert_eq!(num_batching, claimed_q_0s.len());
+
+    let [claimed_p_0s, claimed_q_0s]: [_; 2] = {
+        [claimed_p_0s, claimed_q_0s]
             .into_iter()
-            .map(|claimed| match claimed {
-                Some(claimed) => transcript.common_field_element(&claimed).map(|_| claimed),
-                None => transcript.read_field_element(),
+            .map(|claimed| {
+                claimed
+                    .into_iter()
+                    .map(|claimed| match claimed {
+                        Some(claimed) => transcript.common_field_element(&claimed).map(|_| claimed),
+                        None => transcript.read_field_element(),
+                    })
+                    .try_collect::<_, Vec<_>, _>()
             })
             .try_collect::<_, Vec<_>, _>()?
             .try_into()
             .unwrap()
     };
 
-    let (p, q, challenges) = (0..num_vars).fold(
-        Ok((claimed_p, claimed_q, Vec::new())),
+    let expression = sum_check_expression(num_batching);
+
+    let (p_xs, q_xs, x) = (0..num_vars).fold(
+        Ok((claimed_p_0s, claimed_q_0s, Vec::new())),
         |result, num_vars| {
-            let (claimed_p, claimed_q, y) = result?;
+            let (claimed_p_ys, claimed_q_ys, y) = result?;
 
-            let (mut challenges, evals) = if num_vars == 0 {
-                let evals: [_; 4] = transcript.read_field_elements(4)?.try_into().unwrap();
-                let [p_l, p_r, q_l, q_r] = evals;
+            let (mut x, evals) = if num_vars == 0 {
+                let evals = transcript.read_field_elements(4 * num_batching)?;
 
-                if claimed_p != p_l * q_r + p_r * q_l || claimed_q != q_l * q_r {
-                    return Err(err_unmatched_sum_check_output());
+                for (claimed_p, claimed_q, (&p_l, &p_r, &q_l, &q_r)) in
+                    izip!(claimed_p_ys, claimed_q_ys, evals.iter().tuples())
+                {
+                    if claimed_p != p_l * q_r + p_r * q_l || claimed_q != q_l * q_r {
+                        return Err(err_unmatched_sum_check_output());
+                    }
                 }
 
                 (Vec::new(), evals)
             } else {
                 let gamma = transcript.squeeze_challenge();
 
-                let claim = claimed_p + gamma * claimed_q;
-                let (eval, challenges) = ClassicSumCheck::<EvaluationsProver<_>>::verify(
-                    &(),
-                    num_vars,
-                    3,
-                    claim,
-                    transcript,
-                )?;
+                let (x_eval, x) = {
+                    let claim = sum_check_claim(&claimed_p_ys, &claimed_q_ys, gamma);
+                    SumCheck::verify(&(), num_vars, expression.degree(), claim, transcript)?
+                };
 
-                let evals: [_; 4] = transcript.read_field_elements(4)?.try_into().unwrap();
-                let [p_l, p_r, q_l, q_r] = evals;
+                let evals = transcript.read_field_elements(4 * num_batching)?;
 
-                if eval != (p_l * q_r + p_r * q_l + gamma * q_l * q_r) * eq_xy_eval(&challenges, &y)
-                {
+                let eval_by_query = eval_by_query(&evals);
+                if x_eval != evaluate(&expression, num_vars, &eval_by_query, &[gamma], &[&y], &x) {
                     return Err(err_unmatched_sum_check_output());
                 }
 
-                (challenges, evals)
+                (x, evals)
             };
 
             let mu = transcript.squeeze_challenge();
 
-            let [p_l, p_r, q_l, q_r] = evals;
-            let p = p_l + mu * (p_r - p_l);
-            let q = q_l + mu * (q_r - q_l);
-            challenges.push(mu);
+            let (p_xs, q_xs) = layer_down_claim(&evals, mu);
+            x.push(mu);
 
-            Ok((p, q, challenges))
+            Ok((p_xs, q_xs, x))
         },
     )?;
 
-    Ok((claimed_p, claimed_q, p, q, challenges))
+    Ok((p_xs, q_xs, x))
+}
+
+fn sum_check_expression<F: PrimeField>(num_batching: usize) -> Expression<F> {
+    let exprs = &(0..4 * num_batching)
+        .map(|idx| Expression::<F>::Polynomial(Query::new(idx, Rotation::cur())))
+        .tuples()
+        .flat_map(|(ref p_l, ref p_r, ref q_l, ref q_r)| [p_l * q_r + p_r * q_l, q_l * q_r])
+        .collect_vec();
+    let eq_xy = &Expression::eq_xy(0);
+    let gamma = &Expression::Challenge(0);
+    Expression::distribute_powers(exprs, gamma) * eq_xy
+}
+
+fn sum_check_claim<F: PrimeField>(claimed_p_ys: &[F], claimed_q_ys: &[F], gamma: F) -> F {
+    inner_product(
+        izip!(claimed_p_ys, claimed_q_ys).flat_map(|(p, q)| [p, q]),
+        &powers(gamma).take(claimed_p_ys.len() * 2).collect_vec(),
+    )
+}
+
+fn layer_down_claim<F: PrimeField>(evals: &[F], mu: F) -> (Vec<F>, Vec<F>) {
+    evals
+        .iter()
+        .tuples()
+        .map(|(&p_l, &p_r, &q_l, &q_r)| (p_l + mu * (p_r - p_l), q_l + mu * (q_r - q_l)))
+        .unzip()
+}
+
+fn eval_by_query<F: PrimeField>(evals: &[F]) -> HashMap<Query, F> {
+    izip!(
+        (0..).map(|idx| Query::new(idx, Rotation::cur())),
+        evals.iter().cloned()
+    )
+    .collect()
 }
 
 fn err_unmatched_sum_check_output() -> Error {
@@ -248,32 +311,48 @@ fn err_unmatched_sum_check_output() -> Error {
 mod test {
     use crate::{
         piop::gkr::fractional_sum::{prove_fractional_sum, verify_fractional_sum},
+        poly::multilinear::MultilinearPolynomial,
         util::{
+            chain, izip_eq,
             test::{rand_vec, seeded_std_rng},
             transcript::{InMemoryTranscript, Keccak256Transcript},
+            Itertools,
         },
     };
     use halo2_curves::bn256::Fr;
+    use std::iter;
 
     #[test]
     fn fractional_sum() {
+        let num_batching = 3;
         for num_vars in 1..16 {
             let mut rng = seeded_std_rng();
 
-            let p = rand_vec(1 << num_vars, &mut rng);
-            let q = rand_vec(1 << num_vars, &mut rng);
+            let polys = iter::repeat_with(|| rand_vec(1 << num_vars, &mut rng))
+                .map(MultilinearPolynomial::new)
+                .take(2 * num_batching)
+                .collect_vec();
+            let claims = vec![None; 2 * num_batching];
+            let (ps, qs) = polys.split_at(num_batching);
+            let (p_0s, q_0s) = claims.split_at(num_batching);
 
             let proof = {
                 let mut transcript = Keccak256Transcript::new(());
-                prove_fractional_sum::<Fr>(None, None, &p, &q, &mut transcript).unwrap();
+                prove_fractional_sum::<Fr>(p_0s.to_vec(), q_0s.to_vec(), ps, qs, &mut transcript)
+                    .unwrap();
                 transcript.into_proof()
             };
 
             let result = {
                 let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
-                verify_fractional_sum::<Fr>(num_vars, None, None, &mut transcript)
+                verify_fractional_sum::<Fr>(num_vars, p_0s.to_vec(), q_0s.to_vec(), &mut transcript)
             };
-            assert_eq!(result.map(|_| ()), Ok(()));
+            assert_eq!(result.as_ref().map(|_| ()), Ok(()));
+
+            let (p_xs, q_xs, x) = result.unwrap();
+            for (poly, eval) in izip_eq!(chain![ps, qs], chain![p_xs, q_xs]) {
+                assert_eq!(poly.evaluate(&x), eval);
+            }
         }
     }
 }

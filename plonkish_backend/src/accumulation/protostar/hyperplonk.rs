@@ -216,7 +216,8 @@ where
                 let l_sqrt = (2.0f64.powf(pp.num_vars as f64)).sqrt() as usize;
                 let powers_of_zeta_first_poly = powers_of_zeta_poly((l_sqrt-1).ilog2() as usize, zeta);
                 let powers_of_zeta_second_poly = powers_of_zeta_poly((l_sqrt-1).ilog2() as usize, zeta.pow(&[l_sqrt as u64]));
-                let powers_of_zeta_poly = powers_of_zeta_first_poly.add(&powers_of_zeta_second_poly);
+                let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_first_poly.evals().iter()
+                                                                                            .chain(powers_of_zeta_second_poly.evals().iter()).cloned().collect());
                 end_timer(timer);
 
                 let powers_of_zeta_comm =

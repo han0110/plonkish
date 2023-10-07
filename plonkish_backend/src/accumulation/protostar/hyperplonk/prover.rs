@@ -2,7 +2,7 @@ use crate::{
     accumulation::protostar::ProtostarAccumulator,
     backend::hyperplonk::prover::instance_polys,
     pcs::PolynomialCommitmentScheme,
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, powers, sum, BatchInvert, BooleanHypercube, PrimeField},
         expression::{evaluator::ExpressionRegistry, Expression, Rotation},
@@ -207,7 +207,7 @@ where
             .zip(start..)
             .for_each(|(cross_term, b)| {
                 *cross_term = acc_pow[next_map[b]] + acc_u * incoming_pow[next_map[b]]
-                    - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
+                     - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
             })
     });
     let b_0 = 0;
@@ -216,6 +216,75 @@ where
     cross_term[b_last] += acc_pow[b_last] * incoming_zeta + incoming_pow[b_last] * acc_zeta
         - acc_u * incoming_zeta
         - acc_zeta;
+
+    MultilinearPolynomial::new(cross_term)
+}
+
+pub(crate) fn evaluate_zeta_root_cross_term_poly<F, Pcs>(
+    num_vars: usize,
+    zeta_nth_back: usize,
+    accumulator: &ProtostarAccumulator<F, Pcs>,
+    incoming: &ProtostarAccumulator<F, Pcs>,
+) -> MultilinearPolynomial<F>
+where
+    F: PrimeField,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+{
+    let [(acc_pow, acc_zeta, acc_u), (incoming_pow, incoming_zeta, incoming_u)] =
+        [accumulator, incoming].map(|witness| {
+            let pow = witness.witness_polys.last().unwrap();
+            let zeta = witness
+                .instance
+                .challenges
+                .iter()
+                .nth_back(zeta_nth_back)
+                .unwrap();
+            (pow, zeta, witness.instance.u)
+        });
+    assert_eq!(incoming_u, F::ONE);
+
+    let size = 2*(1 << num_vars/2);
+    let mut cross_term = vec![F::ZERO; size];
+
+    let l_sqrt = 1usize << num_vars/2;
+    let incoming_zeta_sqrt = (powers(incoming_zeta).nth(l_sqrt).unwrap());
+    let acc_zeta_sqrt = (powers(acc_zeta).nth(l_sqrt).unwrap());
+
+    let bh = BooleanHypercube::new(num_vars);
+    let next_map = bh.rotation_map(Rotation::next());
+    parallelize(&mut cross_term, |(cross_term, start)| {
+        cross_term
+            .iter_mut()
+            .zip(start..)
+            .for_each(|(cross_term, b)| {
+                if b < l_sqrt {
+                    *cross_term = acc_pow[next_map[b]] + acc_u * incoming_pow[next_map[b]]
+                    - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
+                }
+                else {
+                    *cross_term = acc_pow[next_map[b]] + acc_u * incoming_pow[next_map[b]]
+                    - (acc_pow[b] * incoming_zeta_sqrt + incoming_pow[b] * acc_zeta_sqrt);
+                }
+            })
+    });
+
+    let b_0 = 0;
+    let b_lsqrt = bh.rotate(1, Rotation(num_vars/2 as i32));
+    let b_lsqrt_next = bh.rotate(1, Rotation::next()); 
+    let b_last = bh.rotate(1, Rotation((num_vars/2 - 1) as i32));
+
+    cross_term[b_0] += acc_pow[b_0] * incoming_zeta + incoming_pow[b_0] * acc_zeta - acc_u.double();
+    cross_term[b_lsqrt] += acc_pow[b_lsqrt] * incoming_zeta + incoming_pow[b_lsqrt] * acc_zeta
+        - acc_u * incoming_zeta
+        - acc_zeta;
+
+    // todo check boundary conditions for these
+    cross_term[b_lsqrt_next] += acc_pow[b_lsqrt_next] * incoming_zeta_sqrt 
+        + incoming_pow[b_lsqrt_next] * acc_zeta_sqrt - acc_u.double();
+
+    cross_term[b_last] += acc_pow[b_last] * incoming_zeta_sqrt 
+        + incoming_pow[b_last] * acc_zeta_sqrt - acc_u * incoming_zeta_sqrt 
+        - acc_zeta_sqrt;
 
     MultilinearPolynomial::new(cross_term)
 }

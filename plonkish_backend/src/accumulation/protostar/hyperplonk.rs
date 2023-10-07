@@ -5,7 +5,7 @@ use crate::{
                 preprocessor::{batch_size, preprocess},
                 prover::{
                     evaluate_compressed_cross_term_sums, evaluate_cross_term_polys,
-                    evaluate_zeta_cross_term_poly, lookup_h_polys, powers_of_zeta_poly,
+                    evaluate_zeta_cross_term_poly,evaluate_zeta_root_cross_term_poly, lookup_h_polys, powers_of_zeta_poly,
                 },
             },
             ivc::ProtostarAccumulationVerifierParam,
@@ -208,16 +208,14 @@ where
                 )
             },
             CompressingWithSqrtPowers => {
-                assert_eq!((2.0f64.powf(pp.num_vars as f64)).sqrt().fract(), 0.0, "L is not a perfect square");
+                assert_eq!(pp.num_vars % 2, 0, "L is not a perfect square");
                 let zeta = transcript.squeeze_challenge();
+                let l_sqrt = (1 << (pp.num_vars / 2));
 
-                // check if this is optimal
                 let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
-                let l_sqrt = (2.0f64.powf(pp.num_vars as f64)).sqrt() as usize;
-                let powers_of_zeta_first_poly = powers_of_zeta_poly((l_sqrt-1).ilog2() as usize, zeta);
-                let powers_of_zeta_second_poly = powers_of_zeta_poly((l_sqrt-1).ilog2() as usize, zeta.pow(&[l_sqrt as u64]));
-                let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_first_poly.evals().iter()
-                                                                                            .chain(powers_of_zeta_second_poly.evals().iter()).cloned().collect());
+                let powers_of_zeta_first_poly  = powers_of_zeta_poly(pp.num_vars/2, zeta);
+                let powers_of_zeta_second_poly = powers_of_zeta_poly(pp.num_vars/2, zeta.pow(l_sqrt as u64));
+                let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_first_poly.evals().iter().chain(powers_of_zeta_second_poly.evals().iter()).cloned().collect());               
                 end_timer(timer);
 
                 let powers_of_zeta_comm =
@@ -351,9 +349,8 @@ where
             }
             CompressingWithSqrtPowers => {
                 let timer = start_timer(|| "evaluate_zeta_cross_term_poly");
-                let l_sqrt = (2.0f64.powf(pp.num_vars as f64)).sqrt() as usize;
-                let zeta_cross_term_poly = evaluate_zeta_cross_term_poly(
-                    l_sqrt * l_sqrt,
+                let zeta_cross_term_poly = evaluate_zeta_root_cross_term_poly(
+                    pp.num_vars,
                     *num_alpha_primes,
                     accumulator,
                     incoming,
@@ -366,7 +363,7 @@ where
                 });
                 let compressed_cross_term_sums = evaluate_compressed_cross_term_sums(
                     cross_term_expressions,
-                    2*l_sqrt,
+                    pp.num_vars,
                     &pp.preprocess_polys,
                     accumulator,
                     incoming,

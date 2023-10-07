@@ -172,9 +172,9 @@ where
             .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));   
     }
     
-        pub fn instance(&self) -> &ProtostarAccumulatorInstance<F, Pcs::Commitment> {
+    pub fn instance(&self) -> &ProtostarAccumulatorInstance<F, Pcs::Commitment> {
             &self.instance
-        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

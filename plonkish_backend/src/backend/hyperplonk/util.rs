@@ -10,7 +10,7 @@ use crate::{
         mock::MockCircuit,
         PlonkishCircuit, PlonkishCircuitInfo,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{powers, BooleanHypercube, PrimeField},
         expression::{Expression, Query, Rotation},

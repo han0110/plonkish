@@ -130,7 +130,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
         } else {
             self.polys.iter_mut().for_each(|polys| {
                 polys.iter_mut().for_each(|poly| {
-                    if !poly.is_zero() {
+                    if !poly.is_empty() {
                         poly.to_mut().fix_var_in_place(challenge, &mut self.buf);
                     }
                 });

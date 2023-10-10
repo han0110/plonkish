@@ -7,7 +7,7 @@
 
 use crate::{
     pcs::{multilinear::validate_input, Evaluation, Point, PolynomialCommitmentScheme},
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, inner_product, PrimeField},
         code::{Brakedown, BrakedownSpec, LinearCodes},

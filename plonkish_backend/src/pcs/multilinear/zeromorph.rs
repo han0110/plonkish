@@ -4,7 +4,11 @@ use crate::{
         univariate::{UnivariateKzg, UnivariateKzgProverParam, UnivariateKzgVerifierParam},
         Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::{multilinear::MultilinearPolynomial, univariate::UnivariatePolynomial, Polynomial},
+    poly::{
+        multilinear::MultilinearPolynomial,
+        univariate::{UnivariateBasis::Monomial, UnivariatePolynomial},
+        Polynomial,
+    },
     util::{
         arithmetic::{
             powers, squares, variable_base_msm, BatchInvert, Curve, Field, MultiMillerLoop,
@@ -144,7 +148,8 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let (quotients, remainder) = quotients(poly, point, |_, q| UnivariatePolynomial::new(q));
+        let (quotients, remainder) =
+            quotients(poly, point, |_, q| UnivariatePolynomial::new(Monomial, q));
         UnivariateKzg::batch_commit_and_write(&pp.commit_pp, &quotients, transcript)?;
 
         if cfg!(feature = "sanity-check") {
@@ -162,7 +167,7 @@ where
                         .for_each(|(q_hat, q)| *q_hat += power_of_y * q)
                 });
             }
-            UnivariatePolynomial::new(q_hat)
+            UnivariatePolynomial::new(Monomial, q_hat)
         };
         UnivariateKzg::commit_and_write(&pp.commit_pp, &q_hat, transcript)?;
 
@@ -171,7 +176,7 @@ where
 
         let (eval_scalar, q_scalars) = eval_and_quotient_scalars(y, x, z, point);
 
-        let mut f = UnivariatePolynomial::new(poly.evals().to_vec());
+        let mut f = UnivariatePolynomial::new(Monomial, poly.evals().to_vec());
         f *= &z;
         f += &q_hat;
         f[0] += eval_scalar * eval;

@@ -1,6 +1,9 @@
 use crate::{
     pcs::{AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme},
-    poly::univariate::{CoefficientBasis, UnivariatePolynomial},
+    poly::{
+        univariate::{UnivariateBasis::Monomial, UnivariatePolynomial},
+        Polynomial,
+    },
     util::{
         arithmetic::{
             barycentric_interpolate, barycentric_weights, fixed_base_msm, inner_product, powers,
@@ -168,7 +171,7 @@ where
     type Param = UnivariateKzgParam<M>;
     type ProverParam = UnivariateKzgProverParam<M>;
     type VerifierParam = UnivariateKzgVerifierParam<M>;
-    type Polynomial = UnivariatePolynomial<M::Scalar, CoefficientBasis>;
+    type Polynomial = UnivariatePolynomial<M::Scalar>;
     type Commitment = UnivariateKzgCommitment<M::G1Affine>;
     type CommitmentChunk = M::G1Affine;
 
@@ -282,12 +285,12 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let divisor = Self::Polynomial::new(vec![point.neg(), M::Scalar::ONE]);
+        let divisor = Self::Polynomial::new(Monomial, vec![point.neg(), M::Scalar::ONE]);
         let (quotient, remainder) = poly.div_rem(&divisor);
 
         if cfg!(feature = "sanity-check") {
             if eval == &M::Scalar::ZERO {
-                assert!(remainder.is_zero());
+                assert!(remainder.is_empty());
             } else {
                 assert_eq!(&remainder[0], eval);
             }
@@ -320,12 +323,12 @@ where
             .map(|set| {
                 let vanishing_poly = set.vanishing_poly(points);
                 let f = izip!(&powers_of_beta, set.polys.iter().map(|poly| polys[*poly]))
-                    .sum::<UnivariatePolynomial<_, _>>();
+                    .sum::<UnivariatePolynomial<_>>();
                 let (q, r) = f.div_rem(&vanishing_poly);
                 (f, (q, r))
             })
             .unzip::<_, _, Vec<_>, (Vec<_>, Vec<_>)>();
-        let q = izip_eq!(&powers_of_gamma, qs.iter()).sum::<UnivariatePolynomial<_, _>>();
+        let q = izip_eq!(&powers_of_gamma, qs.iter()).sum::<UnivariatePolynomial<_>>();
 
         let q_comm = Self::commit_and_write(pp, &q, transcript)?;
 
@@ -335,7 +338,7 @@ where
         let superset_eval = vanishing_eval(superset.iter().map(|idx| &points[*idx]), &z);
         let q_scalar = -superset_eval * normalizer;
         let f = {
-            let mut f = izip_eq!(&normalized_scalars, &fs).sum::<UnivariatePolynomial<_, _>>();
+            let mut f = izip_eq!(&normalized_scalars, &fs).sum::<UnivariatePolynomial<_>>();
             f += (&q_scalar, &q);
             f
         };
@@ -435,8 +438,8 @@ impl<F: Field> EvaluationSet<F> {
             .fold(F::ONE, |eval, point| eval * (*z - point))
     }
 
-    fn vanishing_poly(&self, points: &[F]) -> UnivariatePolynomial<F, CoefficientBasis> {
-        UnivariatePolynomial::basis(self.points.iter().map(|point| &points[*point]), F::ONE)
+    fn vanishing_poly(&self, points: &[F]) -> UnivariatePolynomial<F> {
+        UnivariatePolynomial::vanishing(self.points.iter().map(|point| &points[*point]), F::ONE)
     }
 
     fn r_eval(&self, points: &[F], z: &F, powers_of_beta: &[F]) -> F {
@@ -558,6 +561,7 @@ fn comm_scalars<F: Field>(
 mod test {
     use crate::{
         pcs::{univariate::kzg::UnivariateKzg, Evaluation, PolynomialCommitmentScheme},
+        poly::{univariate::UnivariatePolynomial, Polynomial},
         util::{
             chain,
             transcript::{
@@ -567,12 +571,11 @@ mod test {
             Itertools,
         },
     };
-    use halo2_curves::bn256::{Bn256, Fr};
+    use halo2_curves::bn256::Bn256;
     use rand::{rngs::OsRng, Rng};
     use std::iter;
 
     type Pcs = UnivariateKzg<Bn256>;
-    type Polynomial = <Pcs as PolynomialCommitmentScheme<Fr>>::Polynomial;
 
     #[test]
     fn commit_open_verify() {
@@ -587,7 +590,7 @@ mod test {
             // Commit and open
             let proof = {
                 let mut transcript = Keccak256Transcript::default();
-                let poly = Polynomial::rand(pp.degree(), OsRng);
+                let poly = UnivariatePolynomial::rand(pp.degree(), OsRng);
                 let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
                 let point = transcript.squeeze_challenge();
                 let eval = poly.evaluate(&point);

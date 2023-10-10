@@ -7,7 +7,7 @@ use crate::{
         },
         AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, variable_base_msm, Curve, CurveAffine, Group},
         parallel::parallelize,

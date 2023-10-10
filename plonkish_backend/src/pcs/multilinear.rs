@@ -1,5 +1,5 @@
 use crate::{
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{arithmetic::Field, end_timer, izip, parallel::parallelize, start_timer, Itertools},
     Error,
 };
@@ -116,7 +116,7 @@ mod additive {
             classic::{ClassicSumCheck, CoefficientsProver},
             eq_xy_eval, SumCheck as _, VirtualPolynomial,
         },
-        poly::{multilinear::MultilinearPolynomial, Polynomial},
+        poly::multilinear::MultilinearPolynomial,
         util::{
             arithmetic::{inner_product, PrimeField},
             end_timer,
@@ -155,7 +155,7 @@ mod additive {
         let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
             vec![(F::ONE, Cow::<MultilinearPolynomial<_>>::default()); points.len()],
             |mut merged_polys, (eval, eq_xt_i)| {
-                if merged_polys[eval.point()].1.is_zero() {
+                if merged_polys[eval.point()].1.is_empty() {
                     merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
                 } else {
                     let coeff = merged_polys[eval.point()].0;

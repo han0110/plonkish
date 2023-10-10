@@ -8,7 +8,7 @@ use crate::{
         classic::{ClassicSumCheck, EvaluationsProver},
         evaluate, SumCheck as _, VirtualPolynomial,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, inner_product, powers, PrimeField},
         chain,

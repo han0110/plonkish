@@ -4,22 +4,23 @@ use std::{fmt::Debug, ops::AddAssign};
 pub mod multilinear;
 pub mod univariate;
 
-pub trait Polynomial<F: Field>: Clone + Debug + for<'a> AddAssign<(&'a F, &'a Self)> {
+pub trait Polynomial<F: Field>:
+    Clone + Debug + Default + for<'a> AddAssign<(&'a F, &'a Self)>
+{
+    type Basis: Copy + Debug;
     type Point: Clone + Debug;
 
-    fn from_evals(evals: Vec<F>) -> Self;
+    fn new(basis: Self::Basis, coeffs: Vec<F>) -> Self;
 
-    fn into_evals(self) -> Vec<F>;
+    fn basis(&self) -> Self::Basis;
 
-    fn evals(&self) -> &[F];
+    fn coeffs(&self) -> &[F];
 
     fn evaluate(&self, point: &Self::Point) -> F;
 
     #[cfg(any(test, feature = "benchmark"))]
-    fn rand(n: usize, rng: &mut impl rand::RngCore) -> Self {
-        Self::from_evals(crate::util::test::rand_vec(n, rng))
-    }
+    fn rand(n: usize, rng: impl rand::RngCore) -> Self;
 
     #[cfg(any(test, feature = "benchmark"))]
-    fn rand_point(k: usize, rng: &mut impl rand::RngCore) -> Self::Point;
+    fn rand_point(k: usize, rng: impl rand::RngCore) -> Self::Point;
 }

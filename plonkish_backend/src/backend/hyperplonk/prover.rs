@@ -11,7 +11,7 @@ use crate::{
         classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, steps_by, sum, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,

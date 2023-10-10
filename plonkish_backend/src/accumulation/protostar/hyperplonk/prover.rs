@@ -95,6 +95,11 @@ where
         return Vec::new();
     }
 
+    let num_cross_terms = cross_term_expressions.len();
+    if accumulator.instance.u.is_zero_vartime() {
+        return vec![MultilinearPolynomial::new(vec![F::ZERO; 1 << num_vars]); num_cross_terms];
+    }
+
     let ev = init_hadamard_evaluator(
         cross_term_expressions,
         num_vars,
@@ -105,7 +110,6 @@ where
 
     let size = 1 << ev.num_vars;
     let chunk_size = div_ceil(size, num_threads());
-    let num_cross_terms = ev.reg.indexed_outputs().len();
 
     let mut outputs = vec![F::ZERO; num_cross_terms * size];
     parallelize_iter(
@@ -141,6 +145,11 @@ where
         return Vec::new();
     }
 
+    let num_cross_terms = cross_term_expressions.len();
+    if accumulator.instance.u.is_zero_vartime() {
+        return vec![F::ZERO; num_cross_terms];
+    }
+
     let ev = init_hadamard_evaluator(
         cross_term_expressions,
         num_vars,
@@ -152,7 +161,6 @@ where
     let size = 1 << ev.num_vars;
     let num_threads = num_threads();
     let chunk_size = div_ceil(size, num_threads);
-    let num_cross_terms = ev.reg.indexed_outputs().len();
 
     let mut partial_sums = vec![vec![F::ZERO; num_cross_terms]; num_threads];
     parallelize_iter(
@@ -183,6 +191,10 @@ where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
+    if accumulator.instance.u.is_zero_vartime() {
+        return MultilinearPolynomial::new(vec![F::ZERO; 1 << num_vars]);
+    }
+
     let [(acc_pow, acc_zeta, acc_u), (incoming_pow, incoming_zeta, incoming_u)] =
         [accumulator, incoming].map(|witness| {
             let pow = witness.witness_polys.last().unwrap();

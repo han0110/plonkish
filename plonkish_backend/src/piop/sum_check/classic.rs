@@ -211,7 +211,7 @@ where
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
         transcript: &mut impl FieldTranscriptWrite<F>,
-    ) -> Result<(Vec<F>, Vec<F>), Error> {
+    ) -> Result<(F, Vec<F>, Vec<F>), Error> {
         let _timer = start_timer(|| {
             let degree = virtual_poly.expression.degree();
             format!("sum_check_prove-{num_vars}-{degree}")
@@ -236,7 +236,7 @@ where
             end_timer(timer);
         }
 
-        Ok((challenges, state.into_evals()))
+        Ok((state.sum, challenges, state.into_evals()))
     }
 
     fn verify(

@@ -377,7 +377,7 @@ pub(crate) fn prove_sum_check<F: PrimeField>(
     let num_vars = polys[0].num_vars();
     let ys = [y];
     let virtual_poly = VirtualPolynomial::new(expression, polys.to_vec(), &challenges, &ys);
-    let (x, evals) = ClassicSumCheck::<EvaluationsProver<_>>::prove(
+    let (_, x, evals) = ClassicSumCheck::<EvaluationsProver<_>>::prove(
         &(),
         num_vars,
         virtual_poly,

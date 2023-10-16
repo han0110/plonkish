@@ -6,8 +6,8 @@ use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            fixed_base_msm, variable_base_msm, window_size, window_table, Curve, CurveAffine,
-            Field, MultiMillerLoop, PrimeCurveAffine,
+            batch_projective_to_affine, fixed_base_msm, variable_base_msm, window_size,
+            window_table, Curve, CurveAffine, Field, MultiMillerLoop, PrimeCurveAffine,
         },
         izip,
         parallel::parallelize,
@@ -195,16 +195,12 @@ where
 
             let window_size = window_size((2 << num_vars) - 2);
             let window_table = window_table(window_size, g1);
-            let eqs_projective = fixed_base_msm(
+            let mut eqs = batch_projective_to_affine(&fixed_base_msm(
                 window_size,
                 &window_table,
                 eqs.iter().flat_map(|evals| evals.iter()),
-            );
+            ));
 
-            let mut eqs = vec![M::G1Affine::identity(); eqs_projective.len()];
-            parallelize(&mut eqs, |(eqs, start)| {
-                M::G1::batch_normalize(&eqs_projective[start..(start + eqs.len())], eqs);
-            });
             let eqs = &mut eqs.drain(..);
             (0..num_vars + 1)
                 .map(move |idx| eqs.take(1 << idx).collect_vec())
@@ -215,13 +211,7 @@ where
         let ss = {
             let window_size = window_size(num_vars);
             let window_table = window_table(window_size, M::G2Affine::generator());
-            let ss_projective = fixed_base_msm(window_size, &window_table, &ss);
-
-            let mut ss = vec![M::G2Affine::identity(); ss_projective.len()];
-            parallelize(&mut ss, |(ss, start)| {
-                M::G2::batch_normalize(&ss_projective[start..(start + ss.len())], ss);
-            });
-            ss
+            batch_projective_to_affine(&fixed_base_msm(window_size, &window_table, &ss))
         };
 
         Ok(Self::Param { g1, eqs, g2, ss })

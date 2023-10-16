@@ -49,14 +49,22 @@ impl<F> UnivariatePolynomial<F> {
     pub fn iter(&self) -> impl Iterator<Item = &F> {
         self.coeffs.iter()
     }
-}
 
-impl<F> UnivariatePolynomial<F> {
     pub fn coeffs(&self) -> &[F] {
         self.coeffs.as_slice()
     }
 
+    pub fn coeffs_mut(&mut self) -> &mut [F] {
+        self.coeffs.as_mut_slice()
+    }
+
+    pub fn into_coeffs(self) -> Vec<F> {
+        self.coeffs
+    }
+
     pub fn degree(&self) -> usize {
+        assert_eq!(self.basis, Monomial);
+
         self.coeffs().len().checked_sub(1).unwrap_or_default()
     }
 }
@@ -67,13 +75,8 @@ impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
 
     fn new(basis: UnivariateBasis, coeffs: Vec<F>) -> Self {
         let mut poly = Self { basis, coeffs };
-        match basis {
-            Monomial => {
-                poly.truncate_leading_zeros();
-            }
-            Lagrange => {
-                assert!(poly.coeffs.len().is_power_of_two());
-            }
+        if let Monomial = basis {
+            poly.truncate_leading_zeros()
         }
         poly
     }
@@ -204,7 +207,8 @@ impl<'lhs, 'rhs, F: Field> Add<&'rhs UnivariatePolynomial<F>> for &'lhs Univaria
 
 impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
     fn add_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
-        assert_eq!(self.basis, rhs.basis);
+        assert_eq!(self.basis, Monomial);
+        assert_eq!(rhs.basis, Monomial);
 
         match self.degree().cmp(&rhs.degree()) {
             Less => {
@@ -234,7 +238,8 @@ impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs UnivariatePolynomial<F>)>
     for UnivariatePolynomial<F>
 {
     fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs UnivariatePolynomial<F>)) {
-        assert_eq!(self.basis, rhs.basis);
+        assert_eq!(self.basis, Monomial);
+        assert_eq!(rhs.basis, Monomial);
 
         if scalar == &F::ONE {
             *self += rhs;
@@ -270,7 +275,8 @@ impl<'lhs, 'rhs, F: Field> Sub<&'rhs UnivariatePolynomial<F>> for &'lhs Univaria
     type Output = UnivariatePolynomial<F>;
 
     fn sub(self, rhs: &'rhs UnivariatePolynomial<F>) -> UnivariatePolynomial<F> {
-        assert_eq!(self.basis, rhs.basis);
+        assert_eq!(self.basis, Monomial);
+        assert_eq!(rhs.basis, Monomial);
 
         let mut output = self.clone();
         output -= rhs;
@@ -280,7 +286,8 @@ impl<'lhs, 'rhs, F: Field> Sub<&'rhs UnivariatePolynomial<F>> for &'lhs Univaria
 
 impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
     fn sub_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
-        assert_eq!(self.basis, rhs.basis);
+        assert_eq!(self.basis, Monomial);
+        assert_eq!(rhs.basis, Monomial);
 
         match self.degree().cmp(&rhs.degree()) {
             Less => {
@@ -310,6 +317,8 @@ impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
     fn mul(self, rhs: &'rhs F) -> UnivariatePolynomial<F> {
+        assert_eq!(self.basis, Monomial);
+
         let mut output = self.clone();
         output *= rhs;
         output
@@ -318,8 +327,10 @@ impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
 
 impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
     fn mul_assign(&mut self, rhs: &'rhs F) {
+        assert_eq!(self.basis, Monomial);
+
         if rhs == &F::ZERO {
-            self.coeffs = Vec::new()
+            self.coeffs.clear();
         } else if rhs != &F::ONE {
             parallelize(&mut self.coeffs, |(lhs, _)| {
                 for lhs in lhs.iter_mut() {
@@ -373,4 +384,4 @@ impl<'a, F: Field, P: Borrow<UnivariatePolynomial<F>>> Sum<(&'a F, P)> for Univa
     }
 }
 
-impl_index!(@ UnivariatePolynomial<F>, coeffs);
+impl_index!(UnivariatePolynomial, coeffs);

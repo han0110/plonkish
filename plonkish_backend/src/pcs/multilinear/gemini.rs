@@ -62,7 +62,7 @@ where
             )));
         }
 
-        Ok(UnivariateKzg::commit_coeffs(pp, poly.evals()))
+        Ok(UnivariateKzg::commit_monomial(pp, poly.evals()))
     }
 
     fn batch_commit<'a>(

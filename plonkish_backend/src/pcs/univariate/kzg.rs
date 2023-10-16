@@ -1,17 +1,20 @@
 use crate::{
-    pcs::{AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme},
+    pcs::{
+        univariate::monomial_g1_to_lagrange_g1, AdditiveCommitment, Evaluation, Point,
+        PolynomialCommitmentScheme,
+    },
     poly::{
-        univariate::{UnivariateBasis::Monomial, UnivariatePolynomial},
+        univariate::{UnivariateBasis::*, UnivariatePolynomial},
         Polynomial,
     },
     util::{
         arithmetic::{
-            barycentric_interpolate, barycentric_weights, fixed_base_msm, inner_product, powers,
-            variable_base_msm, window_size, window_table, Curve, CurveAffine, Field,
-            MultiMillerLoop, PrimeCurveAffine,
+            barycentric_interpolate, barycentric_weights, batch_projective_to_affine, fft,
+            fixed_base_msm, inner_product, powers, root_of_unity_inv, variable_base_msm,
+            window_size, window_table, Curve, CurveAffine, Field, MultiMillerLoop,
+            PrimeCurveAffine, PrimeField,
         },
         chain, izip, izip_eq,
-        parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
     },
@@ -24,11 +27,19 @@ use std::{collections::BTreeSet, marker::PhantomData, ops::Neg, slice};
 pub struct UnivariateKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 impl<M: MultiMillerLoop> UnivariateKzg<M> {
-    pub(crate) fn commit_coeffs(
+    pub(crate) fn commit_monomial(
         pp: &UnivariateKzgProverParam<M>,
         coeffs: &[M::Scalar],
     ) -> UnivariateKzgCommitment<M::G1Affine> {
-        let comm = variable_base_msm(coeffs, &pp.powers_of_s_g1[..coeffs.len()]).into();
+        let comm = variable_base_msm(coeffs, &pp.monomial_g1[..coeffs.len()]).into();
+        UnivariateKzgCommitment(comm)
+    }
+
+    pub(crate) fn commit_lagrange(
+        pp: &UnivariateKzgProverParam<M>,
+        evals: &[M::Scalar],
+    ) -> UnivariateKzgCommitment<M::G1Affine> {
+        let comm = variable_base_msm(evals, &pp.lagrange_g1[..evals.len()]).into();
         UnivariateKzgCommitment(comm)
     }
 }
@@ -39,21 +50,22 @@ impl<M: MultiMillerLoop> UnivariateKzg<M> {
     deserialize = "M::G1Affine: DeserializeOwned, M::G2Affine: DeserializeOwned",
 ))]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
-    powers_of_s_g1: Vec<M::G1Affine>,
+    monomial_g1: Vec<M::G1Affine>,
+    lagrange_g1: Vec<M::G1Affine>,
     powers_of_s_g2: Vec<M::G2Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     pub fn degree(&self) -> usize {
-        self.powers_of_s_g1.len() - 1
+        self.monomial_g1.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
-        self.powers_of_s_g1[0]
+        self.monomial_g1[0]
     }
 
-    pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
-        &self.powers_of_s_g1
+    pub fn monomial_g1(&self) -> &[M::G1Affine] {
+        &self.monomial_g1
     }
 
     pub fn g2(&self) -> M::G2Affine {
@@ -71,24 +83,32 @@ impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     deserialize = "M::G1Affine: DeserializeOwned",
 ))]
 pub struct UnivariateKzgProverParam<M: MultiMillerLoop> {
-    powers_of_s_g1: Vec<M::G1Affine>,
+    monomial_g1: Vec<M::G1Affine>,
+    lagrange_g1: Vec<M::G1Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
-    pub(crate) fn new(powers_of_s_g1: Vec<M::G1Affine>) -> Self {
-        Self { powers_of_s_g1 }
+    pub(crate) fn new(monomial_g1: Vec<M::G1Affine>, lagrange_g1: Vec<M::G1Affine>) -> Self {
+        Self {
+            monomial_g1,
+            lagrange_g1,
+        }
     }
 
     pub fn degree(&self) -> usize {
-        self.powers_of_s_g1.len() - 1
+        self.monomial_g1.len() - 1
     }
 
     pub fn g1(&self) -> M::G1Affine {
-        self.powers_of_s_g1[0]
+        self.monomial_g1[0]
     }
 
-    pub fn powers_of_s_g1(&self) -> &[M::G1Affine] {
-        &self.powers_of_s_g1
+    pub fn monomial_g1(&self) -> &[M::G1Affine] {
+        &self.monomial_g1
+    }
+
+    pub fn lagrange_g1(&self) -> &[M::G1Affine] {
+        &self.lagrange_g1
     }
 }
 
@@ -176,24 +196,28 @@ where
     type CommitmentChunk = M::G1Affine;
 
     fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
+        // TODO: Make `lagrange_g1` optional
+        assert!(poly_size.is_power_of_two());
+        assert!(poly_size.ilog2() <= M::Scalar::S);
+
         let s = M::Scalar::random(rng);
 
         let g1 = M::G1Affine::generator();
-        let powers_of_s_g1 = {
-            let powers_of_s_g1 = powers(s).take(poly_size).collect_vec();
+        let (monomial_g1, lagrange_g1) = {
             let window_size = window_size(poly_size);
             let window_table = window_table(window_size, g1);
-            let powers_of_s_projective =
-                fixed_base_msm(window_size, &window_table, &powers_of_s_g1);
-
-            let mut powers_of_s_g1 = vec![M::G1Affine::identity(); powers_of_s_projective.len()];
-            parallelize(&mut powers_of_s_g1, |(powers_of_s_g1, starts)| {
-                M::G1::batch_normalize(
-                    &powers_of_s_projective[starts..(starts + powers_of_s_g1.len())],
-                    powers_of_s_g1,
-                );
-            });
-            powers_of_s_g1
+            let monomial = powers(s).take(poly_size).collect_vec();
+            let monomial_g1 =
+                batch_projective_to_affine(&fixed_base_msm(window_size, &window_table, &monomial));
+            let lagrange_g1 = {
+                let k = poly_size.ilog2() as usize;
+                let n_inv = M::Scalar::TWO_INV.pow_vartime([k as u64]);
+                let mut lagrange = monomial;
+                fft(&mut lagrange, root_of_unity_inv(k), k);
+                lagrange.iter_mut().for_each(|v| *v *= n_inv);
+                batch_projective_to_affine(&fixed_base_msm(window_size, &window_table, &lagrange))
+            };
+            (monomial_g1, lagrange_g1)
         };
 
         let g2 = M::G2Affine::generator();
@@ -201,21 +225,12 @@ where
             let powers_of_s_g2 = powers(s).take(poly_size).collect_vec();
             let window_size = window_size(poly_size);
             let window_table = window_table(window_size, g2);
-            let powers_of_s_projective =
-                fixed_base_msm(window_size, &window_table, &powers_of_s_g2);
-
-            let mut powers_of_s_g2 = vec![M::G2Affine::identity(); powers_of_s_projective.len()];
-            parallelize(&mut powers_of_s_g2, |(powers_of_s_g2, starts)| {
-                M::G2::batch_normalize(
-                    &powers_of_s_projective[starts..(starts + powers_of_s_g2.len())],
-                    powers_of_s_g2,
-                );
-            });
-            powers_of_s_g2
+            batch_projective_to_affine(&fixed_base_msm(window_size, &window_table, &powers_of_s_g2))
         };
 
         Ok(Self::Param {
-            powers_of_s_g1,
+            monomial_g1,
+            lagrange_g1,
             powers_of_s_g2,
         })
     }
@@ -225,15 +240,22 @@ where
         poly_size: usize,
         _: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        if param.powers_of_s_g1.len() < poly_size {
+        assert!(poly_size.is_power_of_two());
+
+        if param.monomial_g1.len() < poly_size {
             return Err(Error::InvalidPcsParam(format!(
                 "Too large poly_size to trim to (param supports poly_size up to {} but got {poly_size})",
-                param.powers_of_s_g1.len(),
+                param.monomial_g1.len(),
             )));
         }
 
-        let powers_of_s_g1 = param.powers_of_s_g1[..poly_size].to_vec();
-        let pp = Self::ProverParam { powers_of_s_g1 };
+        let monomial_g1 = param.monomial_g1[..poly_size].to_vec();
+        let lagrange_g1 = if param.monomial_g1.len() == poly_size {
+            param.lagrange_g1[..poly_size].to_vec()
+        } else {
+            monomial_g1_to_lagrange_g1(&monomial_g1)
+        };
+        let pp = Self::ProverParam::new(monomial_g1, lagrange_g1);
         let vp = Self::VerifierParam {
             g1: param.g1(),
             g2: param.g2(),
@@ -243,15 +265,28 @@ where
     }
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
-        if pp.degree() < poly.degree() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to commit (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.degree()
-            )));
+        match poly.basis() {
+            Monomial => {
+                if pp.degree() < poly.degree() {
+                    return Err(Error::InvalidPcsParam(format!(
+                        "Too large degree of poly to commit (param supports degree up to {} but got {})",
+                        pp.degree(),
+                        poly.degree()
+                    )));
+                }
+                Ok(Self::commit_monomial(pp, poly.coeffs()))
+            }
+            Lagrange => {
+                if pp.lagrange_g1().len() != poly.coeffs().len() {
+                    return Err(Error::InvalidPcsParam(format!(
+                        "Invalid number of poly evaluations to commit (param needs {} evaluations but got {})",
+                        pp.lagrange_g1().len(),
+                        poly.coeffs().len()
+                    )));
+                }
+                Ok(Self::commit_lagrange(pp, poly.coeffs()))
+            }
         }
-
-        Ok(Self::commit_coeffs(pp, poly.coeffs()))
     }
 
     fn batch_commit<'a>(
@@ -296,7 +331,7 @@ where
             }
         }
 
-        transcript.write_commitment(&Self::commit_coeffs(pp, quotient.coeffs()).0)?;
+        transcript.write_commitment(&Self::commit_monomial(pp, quotient.coeffs()).0)?;
 
         Ok(())
     }

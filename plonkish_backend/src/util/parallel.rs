@@ -6,6 +6,20 @@ pub fn num_threads() -> usize {
     return 1;
 }
 
+pub fn join<A, B, RA, RB>(oper_a: A, oper_b: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA + Send,
+    B: FnOnce() -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    #[cfg(feature = "parallel")]
+    return rayon::join(oper_a, oper_b);
+
+    #[cfg(not(feature = "parallel"))]
+    return (oper_a(), oper_b());
+}
+
 pub fn parallelize_iter<I, T, F>(iter: I, f: F)
 where
     I: Send + Iterator<Item = T>,
@@ -76,6 +90,8 @@ where
 #[cfg(not(feature = "parallel"))]
 pub fn par_map_collect<T, R, C>(v: impl IntoIterator<Item = T>, f: impl Fn(T) -> R) -> C
 where
+    T: Send + Sync,
+    R: Send,
     C: FromIterator<R>,
 {
     v.into_iter().map(f).collect()

@@ -7,9 +7,9 @@ use crate::{
         },
         AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{div_ceil, variable_base_msm, Curve, CurveAffine, Group},
+        arithmetic::{batch_projective_to_affine, div_ceil, variable_base_msm, CurveAffine, Group},
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
@@ -93,16 +93,13 @@ impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearHyraxCommitmen
             assert_eq!(bases.0.len(), num_chunks);
         }
 
-        let mut output_projective = vec![C::CurveExt::identity(); num_chunks];
-        parallelize(&mut output_projective, |(output, start)| {
+        let mut output = vec![C::CurveExt::identity(); num_chunks];
+        parallelize(&mut output, |(output, start)| {
             for (output, idx) in output.iter_mut().zip(start..) {
                 *output = variable_base_msm(scalars.clone(), bases.iter().map(|base| &base.0[idx]))
             }
         });
-        let mut output = vec![C::identity(); num_chunks];
-        C::CurveExt::batch_normalize(&output_projective, &mut output);
-
-        MultilinearHyraxCommitment(output)
+        MultilinearHyraxCommitment(batch_projective_to_affine(&output))
     }
 }
 
@@ -171,17 +168,15 @@ where
 
         let row_len = pp.row_len();
         let scalars = poly.evals();
-        let comm_projective = {
+        let comm = {
             let mut comm = vec![C::CurveExt::identity(); pp.num_chunks()];
             parallelize(&mut comm, |(comm, start)| {
                 for (comm, start) in comm.iter_mut().zip((start * row_len..).step_by(row_len)) {
                     *comm = variable_base_msm(&scalars[start..start + row_len], pp.g());
                 }
             });
-            comm
+            batch_projective_to_affine(&comm)
         };
-        let mut comm = vec![C::identity(); pp.num_chunks()];
-        C::CurveExt::batch_normalize(&comm_projective, &mut comm);
 
         Ok(MultilinearHyraxCommitment(comm))
     }
@@ -200,17 +195,15 @@ where
             .iter()
             .flat_map(|poly| poly.evals().chunks(pp.row_len()))
             .collect_vec();
-        let comms_projective = {
+        let comms = {
             let mut comms = vec![C::CurveExt::identity(); scalars.len()];
             parallelize(&mut comms, |(comms, start)| {
                 for (comm, scalars) in comms.iter_mut().zip(&scalars[start..]) {
                     *comm = variable_base_msm(*scalars, pp.g());
                 }
             });
-            comms
+            batch_projective_to_affine(&comms)
         };
-        let mut comms = vec![C::identity(); scalars.len()];
-        C::CurveExt::batch_normalize(&comms_projective, &mut comms);
 
         Ok(comms
             .into_iter()

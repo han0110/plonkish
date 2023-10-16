@@ -8,7 +8,7 @@ use crate::{
         classic::{ClassicSumCheck, EvaluationsProver},
         evaluate, SumCheck as _, VirtualPolynomial,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, inner_product, powers, PrimeField},
         chain,
@@ -156,7 +156,7 @@ pub fn prove_fractional_sum_check<'a, F: PrimeField>(
             } else {
                 let gamma = transcript.squeeze_challenge();
 
-                let (x, evals) = {
+                let (_, x, evals) = {
                     let claim = sum_check_claim(&claimed_p_ys, &claimed_q_ys, gamma);
                     SumCheck::prove(
                         &(),

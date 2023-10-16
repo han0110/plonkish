@@ -3,10 +3,11 @@ use crate::{
         multilinear::{additive, err_too_many_variates, validate_input},
         AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            inner_product, variable_base_msm, Curve, CurveAffine, CurveExt, Field, Group,
+            batch_projective_to_affine, inner_product, variable_base_msm, Curve, CurveAffine,
+            CurveExt, Field, Group,
         },
         chain,
         parallel::parallelize,
@@ -99,7 +100,7 @@ where
         assert!(poly_size.is_power_of_two());
         let num_vars = poly_size.ilog2() as usize;
 
-        let g_projective = {
+        let g = {
             let mut g = vec![C::Curve::identity(); poly_size];
             parallelize(&mut g, |(g, start)| {
                 let hasher = C::CurveExt::hash_to_curve("MultilinearIpa::setup");
@@ -109,15 +110,7 @@ where
                     *g = hasher(&message);
                 }
             });
-            g
-        };
-
-        let g = {
-            let mut g = vec![C::identity(); poly_size];
-            parallelize(&mut g, |(g, start)| {
-                C::Curve::batch_normalize(&g_projective[start..(start + g.len())], g);
-            });
-            g
+            batch_projective_to_affine(&g)
         };
 
         let hasher = C::CurveExt::hash_to_curve("MultilinearIpa::setup");

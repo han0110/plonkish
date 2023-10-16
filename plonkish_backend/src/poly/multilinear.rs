@@ -49,12 +49,20 @@ impl<F> MultilinearPolynomial<F> {
         }
     }
 
-    pub fn is_zero(&self) -> bool {
-        self.num_vars == 0
+    pub fn is_empty(&self) -> bool {
+        self.evals.is_empty()
     }
 
     pub fn num_vars(&self) -> usize {
         self.num_vars
+    }
+
+    pub fn evals(&self) -> &[F] {
+        &self.evals
+    }
+
+    pub fn into_evals(self) -> Vec<F> {
+        self.evals
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &F> {
@@ -63,17 +71,16 @@ impl<F> MultilinearPolynomial<F> {
 }
 
 impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
+    type Basis = ();
     type Point = Vec<F>;
 
-    fn from_evals(evals: Vec<F>) -> Self {
+    fn new(_: (), evals: Vec<F>) -> Self {
         Self::new(evals)
     }
 
-    fn into_evals(self) -> Vec<F> {
-        self.evals
-    }
+    fn basis(&self) {}
 
-    fn evals(&self) -> &[F] {
+    fn coeffs(&self) -> &[F] {
         self.evals.as_slice()
     }
 
@@ -82,7 +89,12 @@ impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
     }
 
     #[cfg(any(test, feature = "benchmark"))]
-    fn rand_point(k: usize, rng: &mut impl rand::RngCore) -> Self::Point {
+    fn rand(n: usize, rng: impl rand::RngCore) -> Self {
+        Self::new(crate::util::test::rand_vec(n, rng))
+    }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn rand_point(k: usize, rng: impl rand::RngCore) -> Self::Point {
         crate::util::test::rand_vec(k, rng)
     }
 }
@@ -275,7 +287,7 @@ impl<'lhs, 'rhs, F: Field> Add<&'rhs MultilinearPolynomial<F>> for &'lhs Multili
 
 impl<'rhs, F: Field> AddAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
     fn add_assign(&mut self, rhs: &'rhs MultilinearPolynomial<F>) {
-        match (self.is_zero(), rhs.is_zero()) {
+        match (self.is_empty(), rhs.is_empty()) {
             (_, true) => {}
             (true, false) => *self = rhs.clone(),
             (false, false) => {
@@ -295,7 +307,7 @@ impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs MultilinearPolynomial<F>)>
     for MultilinearPolynomial<F>
 {
     fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs MultilinearPolynomial<F>)) {
-        match (self.is_zero(), rhs.is_zero() | (scalar == &F::ZERO)) {
+        match (self.is_empty(), rhs.is_empty() | (scalar == &F::ZERO)) {
             (_, true) => {}
             (true, false) => {
                 *self = rhs.clone();
@@ -332,7 +344,7 @@ impl<'lhs, 'rhs, F: Field> Sub<&'rhs MultilinearPolynomial<F>> for &'lhs Multili
 
 impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
     fn sub_assign(&mut self, rhs: &'rhs MultilinearPolynomial<F>) {
-        match (self.is_zero(), rhs.is_zero()) {
+        match (self.is_empty(), rhs.is_empty()) {
             (_, true) => {}
             (true, false) => {
                 *self = rhs.clone();
@@ -637,10 +649,7 @@ pub(crate) use zip_self;
 #[cfg(test)]
 mod test {
     use crate::{
-        poly::{
-            multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
-            Polynomial,
-        },
+        poly::multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
         util::{
             arithmetic::{BooleanHypercube, Field},
             expression::Rotation,

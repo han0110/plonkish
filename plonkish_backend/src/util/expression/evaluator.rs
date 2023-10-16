@@ -4,6 +4,8 @@ use crate::util::{
 };
 use std::{fmt::Debug, ops::Deref};
 
+pub(crate) mod quotient;
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ExpressionRegistry<F: Field> {
     offsets: Offsets,

@@ -4,7 +4,11 @@ use crate::{
         univariate::{UnivariateKzg, UnivariateKzgProverParam, UnivariateKzgVerifierParam},
         Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::{multilinear::MultilinearPolynomial, univariate::UnivariatePolynomial, Polynomial},
+    poly::{
+        multilinear::MultilinearPolynomial,
+        univariate::{UnivariateBasis::Monomial, UnivariatePolynomial},
+        Polynomial,
+    },
     util::{
         arithmetic::{
             powers, squares, variable_base_msm, BatchInvert, Curve, Field, MultiMillerLoop,
@@ -34,7 +38,7 @@ pub struct ZeromorphKzgProverParam<M: MultiMillerLoop> {
 
 impl<M: MultiMillerLoop> ZeromorphKzgProverParam<M> {
     pub fn degree(&self) -> usize {
-        self.commit_pp.powers_of_s_g1().len() - 1
+        self.commit_pp.degree()
     }
 }
 
@@ -87,10 +91,10 @@ where
         batch_size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
         let (commit_pp, vp) = UnivariateKzg::<M>::trim(param, poly_size, batch_size)?;
-        let offset = param.powers_of_s_g1().len() - poly_size;
+        let offset = param.monomial_g1().len() - poly_size;
         let open_pp = {
-            let powers_of_s_g1 = param.powers_of_s_g1()[offset..].to_vec();
-            UnivariateKzgProverParam::new(powers_of_s_g1)
+            let monomial_g1 = param.monomial_g1()[offset..].to_vec();
+            UnivariateKzgProverParam::new(monomial_g1, Vec::new())
         };
         let s_offset_g2 = param.powers_of_s_g2()[offset];
 
@@ -109,7 +113,7 @@ where
             )));
         }
 
-        Ok(UnivariateKzg::commit_coeffs(&pp.commit_pp, poly.evals()))
+        Ok(UnivariateKzg::commit_monomial(&pp.commit_pp, poly.evals()))
     }
 
     fn batch_commit<'a>(
@@ -144,7 +148,8 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let (quotients, remainder) = quotients(poly, point, |_, q| UnivariatePolynomial::new(q));
+        let (quotients, remainder) =
+            quotients(poly, point, |_, q| UnivariatePolynomial::new(Monomial, q));
         UnivariateKzg::batch_commit_and_write(&pp.commit_pp, &quotients, transcript)?;
 
         if cfg!(feature = "sanity-check") {
@@ -162,7 +167,7 @@ where
                         .for_each(|(q_hat, q)| *q_hat += power_of_y * q)
                 });
             }
-            UnivariatePolynomial::new(q_hat)
+            UnivariatePolynomial::new(Monomial, q_hat)
         };
         UnivariateKzg::commit_and_write(&pp.commit_pp, &q_hat, transcript)?;
 
@@ -171,7 +176,7 @@ where
 
         let (eval_scalar, q_scalars) = eval_and_quotient_scalars(y, x, z, point);
 
-        let mut f = UnivariatePolynomial::new(poly.evals().to_vec());
+        let mut f = UnivariatePolynomial::new(Monomial, poly.evals().to_vec());
         f *= &z;
         f += &q_hat;
         f[0] += eval_scalar * eval;
@@ -180,7 +185,7 @@ where
         let comm = if cfg!(feature = "sanity-check") {
             assert_eq!(f.evaluate(&x), M::Scalar::ZERO);
 
-            UnivariateKzg::commit_coeffs(&pp.open_pp, f.coeffs())
+            UnivariateKzg::commit_monomial(&pp.open_pp, f.coeffs())
         } else {
             Default::default()
         };

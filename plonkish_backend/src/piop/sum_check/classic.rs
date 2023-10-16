@@ -130,7 +130,7 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
         } else {
             self.polys.iter_mut().for_each(|polys| {
                 polys.iter_mut().for_each(|poly| {
-                    if !poly.is_zero() {
+                    if !poly.is_empty() {
                         poly.to_mut().fix_var_in_place(challenge, &mut self.buf);
                     }
                 });
@@ -211,7 +211,7 @@ where
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
         transcript: &mut impl FieldTranscriptWrite<F>,
-    ) -> Result<(Vec<F>, Vec<F>), Error> {
+    ) -> Result<(F, Vec<F>, Vec<F>), Error> {
         let _timer = start_timer(|| {
             let degree = virtual_poly.expression.degree();
             format!("sum_check_prove-{num_vars}-{degree}")
@@ -236,7 +236,7 @@ where
             end_timer(timer);
         }
 
-        Ok((challenges, state.into_evals()))
+        Ok((state.sum, challenges, state.into_evals()))
     }
 
     fn verify(

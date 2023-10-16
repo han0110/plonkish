@@ -1,5 +1,5 @@
 use crate::{
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::multilinear::MultilinearPolynomial,
     util::{arithmetic::Field, end_timer, izip, parallel::parallelize, start_timer, Itertools},
     Error,
 };
@@ -116,7 +116,7 @@ mod additive {
             classic::{ClassicSumCheck, CoefficientsProver},
             eq_xy_eval, SumCheck as _, VirtualPolynomial,
         },
-        poly::{multilinear::MultilinearPolynomial, Polynomial},
+        poly::multilinear::MultilinearPolynomial,
         util::{
             arithmetic::{inner_product, PrimeField},
             end_timer,
@@ -155,7 +155,7 @@ mod additive {
         let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
             vec![(F::ONE, Cow::<MultilinearPolynomial<_>>::default()); points.len()],
             |mut merged_polys, (eval, eq_xt_i)| {
-                if merged_polys[eval.point()].1.is_zero() {
+                if merged_polys[eval.point()].1.is_empty() {
                     merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
                 } else {
                     let coeff = merged_polys[eval.point()].0;
@@ -197,7 +197,7 @@ mod additive {
         );
         let tilde_gs_sum =
             inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
-        let (challenges, _) =
+        let (g_prime_eval, challenges, _) =
             SumCheck::prove(&(), num_vars, virtual_poly, tilde_gs_sum, transcript)?;
 
         let timer = start_timer(|| "g_prime");
@@ -212,17 +212,16 @@ mod additive {
             .sum::<MultilinearPolynomial<_>>();
         end_timer(timer);
 
-        let (g_prime_comm, g_prime_eval) = if cfg!(feature = "sanity-check") {
+        let g_prime_comm = if cfg!(feature = "sanity-check") {
             let scalars = evals
                 .iter()
                 .zip(eq_xt.evals())
                 .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
                 .collect_vec();
             let bases = evals.iter().map(|eval| comms[eval.poly()]);
-            let comm = Pcs::Commitment::sum_with_scalar(&scalars, bases);
-            (comm, g_prime.evaluate(&challenges))
+            Pcs::Commitment::sum_with_scalar(&scalars, bases)
         } else {
-            (Pcs::Commitment::default(), F::ZERO)
+            Pcs::Commitment::default()
         };
         Pcs::open(
             pp,

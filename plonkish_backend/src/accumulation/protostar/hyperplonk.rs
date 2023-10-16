@@ -78,7 +78,6 @@ where
     fn init_accumulator(pp: &Self::ProverParam) -> Result<Self::Accumulator, Error> {
         Ok(ProtostarAccumulator::init(
             pp.strategy,
-            pp.pp.num_vars,
             &pp.pp.num_instances,
             pp.num_folding_witness_polys,
             pp.num_folding_challenges,
@@ -89,11 +88,7 @@ where
         pp: &Self::ProverParam,
         nark: PlonkishNark<F, Self::Pcs>,
     ) -> Result<Self::Accumulator, Error> {
-        Ok(ProtostarAccumulator::from_nark(
-            pp.strategy,
-            pp.pp.num_vars,
-            nark,
-        ))
+        Ok(ProtostarAccumulator::from_nark(pp.strategy, nark))
     }
 
     fn prove_nark(

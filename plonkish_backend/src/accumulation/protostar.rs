@@ -5,7 +5,6 @@ use crate::{
     },
     backend::PlonkishBackend,
     pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
-    poly::Polynomial,
     util::{
         arithmetic::{inner_product, powers, Field},
         chain,
@@ -101,12 +100,10 @@ where
 {
     fn init(
         strategy: ProtostarStrategy,
-        k: usize,
         num_instances: &[usize],
         num_witness_polys: usize,
         num_challenges: usize,
     ) -> Self {
-        let zero_poly = Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]);
         Self {
             instance: ProtostarAccumulatorInstance::init(
                 strategy,
@@ -114,20 +111,20 @@ where
                 num_witness_polys,
                 num_challenges,
             ),
-            witness_polys: iter::repeat_with(|| zero_poly.clone())
+            witness_polys: iter::repeat_with(Default::default)
                 .take(num_witness_polys)
                 .collect(),
-            e_poly: zero_poly,
+            e_poly: Default::default(),
             _marker: PhantomData,
         }
     }
 
-    fn from_nark(strategy: ProtostarStrategy, k: usize, nark: PlonkishNark<F, Pcs>) -> Self {
+    fn from_nark(strategy: ProtostarStrategy, nark: PlonkishNark<F, Pcs>) -> Self {
         let witness_polys = nark.witness_polys;
         Self {
             instance: ProtostarAccumulatorInstance::from_nark(strategy, nark.instance),
             witness_polys,
-            e_poly: Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            e_poly: Default::default(),
             _marker: PhantomData,
         }
     }

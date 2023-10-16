@@ -1,4 +1,4 @@
-use crate::util::{BigUint, Itertools};
+use crate::util::{parallel::parallelize, BigUint, Itertools};
 use halo2_curves::{
     bn256, grumpkin,
     pairing::{self, MillerLoopResult},
@@ -8,15 +8,20 @@ use num_integer::Integer;
 use std::{borrow::Borrow, fmt::Debug, iter};
 
 mod bh;
+mod fft;
 mod msm;
 
 pub use bh::BooleanHypercube;
 pub use bitvec::field::BitField;
+pub use fft::fft;
 pub use halo2_curves::{
     group::{
-        ff::{BatchInvert, Field, FromUniformBytes, PrimeField, PrimeFieldBits},
+        ff::{
+            BatchInvert, Field, FromUniformBytes, PrimeField, PrimeFieldBits,
+            WithSmallOrderMulGroup,
+        },
         prime::PrimeCurveAffine,
-        Curve, Group,
+        Curve, Group, GroupOpsOwned, ScalarMulOwned,
     },
     Coordinates, CurveAffine, CurveExt,
 };
@@ -139,6 +144,24 @@ pub fn modulus<F: PrimeField>() -> BigUint {
     BigUint::from_bytes_le((-F::ONE).to_repr().as_ref()) + 1u64
 }
 
+pub fn root_of_unity<F: PrimeField>(k: usize) -> F {
+    assert!(k <= F::S as usize);
+    let mut omega = F::ROOT_OF_UNITY;
+    for _ in k..F::S as usize {
+        omega = omega.square();
+    }
+    omega
+}
+
+pub fn root_of_unity_inv<F: PrimeField>(k: usize) -> F {
+    assert!(k <= F::S as usize);
+    let mut omega = F::ROOT_OF_UNITY_INV;
+    for _ in k..F::S as usize {
+        omega = omega.square();
+    }
+    omega
+}
+
 pub fn fe_from_bool<F: Field>(value: bool) -> F {
     if value {
         F::ONE
@@ -192,6 +215,14 @@ pub fn div_rem(dividend: usize, divisor: usize) -> (usize, usize) {
 
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
     Integer::div_ceil(&dividend, &divisor)
+}
+
+pub fn batch_projective_to_affine<C: CurveAffine>(projectives: &[C::Curve]) -> Vec<C> {
+    let mut affines = vec![C::identity(); projectives.len()];
+    parallelize(&mut affines, |(affines, starts)| {
+        C::Curve::batch_normalize(&projectives[starts..(starts + affines.len())], affines);
+    });
+    affines
 }
 
 #[cfg(test)]

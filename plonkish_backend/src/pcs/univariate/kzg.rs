@@ -196,7 +196,7 @@ where
     type CommitmentChunk = M::G1Affine;
 
     fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
-        // TODO: Make `lagrange_g1` optional
+        // TODO: Support arbitrary degree.
         assert!(poly_size.is_power_of_two());
         assert!(poly_size.ilog2() <= M::Scalar::S);
 
@@ -250,8 +250,8 @@ where
         }
 
         let monomial_g1 = param.monomial_g1[..poly_size].to_vec();
-        let lagrange_g1 = if param.monomial_g1.len() == poly_size {
-            param.lagrange_g1[..poly_size].to_vec()
+        let lagrange_g1 = if param.lagrange_g1.len() == poly_size {
+            param.lagrange_g1.clone()
         } else {
             monomial_g1_to_lagrange_g1(&monomial_g1)
         };

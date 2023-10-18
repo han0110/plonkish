@@ -5,7 +5,7 @@ use crate::{
             ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParams},
             validate_input,
         },
-        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
+        Additive, Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
@@ -77,10 +77,10 @@ impl<C: CurveAffine> AsRef<[C]> for MultilinearHyraxCommitment<C> {
 }
 
 // TODO: Batch all MSMs into one
-impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearHyraxCommitment<C> {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
+impl<C: CurveAffine> Additive<C::Scalar> for MultilinearHyraxCommitment<C> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a C::Scalar>,
+        bases: impl IntoIterator<Item = &'b Self>,
     ) -> Self {
         let (scalars, bases) = scalars
             .into_iter()

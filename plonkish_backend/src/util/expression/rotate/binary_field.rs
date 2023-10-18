@@ -1,4 +1,7 @@
-use crate::util::{expression::Rotation, parallel::par_map_collect};
+use crate::util::{
+    expression::{rotate::Rotatable, Rotation},
+    parallel::par_map_collect,
+};
 use std::{cmp::Ordering, iter};
 
 /// Integer representation of primitive polynomial in GF(2).
@@ -74,14 +77,15 @@ const X_INVS: [usize; 32] = [
 ];
 
 #[derive(Debug, Clone, Copy)]
-pub struct BooleanHypercube {
+pub struct BinaryField {
     num_vars: usize,
     primitive: usize,
     x_inv: usize,
 }
 
-impl BooleanHypercube {
+impl BinaryField {
     pub const fn new(num_vars: usize) -> Self {
+        assert!(num_vars > 0);
         assert!(num_vars < 32);
         Self {
             num_vars,
@@ -102,7 +106,47 @@ impl BooleanHypercube {
         self.x_inv
     }
 
-    pub fn rotate(&self, mut b: usize, Rotation(rotation): Rotation) -> usize {
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        iter::once(0)
+            .chain(iter::successors(Some(1), |b| {
+                next(*b, self.num_vars, self.primitive).into()
+            }))
+            .take(1 << self.num_vars)
+    }
+
+    pub fn nth_map(&self) -> Vec<usize> {
+        let mut nth_map = vec![0; 1 << self.num_vars];
+        for (nth, b) in self.iter().enumerate() {
+            nth_map[b] = nth;
+        }
+        nth_map
+    }
+}
+
+impl From<usize> for BinaryField {
+    fn from(k: usize) -> Self {
+        Self::new(k)
+    }
+}
+
+impl Rotatable for BinaryField {
+    fn k(&self) -> usize {
+        self.num_vars
+    }
+
+    fn n(&self) -> usize {
+        1 << self.num_vars
+    }
+
+    fn usable_indices(&self) -> Vec<usize> {
+        self.iter().skip(1).collect()
+    }
+
+    fn max_rotation(&self) -> usize {
+        self.num_vars
+    }
+
+    fn rotate(&self, mut b: usize, Rotation(rotation): Rotation) -> usize {
         match rotation.cmp(&0) {
             Ordering::Equal => {}
             Ordering::Less => {
@@ -119,24 +163,13 @@ impl BooleanHypercube {
         b
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        iter::once(0)
-            .chain(iter::successors(Some(1), |b| {
-                next(*b, self.num_vars, self.primitive).into()
-            }))
-            .take(1 << self.num_vars)
-    }
-
-    pub fn nth_map(&self) -> Vec<usize> {
-        let mut nth_map = vec![0; 1 << self.num_vars];
-        for (nth, b) in self.iter().enumerate() {
-            nth_map[b] = nth;
-        }
-        nth_map
-    }
-
-    pub fn rotation_map(&self, rotation: Rotation) -> Vec<usize> {
+    fn rotation_map(&self, rotation: Rotation) -> Vec<usize> {
         par_map_collect(0..1 << self.num_vars, |b| self.rotate(b, rotation))
+    }
+
+    fn nth(&self, nth: i32) -> usize {
+        let usable_indices = self.usable_indices();
+        usable_indices[nth.rem_euclid(usable_indices.len() as i32) as usize]
     }
 }
 
@@ -154,15 +187,18 @@ fn prev(b: usize, x_inv: usize) -> usize {
 
 #[cfg(test)]
 mod test {
-    use crate::util::{arithmetic::BooleanHypercube, expression::Rotation};
+    use crate::util::expression::{
+        rotate::{binary_field::BinaryField, Rotatable},
+        Rotation,
+    };
 
     #[test]
     #[ignore = "cause it takes some minutes to run with release profile"]
-    fn boolean_hypercube_iter() {
-        for num_vars in 0..32 {
-            let bh = BooleanHypercube::new(num_vars);
+    fn iter() {
+        for num_vars in 1..32 {
+            let bf = BinaryField::new(num_vars);
             let mut set = vec![false; 1 << num_vars];
-            for i in bh.iter() {
+            for i in bf.iter() {
                 assert!(!set[i]);
                 set[i] = true;
             }
@@ -171,11 +207,11 @@ mod test {
 
     #[test]
     #[ignore = "cause it takes some minutes to run with release profile"]
-    fn boolean_hypercube_prev() {
-        for num_vars in 0..32 {
-            let bh = BooleanHypercube::new(num_vars);
-            for (b, b_next) in bh.iter().skip(1).zip(bh.iter().skip(2).chain(Some(1))) {
-                assert_eq!(b, bh.rotate(b_next, Rotation::prev()))
+    fn prev() {
+        for num_vars in 1..32 {
+            let bf = BinaryField::new(num_vars);
+            for (b, b_next) in bf.iter().skip(1).zip(bf.iter().skip(2).chain([1])) {
+                assert_eq!(b, bf.rotate(b_next, Rotation::prev()))
             }
         }
     }

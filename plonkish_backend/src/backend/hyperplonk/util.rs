@@ -12,8 +12,9 @@ use crate::{
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{powers, BooleanHypercube, PrimeField},
-        expression::{Expression, Query, Rotation},
+        arithmetic::{powers, PrimeField},
+        chain,
+        expression::{rotate::Rotatable, Expression, Query, Rotation},
         test::{rand_array, rand_idx, rand_vec},
         Itertools,
     },
@@ -24,7 +25,7 @@ use std::{
     array,
     collections::{HashMap, HashSet},
     hash::Hash,
-    iter,
+    iter, mem,
 };
 
 pub fn vanilla_plonk_circuit_info<F: PrimeField>(
@@ -60,7 +61,7 @@ pub fn vanilla_plonk_expression<F: PrimeField>(num_vars: usize) -> Expression<F>
     expression
 }
 
-pub fn vanilla_plonk_with_lookup_circuit_info<F: PrimeField>(
+pub fn vanilla_plonk_w_lookup_circuit_info<F: PrimeField>(
     num_vars: usize,
     num_instances: usize,
     preprocess_polys: [Vec<F>; 9],
@@ -85,8 +86,8 @@ pub fn vanilla_plonk_with_lookup_circuit_info<F: PrimeField>(
     }
 }
 
-pub fn vanilla_plonk_with_lookup_expression<F: PrimeField>(num_vars: usize) -> Expression<F> {
-    let circuit_info = vanilla_plonk_with_lookup_circuit_info(
+pub fn vanilla_plonk_w_lookup_expression<F: PrimeField>(num_vars: usize) -> Expression<F> {
+    let circuit_info = vanilla_plonk_w_lookup_circuit_info(
         num_vars,
         0,
         Default::default(),
@@ -97,7 +98,7 @@ pub fn vanilla_plonk_with_lookup_expression<F: PrimeField>(num_vars: usize) -> E
     expression
 }
 
-pub fn rand_vanilla_plonk_circuit<F: PrimeField>(
+pub fn rand_vanilla_plonk_circuit<F: PrimeField, R: Rotatable + From<usize>>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
@@ -106,7 +107,7 @@ pub fn rand_vanilla_plonk_circuit<F: PrimeField>(
     let mut polys = [(); 9].map(|_| vec![F::ZERO; size]);
 
     let instances = rand_vec(num_vars, &mut witness_rng);
-    polys[0] = instance_polys(num_vars, [&instances])[0].evals().to_vec();
+    polys[0] = mem::take(&mut instance_polys::<_, R>(num_vars, [&instances])[0]).into_evals();
 
     let mut permutation = Permutation::default();
     for poly in [6, 7, 8] {
@@ -168,31 +169,27 @@ pub fn rand_vanilla_plonk_circuit<F: PrimeField>(
     )
 }
 
-pub fn rand_vanilla_plonk_assignment<F: PrimeField>(
+pub fn rand_vanilla_plonk_assignment<F: PrimeField, R: Rotatable + From<usize>>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
         let (circuit_info, circuit) =
-            rand_vanilla_plonk_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
+            rand_vanilla_plonk_circuit::<_, R>(num_vars, &mut preprocess_rng, &mut witness_rng);
         let witness = circuit.synthesize(0, &[]).unwrap();
-        let polys = iter::empty()
-            .chain(instance_polys(num_vars, circuit.instances()))
-            .chain(
-                iter::empty()
-                    .chain(circuit_info.preprocess_polys)
-                    .chain(witness)
-                    .map(MultilinearPolynomial::new),
-            )
-            .collect_vec();
+        let polys = chain![
+            instance_polys::<_, R>(num_vars, circuit.instances()),
+            chain![circuit_info.preprocess_polys, witness].map(MultilinearPolynomial::new),
+        ]
+        .collect_vec();
         (polys, circuit_info.permutations)
     };
     let challenges: [_; 3] = rand_array(&mut witness_rng);
     let [beta, gamma, _] = challenges;
 
     let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &permutations);
-    let permutation_z_polys = permutation_z_polys(
+    let permutation_z_polys = permutation_z_polys::<_, R>(
         1,
         &[6, 7, 8]
             .into_iter()
@@ -204,16 +201,12 @@ pub fn rand_vanilla_plonk_assignment<F: PrimeField>(
     );
 
     (
-        iter::empty()
-            .chain(polys)
-            .chain(permutation_polys)
-            .chain(permutation_z_polys)
-            .collect_vec(),
+        chain![polys, permutation_polys, permutation_z_polys].collect_vec(),
         challenges.to_vec(),
     )
 }
 
-pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
+pub fn rand_vanilla_plonk_w_lookup_circuit<F: PrimeField + Hash, R: Rotatable + From<usize>>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
@@ -222,20 +215,24 @@ pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
     let mut polys = [(); 13].map(|_| vec![F::ZERO; size]);
 
     let [t_l, t_r, t_o] = [(); 3].map(|_| {
-        iter::empty()
-            .chain([F::ZERO, F::ZERO])
-            .chain(iter::repeat_with(|| F::random(&mut preprocess_rng)))
-            .take(size)
-            .collect_vec()
+        chain![
+            [F::ZERO; 2],
+            iter::repeat_with(|| F::random(&mut preprocess_rng)),
+        ]
+        .take(size)
+        .collect_vec()
     });
     polys[7] = t_l;
     polys[8] = t_r;
     polys[9] = t_o;
 
     let instances = rand_vec(num_vars, &mut witness_rng);
-    polys[0] = instance_polys(num_vars, [&instances])[0].evals().to_vec();
-    let instance_rows = BooleanHypercube::new(num_vars)
-        .iter()
+    polys[0] = instance_polys::<_, R>(num_vars, [&instances])[0]
+        .evals()
+        .to_vec();
+    let instance_rows = R::from(num_vars)
+        .usable_indices()
+        .into_iter()
         .take(num_vars + 1)
         .collect::<HashSet<_>>();
 
@@ -303,7 +300,7 @@ pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
     }
 
     let [_, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o] = polys;
-    let circuit_info = vanilla_plonk_with_lookup_circuit_info(
+    let circuit_info = vanilla_plonk_w_lookup_circuit_info(
         num_vars,
         instances.len(),
         [q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o],
@@ -315,24 +312,23 @@ pub fn rand_vanilla_plonk_with_lookup_circuit<F: PrimeField>(
     )
 }
 
-pub fn rand_vanilla_plonk_with_lookup_assignment<F: PrimeField + Hash>(
+pub fn rand_vanilla_plonk_w_lookup_assignment<F: PrimeField + Hash, R: Rotatable + From<usize>>(
     num_vars: usize,
     mut preprocess_rng: impl RngCore,
     mut witness_rng: impl RngCore,
 ) -> (Vec<MultilinearPolynomial<F>>, Vec<F>) {
     let (polys, permutations) = {
-        let (circuit_info, circuit) =
-            rand_vanilla_plonk_with_lookup_circuit(num_vars, &mut preprocess_rng, &mut witness_rng);
+        let (circuit_info, circuit) = rand_vanilla_plonk_w_lookup_circuit::<_, R>(
+            num_vars,
+            &mut preprocess_rng,
+            &mut witness_rng,
+        );
         let witness = circuit.synthesize(0, &[]).unwrap();
-        let polys = iter::empty()
-            .chain(instance_polys(num_vars, circuit.instances()))
-            .chain(
-                iter::empty()
-                    .chain(circuit_info.preprocess_polys)
-                    .chain(witness)
-                    .map(MultilinearPolynomial::new),
-            )
-            .collect_vec();
+        let polys = chain![
+            instance_polys::<_, R>(num_vars, circuit.instances()),
+            chain![circuit_info.preprocess_polys, witness].map(MultilinearPolynomial::new),
+        ]
+        .collect_vec();
         (polys, circuit_info.permutations)
     };
     let challenges: [_; 3] = rand_array(&mut witness_rng);
@@ -340,17 +336,18 @@ pub fn rand_vanilla_plonk_with_lookup_assignment<F: PrimeField + Hash>(
 
     let (lookup_compressed_polys, lookup_m_polys) = {
         let PlonkishCircuitInfo { lookups, .. } =
-            vanilla_plonk_with_lookup_circuit_info(0, 0, Default::default(), Vec::new());
+            vanilla_plonk_w_lookup_circuit_info(0, 0, Default::default(), Vec::new());
+        let polys = polys.iter().collect_vec();
         let betas = powers(beta).take(3).collect_vec();
         let lookup_compressed_polys =
-            lookup_compressed_polys(&lookups, &polys.iter().collect_vec(), &[], &betas);
+            lookup_compressed_polys::<_, R>(&lookups, &polys, &[], &betas);
         let lookup_m_polys = lookup_m_polys(&lookup_compressed_polys).unwrap();
         (lookup_compressed_polys, lookup_m_polys)
     };
     let lookup_h_polys = lookup_h_polys(&lookup_compressed_polys, &lookup_m_polys, &gamma);
 
     let permutation_polys = permutation_polys(num_vars, &[10, 11, 12], &permutations);
-    let permutation_z_polys = permutation_z_polys(
+    let permutation_z_polys = permutation_z_polys::<_, R>(
         1,
         &[10, 11, 12]
             .into_iter()
@@ -362,13 +359,14 @@ pub fn rand_vanilla_plonk_with_lookup_assignment<F: PrimeField + Hash>(
     );
 
     (
-        iter::empty()
-            .chain(polys)
-            .chain(permutation_polys)
-            .chain(lookup_m_polys)
-            .chain(lookup_h_polys)
-            .chain(permutation_z_polys)
-            .collect_vec(),
+        chain![
+            polys,
+            permutation_polys,
+            lookup_m_polys,
+            lookup_h_polys,
+            permutation_z_polys,
+        ]
+        .collect_vec(),
         challenges.to_vec(),
     )
 }

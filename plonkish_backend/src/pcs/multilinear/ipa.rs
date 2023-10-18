@@ -1,7 +1,7 @@
 use crate::{
     pcs::{
         multilinear::{additive, err_too_many_variates, validate_input},
-        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
+        Additive, Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
@@ -71,15 +71,13 @@ impl<C: CurveAffine> From<C> for MultilinearIpaCommitment<C> {
     }
 }
 
-impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearIpaCommitment<C> {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
+impl<C: CurveAffine> Additive<C::Scalar> for MultilinearIpaCommitment<C> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a C::Scalar>,
+        bases: impl IntoIterator<Item = &'b Self>,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
         let bases = bases.into_iter().map(|base| &base.0).collect_vec();
-        assert_eq!(scalars.len(), bases.len());
-
         MultilinearIpaCommitment(variable_base_msm(scalars, bases).to_affine())
     }
 }
@@ -189,14 +187,8 @@ where
             let (coeffs_l, coeffs_r) = coeffs.split_at(mid);
             let (zs_l, zs_r) = zs.split_at(mid);
             let (c_l, c_r) = (inner_product(coeffs_r, zs_l), inner_product(coeffs_l, zs_r));
-            let l_i = variable_base_msm(
-                chain![coeffs_r, Some(&c_l)],
-                chain![bases_l, Some(&h_prime)],
-            );
-            let r_i = variable_base_msm(
-                chain![coeffs_l, Some(&c_r)],
-                chain![bases_r, Some(&h_prime)],
-            );
+            let l_i = variable_base_msm(chain![coeffs_r, [&c_l]], chain![bases_l, [&h_prime]]);
+            let r_i = variable_base_msm(chain![coeffs_l, [&c_r]], chain![bases_r, [&h_prime]]);
             transcript.write_commitment(&l_i.to_affine())?;
             transcript.write_commitment(&r_i.to_affine())?;
 
@@ -285,13 +277,13 @@ where
 
         let xi_invs = {
             let mut xi_invs = xis.clone();
-            xi_invs.iter_mut().batch_invert();
+            xi_invs.batch_invert();
             xi_invs
         };
         let neg_c_h = MultilinearPolynomial::new(h_coeffs(neg_c, &xis));
         let u = &(xi_0 * (neg_c_h.evaluate(point) + eval));
-        let scalars = chain![&xi_invs, &xis, neg_c_h.evals(), Some(u)];
-        let bases = chain![&ls, &rs, vp.g(), Some(vp.h())];
+        let scalars = chain![&xi_invs, &xis, neg_c_h.evals(), [u]];
+        let bases = chain![&ls, &rs, vp.g(), [vp.h()]];
         bool::from((variable_base_msm(scalars, bases) + comm.0).is_identity())
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))

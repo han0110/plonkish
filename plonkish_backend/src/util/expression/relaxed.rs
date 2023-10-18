@@ -1,5 +1,6 @@
 use crate::util::{
     arithmetic::PrimeField,
+    chain,
     expression::{CommonPolynomial, Expression, Query},
     BitIndex, Itertools,
 };
@@ -69,41 +70,40 @@ pub(crate) fn cross_term_expressions<F: PrimeField>(
                     &|(lhs, expr), rhs| (lhs * rhs, expr),
                 );
                 for idx in 1usize..(1 << folding_degree) - 1 {
-                    let (scalar, mut polys) = iter::empty()
-                        .chain(iter::repeat(None).take(folding_degree - product.folding_degree()))
-                        .chain(product.foldees.iter().map(Some))
-                        .enumerate()
-                        .fold(
-                            (Expression::Constant(common_scalar), common_poly.clone()),
-                            |(mut scalar, mut polys), (nth, foldee)| {
-                                let (poly_offset, challenge_offset) = if idx.nth_bit(nth) {
-                                    (
-                                        preprocess_poly_indices.len() + folding_poly_indices.len(),
-                                        num_challenges + 1,
-                                    )
-                                } else {
-                                    (preprocess_poly_indices.len(), 0)
-                                };
-                                match foldee {
-                                    None => {
-                                        scalar =
-                                            &scalar * Expression::Challenge(challenge_offset + u)
-                                    }
-                                    Some(Expression::Challenge(challenge)) => {
-                                        scalar = &scalar
-                                            * Expression::Challenge(challenge_offset + challenge)
-                                    }
-                                    Some(Expression::Polynomial(query)) => {
-                                        let poly =
-                                            poly_offset + folding_poly_indices[&query.poly()];
-                                        let query = Query::new(poly, query.rotation());
-                                        polys.push(ExpressionPolynomial::Polynomial(query));
-                                    }
-                                    _ => unreachable!(),
+                    let (scalar, mut polys) = chain![
+                        iter::repeat(None).take(folding_degree - product.folding_degree()),
+                        product.foldees.iter().map(Some),
+                    ]
+                    .enumerate()
+                    .fold(
+                        (Expression::Constant(common_scalar), common_poly.clone()),
+                        |(mut scalar, mut polys), (nth, foldee)| {
+                            let (poly_offset, challenge_offset) = if idx.nth_bit(nth) {
+                                (
+                                    preprocess_poly_indices.len() + folding_poly_indices.len(),
+                                    num_challenges + 1,
+                                )
+                            } else {
+                                (preprocess_poly_indices.len(), 0)
+                            };
+                            match foldee {
+                                None => {
+                                    scalar = &scalar * Expression::Challenge(challenge_offset + u)
                                 }
-                                (scalar, polys)
-                            },
-                        );
+                                Some(Expression::Challenge(challenge)) => {
+                                    scalar = &scalar
+                                        * Expression::Challenge(challenge_offset + challenge)
+                                }
+                                Some(Expression::Polynomial(query)) => {
+                                    let poly = poly_offset + folding_poly_indices[&query.poly()];
+                                    let query = Query::new(poly, query.rotation());
+                                    polys.push(ExpressionPolynomial::Polynomial(query));
+                                }
+                                _ => unreachable!(),
+                            }
+                            (scalar, polys)
+                        },
+                    );
                     polys.sort_unstable();
                     scalars[idx.count_ones() as usize - 1]
                         .entry(polys)
@@ -186,11 +186,7 @@ pub(crate) fn products<F: PrimeField>(
                 .map(|(lhs, rhs)| {
                     Product::new(
                         &lhs.preprocess * &rhs.preprocess,
-                        iter::empty()
-                            .chain(&lhs.foldees)
-                            .chain(&rhs.foldees)
-                            .cloned()
-                            .collect(),
+                        chain![&lhs.foldees, &rhs.foldees].cloned().collect(),
                     )
                 })
                 .collect_vec()

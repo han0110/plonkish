@@ -1,18 +1,15 @@
 use crate::{
     pcs::{
-        univariate::monomial_g1_to_lagrange_g1, AdditiveCommitment, Evaluation, Point,
+        univariate::monomial_g1_to_lagrange_g1, Additive, Evaluation, Point,
         PolynomialCommitmentScheme,
     },
-    poly::{
-        univariate::{UnivariateBasis::*, UnivariatePolynomial},
-        Polynomial,
-    },
+    poly::univariate::{UnivariateBasis::*, UnivariatePolynomial},
     util::{
         arithmetic::{
-            barycentric_interpolate, barycentric_weights, batch_projective_to_affine, fft,
-            fixed_base_msm, inner_product, powers, root_of_unity_inv, variable_base_msm,
-            window_size, window_table, Curve, CurveAffine, Field, MultiMillerLoop,
-            PrimeCurveAffine, PrimeField,
+            barycentric_interpolate, barycentric_weights, batch_projective_to_affine,
+            fixed_base_msm, inner_product, powers, radix2_fft, root_of_unity_inv,
+            variable_base_msm, window_size, window_table, Curve, CurveAffine, Field,
+            MultiMillerLoop, PrimeCurveAffine, PrimeField,
         },
         chain, izip, izip_eq,
         transcript::{TranscriptRead, TranscriptWrite},
@@ -168,15 +165,13 @@ impl<C: CurveAffine> From<C> for UnivariateKzgCommitment<C> {
     }
 }
 
-impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for UnivariateKzgCommitment<C> {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
+impl<C: CurveAffine> Additive<C::Scalar> for UnivariateKzgCommitment<C> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a C::Scalar>,
+        bases: impl IntoIterator<Item = &'b Self>,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
         let bases = bases.into_iter().map(|base| &base.0).collect_vec();
-        assert_eq!(scalars.len(), bases.len());
-
         UnivariateKzgCommitment(variable_base_msm(scalars, bases).to_affine())
     }
 }
@@ -213,7 +208,7 @@ where
                 let k = poly_size.ilog2() as usize;
                 let n_inv = M::Scalar::TWO_INV.pow_vartime([k as u64]);
                 let mut lagrange = monomial;
-                fft(&mut lagrange, root_of_unity_inv(k), k);
+                radix2_fft(&mut lagrange, root_of_unity_inv(k), k);
                 lagrange.iter_mut().for_each(|v| *v *= n_inv);
                 batch_projective_to_affine(&fixed_base_msm(window_size, &window_table, &lagrange))
             };
@@ -320,7 +315,7 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let divisor = Self::Polynomial::new(Monomial, vec![point.neg(), M::Scalar::ONE]);
+        let divisor = Self::Polynomial::monomial(vec![point.neg(), M::Scalar::ONE]);
         let (quotient, remainder) = poly.div_rem(&divisor);
 
         if cfg!(feature = "sanity-check") {

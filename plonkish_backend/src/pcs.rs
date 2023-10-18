@@ -1,9 +1,9 @@
 use crate::{
     poly::Polynomial,
     util::{
-        arithmetic::{variable_base_msm, Curve, CurveAffine, Field},
+        arithmetic::Field,
         transcript::{TranscriptRead, TranscriptWrite},
-        DeserializeOwned, Itertools, Serialize,
+        DeserializeOwned, Serialize,
     },
     Error,
 };
@@ -154,24 +154,11 @@ impl<F> Evaluation<F> {
     }
 }
 
-pub trait AdditiveCommitment<F: Field>: Debug + Default + PartialEq + Eq {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a F> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
+pub trait Additive<F: Field>: Debug + Default + PartialEq + Eq {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a F>,
+        bases: impl IntoIterator<Item = &'b Self>,
     ) -> Self
     where
-        Self: 'a;
-}
-
-impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for C {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
-    ) -> Self {
-        let scalars = scalars.into_iter().collect_vec();
-        let bases = bases.into_iter().collect_vec();
-        assert_eq!(scalars.len(), bases.len());
-
-        variable_base_msm(scalars, bases).to_affine()
-    }
+        Self: 'b;
 }

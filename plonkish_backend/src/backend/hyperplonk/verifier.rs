@@ -6,8 +6,11 @@ use crate::{
     },
     poly::multilinear::{rotation_eval, rotation_eval_points},
     util::{
-        arithmetic::{inner_product, BooleanHypercube, PrimeField},
-        expression::{Expression, Query, Rotation},
+        arithmetic::{inner_product, PrimeField},
+        expression::{
+            rotate::{BinaryField, Rotatable},
+            Expression, Query, Rotation,
+        },
         transcript::FieldTranscriptRead,
         Itertools,
     },
@@ -45,7 +48,7 @@ pub(crate) fn verify_sum_check<F: PrimeField>(
     y: &[F],
     transcript: &mut impl FieldTranscriptRead<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
-    let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_>>::verify(
+    let (x_eval, x) = ClassicSumCheck::<EvaluationsProver<_>, BinaryField>::verify(
         &(),
         num_vars,
         expression.degree(),
@@ -66,11 +69,11 @@ pub(crate) fn verify_sum_check<F: PrimeField>(
         .into_iter()
         .unzip::<_, _, Vec<_>, Vec<_>>();
 
-    let evals = instance_evals(num_vars, expression, instances, &x)
+    let evals = instance_evals::<_, BinaryField>(num_vars, expression, instances, &x)
         .into_iter()
         .chain(evals)
         .collect();
-    if evaluate(expression, num_vars, &evals, challenges, &[y], &x) != x_eval {
+    if evaluate::<_, BinaryField>(expression, num_vars, &evals, challenges, &[y], &x) != x_eval {
         return Err(Error::InvalidSnark(
             "Unmatched between sum_check output and query evaluation".to_string(),
         ));
@@ -89,7 +92,7 @@ pub(crate) fn verify_sum_check<F: PrimeField>(
     Ok((points(&pcs_query, &x), evals))
 }
 
-fn instance_evals<F: PrimeField>(
+pub(crate) fn instance_evals<F: PrimeField, R: Rotatable + From<usize>>(
     num_vars: usize,
     expression: &Expression<F>,
     instances: &[Vec<F>],
@@ -98,53 +101,31 @@ fn instance_evals<F: PrimeField>(
     let mut instance_query = expression.used_query();
     instance_query.retain(|query| query.poly() < instances.len());
 
-    let lagranges = {
-        let mut lagranges = instance_query.iter().fold(0..0, |range, query| {
-            let i = -query.rotation().0;
-            range.start.min(i)..range.end.max(i + instances[query.poly()].len() as i32)
-        });
-        if lagranges.start < 0 {
-            lagranges.start -= 1;
-        }
-        if lagranges.end > 0 {
-            lagranges.end += 1;
-        }
-        lagranges
+    let (min_rotation, max_rotation) = instance_query.iter().fold((0, 0), |(min, max), query| {
+        (min.min(query.rotation().0), max.max(query.rotation().0))
+    });
+    let lagrange_evals = {
+        let rotatable = R::from(num_vars);
+        let max_instance_len = instances.iter().map(Vec::len).max().unwrap_or_default();
+        (-max_rotation..max_instance_len as i32 + min_rotation.abs())
+            .map(|i| lagrange_eval(x, rotatable.nth(i)))
+            .collect_vec()
     };
-
-    let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
-    let lagrange_evals = lagranges
-        .filter_map(|i| {
-            (i != 0).then(|| {
-                let b = bh[i.rem_euclid(1 << num_vars as i32) as usize];
-                (i, lagrange_eval(x, b))
-            })
-        })
-        .collect::<HashMap<_, _>>();
 
     instance_query
         .into_iter()
         .map(|query| {
-            let is = if query.rotation() > Rotation::cur() {
-                (-query.rotation().0..0)
-                    .chain(1..)
-                    .take(instances[query.poly()].len())
-                    .collect_vec()
-            } else {
-                (1 - query.rotation().0..)
-                    .take(instances[query.poly()].len())
-                    .collect_vec()
-            };
+            let offset = (max_rotation - query.rotation().0) as usize;
             let eval = inner_product(
                 &instances[query.poly()],
-                is.iter().map(|i| lagrange_evals.get(i).unwrap()),
+                &lagrange_evals[offset..offset + instances[query.poly()].len()],
             );
             (query, eval)
         })
         .collect()
 }
 
-pub(super) fn pcs_query<F: PrimeField>(
+pub(crate) fn pcs_query<F: PrimeField>(
     expression: &Expression<F>,
     num_instance_poly: usize,
 ) -> BTreeSet<Query> {

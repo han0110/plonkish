@@ -6,6 +6,7 @@
 
 use crate::util::{
     arithmetic::{horner, steps, Field, PrimeField},
+    chain,
     code::LinearCodes,
     Deserialize, Itertools, Serialize,
 };
@@ -207,12 +208,13 @@ pub trait BrakedownSpec: Debug {
 
     fn codeword_len(log2_q: usize, n: usize, n_0: usize) -> usize {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
-        iter::empty()
-            .chain(Some(a[0].n))
-            .chain(a[..a.len() - 1].iter().map(|a| a.m))
-            .chain(Some(b.last().unwrap().n))
-            .chain(b.iter().map(|b| b.m))
-            .sum()
+        chain![
+            [a[0].n],
+            a[..a.len() - 1].iter().map(|a| a.m),
+            [b.last().unwrap().n],
+            b.iter().map(|b| b.m),
+        ]
+        .sum()
     }
 
     fn matrices<F: Field>(

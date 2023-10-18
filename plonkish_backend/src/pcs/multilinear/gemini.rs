@@ -9,8 +9,7 @@ use crate::{
     },
     poly::{
         multilinear::{merge_into, MultilinearPolynomial},
-        univariate::{UnivariateBasis::Monomial, UnivariatePolynomial},
-        Polynomial,
+        univariate::UnivariatePolynomial,
     },
     util::{
         arithmetic::{squares, Field, MultiMillerLoop},
@@ -99,12 +98,12 @@ where
 
         let fs = {
             let mut fs = Vec::with_capacity(num_vars);
-            fs.push(UnivariatePolynomial::new(Monomial, poly.evals().to_vec()));
+            fs.push(UnivariatePolynomial::monomial(poly.evals().to_vec()));
             for x_i in &point[..num_vars - 1] {
                 let f_i_minus_one = fs.last().unwrap().coeffs();
                 let mut f_i = Vec::with_capacity(f_i_minus_one.len() >> 1);
                 merge_into(&mut f_i, f_i_minus_one, x_i, 1, 0);
-                fs.push(UnivariatePolynomial::new(Monomial, f_i));
+                fs.push(UnivariatePolynomial::monomial(f_i));
             }
 
             if cfg!(feature = "sanity-check") {

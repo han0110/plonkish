@@ -1,6 +1,6 @@
 use crate::util::{
     arithmetic::{
-        batch_projective_to_affine, fft, root_of_unity_inv, CurveAffine, Field, PrimeField,
+        batch_projective_to_affine, radix2_fft, root_of_unity_inv, CurveAffine, Field, PrimeField,
     },
     parallel::parallelize,
     Itertools,
@@ -21,7 +21,7 @@ fn monomial_g1_to_lagrange_g1<C: CurveAffine>(monomial_g1: &[C]) -> Vec<C> {
     let omega_inv = root_of_unity_inv(k);
 
     let mut lagrange = monomial_g1.iter().map(C::to_curve).collect_vec();
-    fft(&mut lagrange, omega_inv, k);
+    radix2_fft(&mut lagrange, omega_inv, k);
     parallelize(&mut lagrange, |(g, _)| {
         g.iter_mut().for_each(|g| *g *= n_inv)
     });

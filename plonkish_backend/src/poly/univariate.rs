@@ -70,20 +70,7 @@ impl<F> UnivariatePolynomial<F> {
 }
 
 impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
-    type Basis = UnivariateBasis;
     type Point = F;
-
-    fn new(basis: UnivariateBasis, coeffs: Vec<F>) -> Self {
-        let mut poly = Self { basis, coeffs };
-        if let Monomial = basis {
-            poly.truncate_leading_zeros()
-        }
-        poly
-    }
-
-    fn basis(&self) -> Self::Basis {
-        self.basis
-    }
 
     fn coeffs(&self) -> &[F] {
         &self.coeffs
@@ -95,7 +82,7 @@ impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
 
     #[cfg(any(test, feature = "benchmark"))]
     fn rand(n: usize, rng: impl rand::RngCore) -> Self {
-        Self::new(Monomial, crate::util::test::rand_vec(n, rng))
+        Self::monomial(crate::util::test::rand_vec(n, rng))
     }
 
     #[cfg(any(test, feature = "benchmark"))]
@@ -105,21 +92,43 @@ impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
 }
 
 impl<F: Field> UnivariatePolynomial<F> {
+    pub fn monomial(coeffs: Vec<F>) -> Self {
+        let mut poly = Self {
+            basis: Monomial,
+            coeffs,
+        };
+        poly.truncate_leading_zeros();
+        poly
+    }
+
+    pub fn lagrange(coeffs: Vec<F>) -> Self {
+        assert!(coeffs.len().is_power_of_two());
+
+        Self {
+            basis: Lagrange,
+            coeffs,
+        }
+    }
+
     pub fn vanishing<'a>(points: impl IntoIterator<Item = &'a F>, scalar: F) -> Self {
         let points = points.into_iter().collect_vec();
         assert!(!points.is_empty());
 
         let mut buf;
-        let mut basis = vec![F::ZERO; points.len() + 1];
-        *basis.last_mut().unwrap() = scalar;
+        let mut coeffs = vec![F::ZERO; points.len() + 1];
+        *coeffs.last_mut().unwrap() = scalar;
         for (point, len) in points.into_iter().zip(2..) {
             buf = scalar;
-            for idx in (0..basis.len() - 1).rev().take(len) {
-                buf = basis[idx] - buf * point;
-                mem::swap(&mut buf, &mut basis[idx]);
+            for idx in (0..coeffs.len() - 1).rev().take(len) {
+                buf = coeffs[idx] - buf * point;
+                mem::swap(&mut buf, &mut coeffs[idx]);
             }
         }
-        Self::new(Monomial, basis)
+        Self::monomial(coeffs)
+    }
+
+    pub fn basis(&self) -> UnivariateBasis {
+        self.basis
     }
 
     pub fn evaluate(&self, x: &F) -> F {
@@ -165,7 +174,7 @@ impl<F: Field> UnivariatePolynomial<F> {
                     }
                     remainder.truncate_leading_zeros();
                 }
-                (Self::new(Monomial, quotient), remainder)
+                (Self::monomial(quotient), remainder)
             }
         }
     }
@@ -207,28 +216,38 @@ impl<'lhs, 'rhs, F: Field> Add<&'rhs UnivariatePolynomial<F>> for &'lhs Univaria
 
 impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
     fn add_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
-        assert_eq!(self.basis, Monomial);
-        assert_eq!(rhs.basis, Monomial);
+        assert_eq!(self.basis, rhs.basis);
 
-        match self.degree().cmp(&rhs.degree()) {
-            Less => {
-                parallelize(&mut self.coeffs, |(lhs, start)| {
-                    for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
-                        *lhs += rhs;
-                    }
-                });
-                self.coeffs
-                    .extend(rhs[self.coeffs().len()..].iter().cloned());
-            }
-            ord @ (Greater | Equal) => {
-                parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
-                    for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
-                        *lhs += rhs;
-                    }
-                });
-                if matches!(ord, Equal) {
-                    self.truncate_leading_zeros();
+        match self.basis {
+            Monomial => match self.degree().cmp(&rhs.degree()) {
+                Less => {
+                    parallelize(&mut self.coeffs, |(lhs, start)| {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                            *lhs += rhs;
+                        }
+                    });
+                    self.coeffs
+                        .extend(rhs[self.coeffs().len()..].iter().cloned());
                 }
+                ord @ (Greater | Equal) => {
+                    parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                            *lhs += rhs;
+                        }
+                    });
+                    if matches!(ord, Equal) {
+                        self.truncate_leading_zeros();
+                    }
+                }
+            },
+            Lagrange => {
+                assert_eq!(self.coeffs.len(), rhs.coeffs.len());
+
+                parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                    for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                        *lhs += rhs;
+                    }
+                });
             }
         }
     }
@@ -238,33 +257,46 @@ impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs UnivariatePolynomial<F>)>
     for UnivariatePolynomial<F>
 {
     fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs UnivariatePolynomial<F>)) {
-        assert_eq!(self.basis, Monomial);
-        assert_eq!(rhs.basis, Monomial);
+        assert_eq!(self.basis, rhs.basis);
 
         if scalar == &F::ONE {
             *self += rhs;
         } else if scalar == &-F::ONE {
             *self -= rhs;
         } else if scalar != &F::ZERO {
-            match self.degree().cmp(&rhs.degree()) {
-                Less => {
-                    parallelize(&mut self.coeffs, |(lhs, start)| {
-                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
-                            *lhs += *rhs * scalar;
-                        }
-                    });
-                    self.coeffs
-                        .extend(rhs[self.coeffs().len()..].iter().map(|rhs| *rhs * scalar));
-                }
-                ord @ (Greater | Equal) => {
-                    parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
-                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
-                            *lhs += *rhs * scalar;
-                        }
-                    });
-                    if matches!(ord, Equal) {
-                        self.truncate_leading_zeros();
+            match self.basis {
+                Monomial => match self.degree().cmp(&rhs.degree()) {
+                    Less => {
+                        parallelize(&mut self.coeffs, |(lhs, start)| {
+                            let scalar = *scalar;
+                            for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                                *lhs += scalar * rhs;
+                            }
+                        });
+                        self.coeffs
+                            .extend(rhs[self.coeffs().len()..].iter().map(|rhs| *rhs * scalar));
                     }
+                    ord @ (Greater | Equal) => {
+                        parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                            let scalar = *scalar;
+                            for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                                *lhs += scalar * rhs;
+                            }
+                        });
+                        if matches!(ord, Equal) {
+                            self.truncate_leading_zeros();
+                        }
+                    }
+                },
+                Lagrange => {
+                    assert_eq!(self.coeffs.len(), rhs.coeffs.len());
+
+                    parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                        let scalar = *scalar;
+                        for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                            *lhs += scalar * rhs;
+                        }
+                    });
                 }
             }
         }
@@ -286,28 +318,38 @@ impl<'lhs, 'rhs, F: Field> Sub<&'rhs UnivariatePolynomial<F>> for &'lhs Univaria
 
 impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
     fn sub_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
-        assert_eq!(self.basis, Monomial);
-        assert_eq!(rhs.basis, Monomial);
+        assert_eq!(self.basis, rhs.basis);
 
-        match self.degree().cmp(&rhs.degree()) {
-            Less => {
-                parallelize(&mut self.coeffs, |(lhs, start)| {
-                    for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
-                        *lhs -= rhs;
+        match self.basis {
+            Monomial => match self.degree().cmp(&rhs.degree()) {
+                Less => {
+                    parallelize(&mut self.coeffs, |(lhs, start)| {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
+                            *lhs -= rhs;
+                        }
+                    });
+                    self.coeffs
+                        .extend(rhs[self.coeffs().len()..].iter().cloned().map(Neg::neg));
+                }
+                ord @ (Greater | Equal) => {
+                    parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                        for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                            *lhs -= rhs;
+                        }
+                    });
+                    if matches!(ord, Equal) {
+                        self.truncate_leading_zeros();
                     }
-                });
-                self.coeffs
-                    .extend(rhs[self.coeffs().len()..].iter().cloned().map(Neg::neg));
-            }
-            ord @ (Greater | Equal) => {
+                }
+            },
+            Lagrange => {
+                assert_eq!(self.coeffs.len(), rhs.coeffs.len());
+
                 parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
                     for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
                         *lhs -= rhs;
                     }
                 });
-                if matches!(ord, Equal) {
-                    self.truncate_leading_zeros();
-                }
             }
         }
     }
@@ -317,8 +359,6 @@ impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
     fn mul(self, rhs: &'rhs F) -> UnivariatePolynomial<F> {
-        assert_eq!(self.basis, Monomial);
-
         let mut output = self.clone();
         output *= rhs;
         output
@@ -327,10 +367,11 @@ impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
 
 impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
     fn mul_assign(&mut self, rhs: &'rhs F) {
-        assert_eq!(self.basis, Monomial);
-
         if rhs == &F::ZERO {
-            self.coeffs.clear();
+            match self.basis {
+                Monomial => self.coeffs.clear(),
+                Lagrange => self.coeffs.fill(F::ZERO),
+            }
         } else if rhs != &F::ONE {
             parallelize(&mut self.coeffs, |(lhs, _)| {
                 for lhs in lhs.iter_mut() {
@@ -364,6 +405,19 @@ impl<F: Field> Sum<UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
             acc
         })
         .unwrap_or_else(Self::zero)
+    }
+}
+
+impl<F: Field> Sum<(F, UnivariatePolynomial<F>)> for UnivariatePolynomial<F> {
+    fn sum<I: Iterator<Item = (F, UnivariatePolynomial<F>)>>(
+        mut iter: I,
+    ) -> UnivariatePolynomial<F> {
+        let (scalar, mut poly) = iter.next().unwrap();
+        poly *= &scalar;
+        iter.fold(poly, |mut acc, (scalar, poly)| {
+            acc += (&scalar, &poly);
+            acc
+        })
     }
 }
 

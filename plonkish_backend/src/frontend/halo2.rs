@@ -2,8 +2,9 @@ use crate::{
     backend::{PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding},
     util::{
         arithmetic::{BatchInvert, Field},
+        chain,
         expression::{Expression, Query, Rotation},
-        Itertools,
+        izip, Itertools,
     },
 };
 use halo2_proofs::{
@@ -16,7 +17,7 @@ use halo2_proofs::{
 use rand::RngCore;
 use std::{
     collections::{HashMap, HashSet},
-    iter, mem,
+    mem,
 };
 
 #[cfg(any(test, feature = "benchmark"))]
@@ -201,15 +202,16 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
         )
         .map_err(|err| crate::Error::InvalidSnark(format!("Synthesize failure: {err:?}")))?;
 
-        circuit_info.preprocess_polys = iter::empty()
-            .chain(batch_invert_assigned(preprocess_collector.fixeds))
-            .chain(preprocess_collector.selectors.into_iter().map(|selectors| {
+        circuit_info.preprocess_polys = chain![
+            batch_invert_assigned(preprocess_collector.fixeds),
+            preprocess_collector.selectors.into_iter().map(|selectors| {
                 selectors
                     .into_iter()
                     .map(|selector| if selector { F::ONE } else { F::ZERO })
                     .collect()
-            }))
-            .collect();
+            }),
+        ]
+        .collect();
         circuit_info.permutations = preprocess_collector.permutation.into_cycles();
 
         Ok(circuit_info)
@@ -589,13 +591,14 @@ fn advice_idx<F: Field>(cs: &ConstraintSystem<F>) -> Vec<usize> {
 
 fn column_idx<F: Field>(cs: &ConstraintSystem<F>) -> HashMap<(Any, usize), usize> {
     let advice_idx = advice_idx(cs);
-    iter::empty()
-        .chain((0..cs.num_instance_columns()).map(|idx| (Any::Instance, idx)))
-        .chain((0..cs.num_fixed_columns() + cs.num_selectors()).map(|idx| (Any::Fixed, idx)))
-        .enumerate()
-        .map(|(idx, column)| (column, idx))
-        .chain((0..advice_idx.len()).map(|idx| ((Any::advice(), idx), advice_idx[idx])))
-        .collect()
+    chain![
+        (0..cs.num_instance_columns()).map(|idx| (Any::Instance, idx)),
+        (0..cs.num_fixed_columns() + cs.num_selectors()).map(|idx| (Any::Fixed, idx)),
+    ]
+    .enumerate()
+    .map(|(idx, column)| (column, idx))
+    .chain((0..advice_idx.len()).map(|idx| ((Any::advice(), idx), advice_idx[idx])))
+    .collect()
 }
 
 fn num_phases(phases: &[u8]) -> usize {
@@ -691,9 +694,7 @@ fn batch_invert_assigned<F: Field>(assigneds: Vec<Vec<Assigned<F>>>) -> Vec<Vec<
         .flat_map(|f| f.iter_mut().filter_map(|d| d.as_mut()))
         .batch_invert();
 
-    assigneds
-        .iter()
-        .zip(denoms.into_iter())
+    izip!(&assigneds, denoms)
         .map(|(assigneds, denoms)| {
             assigneds
                 .iter()

@@ -15,21 +15,21 @@ use halo2_proofs::{
 };
 use itertools::Itertools;
 use plonkish_backend::{
-    backend::{self, PlonkishBackend, PlonkishCircuit},
+    backend::{self, PlonkishBackend, PlonkishCircuit, WitnessEncoding},
     frontend::halo2::{circuit::VanillaPlonk, CircuitExt, Halo2Circuit},
     halo2_curves::bn256::{Bn256, Fr},
-    pcs::multilinear,
+    pcs::{multilinear, univariate, CommitmentChunk},
     util::{
         end_timer, start_timer,
         test::std_rng,
-        transcript::{InMemoryTranscript, Keccak256Transcript},
+        transcript::{InMemoryTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite},
     },
 };
 use std::{
     env::args,
     fmt::Display,
     fs::{create_dir, File, OpenOptions},
-    io::Write,
+    io::{Cursor, Write},
     iter,
     ops::Range,
     path::Path,
@@ -44,36 +44,52 @@ fn main() {
     k_range.for_each(|k| systems.iter().for_each(|system| system.bench(k, circuit)));
 }
 
-fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
-    type MultilinearKzg = multilinear::MultilinearKzg<Bn256>;
-    type HyperPlonk = backend::hyperplonk::HyperPlonk<MultilinearKzg>;
-
+fn bench_plonkish_backend<B, C>(system: System, k: usize)
+where
+    B: PlonkishBackend<Fr> + WitnessEncoding,
+    C: CircuitExt<Fr>,
+    Keccak256Transcript<Cursor<Vec<u8>>>: TranscriptRead<CommitmentChunk<Fr, B::Pcs>, Fr>
+        + TranscriptWrite<CommitmentChunk<Fr, B::Pcs>, Fr>
+        + InMemoryTranscript,
+{
     let circuit = C::rand(k, std_rng());
-    let circuit = Halo2Circuit::new::<HyperPlonk>(k, circuit);
+    let circuit = Halo2Circuit::new::<B>(k, circuit);
     let circuit_info = circuit.circuit_info().unwrap();
     let instances = circuit.instances();
 
-    let timer = start_timer(|| format!("hyperplonk_setup-{k}"));
-    let param = HyperPlonk::setup(&circuit_info, std_rng()).unwrap();
+    let timer = start_timer(|| format!("{system}_setup-{k}"));
+    let param = B::setup(&circuit_info, std_rng()).unwrap();
     end_timer(timer);
 
-    let timer = start_timer(|| format!("hyperplonk_preprocess-{k}"));
-    let (pp, vp) = HyperPlonk::preprocess(&param, &circuit_info).unwrap();
+    let timer = start_timer(|| format!("{system}_preprocess-{k}"));
+    let (pp, vp) = B::preprocess(&param, &circuit_info).unwrap();
     end_timer(timer);
 
-    let proof = sample(System::HyperPlonk, k, || {
-        let _timer = start_timer(|| format!("hyperplonk_prove-{k}"));
+    let proof = sample(system, k, || {
+        let _timer = start_timer(|| format!("{system}_prove-{k}"));
         let mut transcript = Keccak256Transcript::default();
-        HyperPlonk::prove(&pp, &circuit, &mut transcript, std_rng()).unwrap();
+        B::prove(&pp, &circuit, &mut transcript, std_rng()).unwrap();
         transcript.into_proof()
     });
 
-    let _timer = start_timer(|| format!("hyperplonk_verify-{k}"));
+    let _timer = start_timer(|| format!("{system}_verify-{k}"));
     let accept = {
         let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
-        HyperPlonk::verify(&vp, instances, &mut transcript, std_rng()).is_ok()
+        B::verify(&vp, instances, &mut transcript, std_rng()).is_ok()
     };
     assert!(accept);
+}
+
+fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
+    type GeminiKzg = multilinear::Gemini<univariate::UnivariateKzg<Bn256>>;
+    type HyperPlonk = backend::hyperplonk::HyperPlonk<GeminiKzg>;
+    bench_plonkish_backend::<HyperPlonk, C>(System::HyperPlonk, k)
+}
+
+fn bench_unihyperplonk<C: CircuitExt<Fr>>(k: usize) {
+    type UnivariateKzg = univariate::UnivariateKzg<Bn256>;
+    type UniHyperPlonk = backend::unihyperplonk::UniHyperPlonk<UnivariateKzg>;
+    bench_plonkish_backend::<UniHyperPlonk, C>(System::UniHyperPlonk, k)
 }
 
 fn bench_halo2<C: CircuitExt<Fr>>(k: usize) {
@@ -150,6 +166,7 @@ fn bench_espresso_hyperplonk(circuit: MockCircuit<ark_bn254::Fr>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum System {
     HyperPlonk,
+    UniHyperPlonk,
     Halo2,
     EspressoHyperPlonk,
 }
@@ -158,6 +175,7 @@ impl System {
     fn all() -> Vec<System> {
         vec![
             System::HyperPlonk,
+            System::UniHyperPlonk,
             System::Halo2,
             System::EspressoHyperPlonk,
         ]
@@ -176,7 +194,7 @@ impl System {
 
     fn support(&self, circuit: Circuit) -> bool {
         match self {
-            System::HyperPlonk | System::Halo2 => match circuit {
+            System::HyperPlonk | System::UniHyperPlonk | System::Halo2 => match circuit {
                 Circuit::VanillaPlonk | Circuit::Aggregation | Circuit::Sha256 => true,
             },
             System::EspressoHyperPlonk => match circuit {
@@ -200,6 +218,11 @@ impl System {
                 Circuit::Aggregation => bench_hyperplonk::<AggregationCircuit<Bn256>>(k),
                 Circuit::Sha256 => bench_hyperplonk::<Sha256Circuit>(k),
             },
+            System::UniHyperPlonk => match circuit {
+                Circuit::VanillaPlonk => bench_unihyperplonk::<VanillaPlonk<Fr>>(k),
+                Circuit::Aggregation => bench_unihyperplonk::<AggregationCircuit<Bn256>>(k),
+                Circuit::Sha256 => bench_unihyperplonk::<Sha256Circuit>(k),
+            },
             System::Halo2 => match circuit {
                 Circuit::VanillaPlonk => bench_halo2::<VanillaPlonk<Fr>>(k),
                 Circuit::Aggregation => bench_halo2::<AggregationCircuit<Bn256>>(k),
@@ -217,6 +240,7 @@ impl Display for System {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             System::HyperPlonk => write!(f, "hyperplonk"),
+            System::UniHyperPlonk => write!(f, "unihyperplonk"),
             System::Halo2 => write!(f, "halo2"),
             System::EspressoHyperPlonk => write!(f, "espresso_hyperplonk"),
         }
@@ -258,10 +282,11 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
                 "--system" => match value.as_str() {
                     "all" => systems = System::all(),
                     "hyperplonk" => systems.push(System::HyperPlonk),
+                    "unihyperplonk" => systems.push(System::UniHyperPlonk),
                     "halo2" => systems.push(System::Halo2),
                     "espresso_hyperplonk" => systems.push(System::EspressoHyperPlonk),
                     _ => panic!(
-                        "system should be one of {{all,hyperplonk,halo2,espresso_hyperplonk}}"
+                        "system should be one of {{all,hyperplonk,unihyperplonk,halo2,espresso_hyperplonk}}"
                     ),
                 },
                 "--circuit" => match value.as_str() {

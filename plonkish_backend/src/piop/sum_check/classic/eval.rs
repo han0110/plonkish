@@ -1,10 +1,8 @@
 use crate::{
     piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
     util::{
-        arithmetic::{
-            barycentric_interpolate, barycentric_weights, div_ceil, steps, BooleanHypercube,
-            PrimeField,
-        },
+        arithmetic::{barycentric_interpolate, barycentric_weights, div_ceil, steps, PrimeField},
+        chain,
         expression::{
             evaluator::{ExpressionRegistry, Offsets},
             CommonPolynomial, Expression,
@@ -79,9 +77,7 @@ where
     fn new(state: &ProverState<F>) -> Self {
         let (dense, sparse) = split_sparse(state);
         Self(
-            iter::empty()
-                .chain(Some((&dense, false)))
-                .chain(sparse.iter().zip(iter::repeat(true)))
+            chain![[(&dense, false)], sparse.iter().zip(iter::repeat(true))]
                 .filter_map(|(expression, is_sparse)| {
                     SumCheckEvaluator::new(state.num_vars, state.challenges, expression, is_sparse)
                 })
@@ -214,13 +210,13 @@ impl<F: PrimeField> SumCheckEvaluator<F> {
         b: usize,
     ) {
         if IS_FIRST_ROUND && IS_FIRST_POINT {
-            let bh = BooleanHypercube::new(self.num_vars);
             cache
                 .bs
                 .iter_mut()
                 .zip(self.reg.rotations())
                 .for_each(|(bs, rotation)| {
-                    let [b_0, b_1] = [b << 1, (b << 1) + 1].map(|b| bh.rotate(b, *rotation));
+                    let [b_0, b_1] =
+                        [b << 1, (b << 1) + 1].map(|b| state.rotatable.rotate(b, *rotation));
                     *bs = (b_0, b_1);
                 });
         }
@@ -397,10 +393,16 @@ fn split_sparse<F: PrimeField>(state: &ProverState<F>) -> (Expression<F>, Vec<Ex
 
 #[cfg(test)]
 mod test {
-    use crate::piop::sum_check::{
-        classic::{ClassicSumCheck, EvaluationsProver},
-        test::tests,
+    use crate::{
+        piop::sum_check::{
+            classic::{self, EvaluationsProver},
+            test::tests,
+        },
+        util::expression::rotate::{BinaryField, Lexical},
     };
 
-    tests!(ClassicSumCheck<EvaluationsProver<Fr>>);
+    type ClassicSumCheck<F, R> = classic::ClassicSumCheck<EvaluationsProver<F>, R>;
+
+    tests!(binary_field, ClassicSumCheck<Fr, BinaryField>, BinaryField);
+    tests!(lexical, ClassicSumCheck<Fr, Lexical>, Lexical);
 }

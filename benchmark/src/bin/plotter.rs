@@ -57,7 +57,7 @@ fn main() {
 }
 
 fn parse_args() -> (bool, Vec<String>) {
-    let (verbose, logs) = args().chain(Some("".to_string())).tuple_windows().fold(
+    let (verbose, logs) = args().chain(["".to_string()]).tuple_windows().fold(
         (false, None),
         |(mut verbose, mut logs), (key, value)| {
             match key.as_str() {
@@ -94,6 +94,7 @@ fn parse_args() -> (bool, Vec<String>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum System {
     HyperPlonk,
+    UniHyperPlonk,
     Halo2,
     EspressoHyperPlonk,
 }
@@ -102,6 +103,7 @@ impl System {
     fn iter() -> impl Iterator<Item = System> {
         [
             System::HyperPlonk,
+            System::UniHyperPlonk,
             System::Halo2,
             System::EspressoHyperPlonk,
         ]
@@ -110,7 +112,7 @@ impl System {
 
     fn key_fn(&self) -> impl Fn(&Log) -> (bool, &str) + '_ {
         move |log| match self {
-            System::HyperPlonk | System::Halo2 => (
+            System::HyperPlonk | System::UniHyperPlonk | System::Halo2 => (
                 false,
                 log.name.split([' ', '-']).next().unwrap_or(&log.name),
             ),
@@ -164,6 +166,49 @@ impl System {
                     Some(vec![
                         vec!["pcs_batch_open", "variable_base_msm"],
                         vec!["pcs_batch_open", "sum_check_prove"],
+                    ]),
+                ),
+            ],
+            System::UniHyperPlonk => vec![
+                (
+                    "all",
+                    vec![
+                        vec!["variable_base_msm"],
+                        vec!["sum_check_prove"],
+                        vec!["prove_multilinear_eval"],
+                    ],
+                    None,
+                ),
+                ("multiexp", vec![vec!["variable_base_msm"]], None),
+                ("sum check", vec![vec!["sum_check_prove"]], None),
+                (
+                    "multilinear eval multiexp",
+                    vec![
+                        vec!["prove_multilinear_eval", "variable_base_msm"],
+                        vec![
+                            "prove_multilinear_eval",
+                            "pcs_batch_open",
+                            "variable_base_msm",
+                        ],
+                    ],
+                    None,
+                ),
+                (
+                    "multilinear eval fft",
+                    vec![vec!["prove_multilinear_eval", "fft"]],
+                    None,
+                ),
+                (
+                    "multilinear eval rest",
+                    vec![vec!["prove_multilinear_eval"]],
+                    Some(vec![
+                        vec!["prove_multilinear_eval", "variable_base_msm"],
+                        vec![
+                            "prove_multilinear_eval",
+                            "pcs_batch_open",
+                            "variable_base_msm",
+                        ],
+                        vec!["prove_multilinear_eval", "fft"],
                     ]),
                 ),
             ],
@@ -320,6 +365,7 @@ impl Display for System {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             System::HyperPlonk => write!(f, "hyperplonk"),
+            System::UniHyperPlonk => write!(f, "unihyperplonk"),
             System::Halo2 => write!(f, "halo2"),
             System::EspressoHyperPlonk => write!(f, "espresso_hyperplonk"),
         }
@@ -613,21 +659,20 @@ fn plot_comparison(cost_breakdowns_by_system: &[BTreeMap<usize, Vec<(&str, Durat
     let lines = System::iter()
         .zip(cost_breakdowns_by_system.iter())
         .skip(1)
-        .filter_map(|(system, cost_breakdowns)| {
-            (!cost_breakdowns.is_empty()).then(|| {
-                let [numer, denom] =
-                    [cost_breakdowns, hyperplonk_cost_breakdowns].map(|cost_breakdowns| {
-                        x.iter()
-                            .map(|k| cost_breakdowns[k][0].1.as_nanos() as f64)
-                            .collect_vec()
-                    });
-                let ratio = numer
-                    .iter()
-                    .zip(denom.iter())
-                    .map(|(numer, denom)| numer / denom)
-                    .collect_vec();
-                (format!("{system}/{}", System::HyperPlonk), ratio)
-            })
+        .filter(|(_, cost_breakdowns)| !cost_breakdowns.is_empty())
+        .map(|(system, cost_breakdowns)| {
+            let [numer, denom] =
+                [cost_breakdowns, hyperplonk_cost_breakdowns].map(|cost_breakdowns| {
+                    x.iter()
+                        .map(|k| cost_breakdowns[k][0].1.as_nanos() as f64)
+                        .collect_vec()
+                });
+            let ratio = numer
+                .iter()
+                .zip(denom.iter())
+                .map(|(numer, denom)| numer / denom)
+                .collect_vec();
+            (format!("{system}/{}", System::HyperPlonk), ratio)
         })
         .collect_vec();
 

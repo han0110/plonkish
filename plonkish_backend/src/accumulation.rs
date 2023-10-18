@@ -255,7 +255,7 @@ pub(crate) mod test {
                     seeded_std_rng(),
                 )
             };
-            assert!(matches!(result, Ok(_)));
+            assert_eq!(result, Ok(()));
             end_timer(timer);
         }
     }

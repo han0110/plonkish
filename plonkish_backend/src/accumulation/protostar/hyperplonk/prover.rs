@@ -4,14 +4,19 @@ use crate::{
     pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{div_ceil, powers, sum, BatchInvert, BooleanHypercube, PrimeField},
-        expression::{evaluator::ExpressionRegistry, Expression, Rotation},
+        arithmetic::{div_ceil, powers, sum, BatchInvert, PrimeField},
+        chain,
+        expression::{
+            evaluator::hadamard::HadamardEvaluator,
+            rotate::{BinaryField, Rotatable},
+            Expression, Rotation,
+        },
         izip, izip_eq,
         parallel::{num_threads, par_map_collect, parallelize, parallelize_iter},
         Itertools,
     },
 };
-use std::{borrow::Cow, hash::Hash, iter};
+use std::{borrow::Cow, hash::Hash};
 
 pub(crate) fn lookup_h_polys<F: PrimeField + Hash>(
     compressed_polys: &[[MultilinearPolynomial<F>; 2]],
@@ -47,11 +52,12 @@ fn lookup_h_poly<F: PrimeField + Hash>(
 
     let chunk_size = div_ceil(2 * h_input.len(), num_threads());
     parallelize_iter(
-        iter::empty()
-            .chain(h_input.chunks_mut(chunk_size))
-            .chain(h_table.chunks_mut(chunk_size)),
+        chain![
+            h_input.chunks_mut(chunk_size),
+            h_table.chunks_mut(chunk_size)
+        ],
         |h| {
-            h.iter_mut().batch_invert();
+            h.batch_invert();
         },
     );
 
@@ -75,8 +81,10 @@ pub(super) fn powers_of_zeta_poly<F: PrimeField>(
     num_vars: usize,
     zeta: F,
 ) -> MultilinearPolynomial<F> {
-    let powers_of_zeta = powers(zeta).take(1 << num_vars).collect_vec();
-    let nth_map = BooleanHypercube::new(num_vars).nth_map();
+    let powers_of_zeta = chain![[F::ZERO], powers(zeta)]
+        .take(1 << num_vars)
+        .collect_vec();
+    let nth_map = BinaryField::new(num_vars).nth_map();
     MultilinearPolynomial::new(par_map_collect(&nth_map, |b| powers_of_zeta[*b]))
 }
 
@@ -211,8 +219,8 @@ where
     let size = 1 << num_vars;
     let mut cross_term = vec![F::ZERO; size];
 
-    let bh = BooleanHypercube::new(num_vars);
-    let next_map = bh.rotation_map(Rotation::next());
+    let bf = BinaryField::new(num_vars);
+    let next_map = bf.rotation_map(Rotation::next());
     parallelize(&mut cross_term, |(cross_term, start)| {
         cross_term
             .iter_mut()
@@ -222,12 +230,9 @@ where
                     - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
             })
     });
-    let b_0 = 0;
-    let b_last = bh.rotate(1, Rotation::prev());
-    cross_term[b_0] += acc_pow[b_0] * incoming_zeta + incoming_pow[b_0] * acc_zeta - acc_u.double();
-    cross_term[b_last] += acc_pow[b_last] * incoming_zeta + incoming_pow[b_last] * acc_zeta
-        - acc_u * incoming_zeta
-        - acc_zeta;
+    let b_last = bf.rotate(1, Rotation::prev());
+    cross_term[b_last] +=
+        acc_pow[b_last] * incoming_zeta + incoming_pow[b_last] * acc_zeta - acc_u.double();
 
     MultilinearPolynomial::new(cross_term)
 }
@@ -238,28 +243,32 @@ fn init_hadamard_evaluator<'a, F, Pcs>(
     preprocess_polys: &'a [MultilinearPolynomial<F>],
     accumulator: &'a ProtostarAccumulator<F, Pcs>,
     incoming: &'a ProtostarAccumulator<F, Pcs>,
-) -> HadamardEvaluator<'a, F>
+) -> HadamardEvaluator<'a, F, BinaryField>
 where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
     assert!(!expressions.is_empty());
 
-    let acc_instance_polys = instance_polys(num_vars, &accumulator.instance.instances);
-    let incoming_instance_polys = instance_polys(num_vars, &incoming.instance.instances);
-    let polys = iter::empty()
-        .chain(preprocess_polys.iter().map(Cow::Borrowed))
-        .chain(acc_instance_polys.into_iter().map(Cow::Owned))
-        .chain(accumulator.witness_polys.iter().map(Cow::Borrowed))
-        .chain(incoming_instance_polys.into_iter().map(Cow::Owned))
-        .chain(incoming.witness_polys.iter().map(Cow::Borrowed))
-        .collect_vec();
-    let challenges = iter::empty()
-        .chain(accumulator.instance.challenges.iter().cloned())
-        .chain(Some(accumulator.instance.u))
-        .chain(incoming.instance.challenges.iter().cloned())
-        .chain(Some(incoming.instance.u))
-        .collect_vec();
+    let accumulator_instance_polys =
+        instance_polys::<_, BinaryField>(num_vars, &accumulator.instance.instances);
+    let incoming_instance_polys =
+        instance_polys::<_, BinaryField>(num_vars, &incoming.instance.instances);
+    let polys = chain![
+        chain![preprocess_polys].map(|poly| Cow::Borrowed(poly.evals())),
+        chain![accumulator_instance_polys].map(|poly| Cow::Owned(poly.into_evals())),
+        chain![&accumulator.witness_polys].map(|poly| Cow::Borrowed(poly.evals())),
+        chain![incoming_instance_polys].map(|poly| Cow::Owned(poly.into_evals())),
+        chain![&incoming.witness_polys].map(|poly| Cow::Borrowed(poly.evals())),
+    ]
+    .collect_vec();
+    let challenges = chain![
+        accumulator.instance.challenges.iter().cloned(),
+        [accumulator.instance.u],
+        incoming.instance.challenges.iter().cloned(),
+        [incoming.instance.u],
+    ]
+    .collect_vec();
 
     let expressions = expressions
         .iter()
@@ -271,76 +280,4 @@ where
         .collect_vec();
 
     HadamardEvaluator::new(num_vars, &expressions, polys)
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct HadamardEvaluator<'a, F: PrimeField> {
-    pub(crate) num_vars: usize,
-    pub(crate) reg: ExpressionRegistry<F>,
-    lagranges: Vec<usize>,
-    polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
-}
-
-impl<'a, F: PrimeField> HadamardEvaluator<'a, F> {
-    pub(crate) fn new(
-        num_vars: usize,
-        expressions: &[Expression<F>],
-        polys: Vec<Cow<'a, MultilinearPolynomial<F>>>,
-    ) -> Self {
-        let mut reg = ExpressionRegistry::new();
-        for expression in expressions.iter() {
-            reg.register(expression);
-        }
-        assert!(reg.eq_xys().is_empty());
-
-        let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
-        let lagranges = reg
-            .lagranges()
-            .iter()
-            .map(|i| bh[i.rem_euclid(1 << num_vars) as usize])
-            .collect_vec();
-
-        Self {
-            num_vars,
-            reg,
-            lagranges,
-            polys,
-        }
-    }
-
-    pub(crate) fn cache(&self) -> Vec<F> {
-        self.reg.cache()
-    }
-
-    pub(crate) fn evaluate(&self, evals: &mut [F], cache: &mut [F], b: usize) {
-        self.evaluate_calculations(cache, b);
-        izip_eq!(evals, self.reg.indexed_outputs()).for_each(|(eval, idx)| *eval = cache[*idx])
-    }
-
-    pub(crate) fn evaluate_and_sum(&self, sums: &mut [F], cache: &mut [F], b: usize) {
-        self.evaluate_calculations(cache, b);
-        izip_eq!(sums, self.reg.indexed_outputs()).for_each(|(sum, idx)| *sum += cache[*idx])
-    }
-
-    fn evaluate_calculations(&self, cache: &mut [F], b: usize) {
-        let bh = BooleanHypercube::new(self.num_vars);
-        if self.reg.has_identity() {
-            cache[self.reg.offsets().identity()] = F::from(b as u64);
-        }
-        cache[self.reg.offsets().lagranges()..]
-            .iter_mut()
-            .zip(&self.lagranges)
-            .for_each(|(value, i)| *value = if &b == i { F::ONE } else { F::ZERO });
-        cache[self.reg.offsets().polys()..]
-            .iter_mut()
-            .zip(self.reg.polys())
-            .for_each(|(value, (query, _))| {
-                *value = self.polys[query.poly()][bh.rotate(b, query.rotation())]
-            });
-        self.reg
-            .indexed_calculations()
-            .iter()
-            .zip(self.reg.offsets().calculations()..)
-            .for_each(|(calculation, idx)| calculation.calculate(cache, idx));
-    }
 }

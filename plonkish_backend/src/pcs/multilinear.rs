@@ -109,8 +109,7 @@ fn quotients<F: Field, T>(
 mod additive {
     use crate::{
         pcs::{
-            multilinear::validate_input, AdditiveCommitment, Evaluation, Point,
-            PolynomialCommitmentScheme,
+            multilinear::validate_input, Additive, Evaluation, Point, PolynomialCommitmentScheme,
         },
         piop::sum_check::{
             classic::{ClassicSumCheck, CoefficientsProver},
@@ -143,7 +142,7 @@ mod additive {
     where
         F: PrimeField,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-        Pcs::Commitment: AdditiveCommitment<F>,
+        Pcs::Commitment: Additive<F>,
     {
         validate_input("batch open", num_vars, polys.clone(), points)?;
 
@@ -219,7 +218,7 @@ mod additive {
                 .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
                 .collect_vec();
             let bases = evals.iter().map(|eval| comms[eval.poly()]);
-            Pcs::Commitment::sum_with_scalar(&scalars, bases)
+            Pcs::Commitment::msm(&scalars, bases)
         } else {
             Pcs::Commitment::default()
         };
@@ -244,7 +243,7 @@ mod additive {
     where
         F: PrimeField,
         Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-        Pcs::Commitment: AdditiveCommitment<F>,
+        Pcs::Commitment: Additive<F>,
     {
         validate_input("batch verify", num_vars, [], points)?;
 
@@ -268,7 +267,7 @@ mod additive {
                 .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
                 .collect_vec();
             let bases = evals.iter().map(|eval| comms[eval.poly()]);
-            Pcs::Commitment::sum_with_scalar(&scalars, bases)
+            Pcs::Commitment::msm(&scalars, bases)
         };
         Pcs::verify(vp, &g_prime_comm, &challenges, &g_prime_eval, transcript)
     }

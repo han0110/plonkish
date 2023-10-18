@@ -1,8 +1,9 @@
 use crate::{
     poly::Polynomial,
     util::{
-        arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field},
-        expression::Rotation,
+        arithmetic::{div_ceil, usize_from_bits_le, Field},
+        chain,
+        expression::{rotate::BinaryField, Rotation},
         impl_index,
         parallel::{num_threads, parallelize, parallelize_iter},
         BitIndex, Deserialize, Itertools, Serialize,
@@ -71,14 +72,7 @@ impl<F> MultilinearPolynomial<F> {
 }
 
 impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
-    type Basis = ();
     type Point = Vec<F>;
-
-    fn new(_: (), evals: Vec<F>) -> Self {
-        Self::new(evals)
-    }
-
-    fn basis(&self) {}
 
     fn coeffs(&self) -> &[F] {
         self.evals.as_slice()
@@ -501,16 +495,17 @@ pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>
         pattern
             .iter()
             .map(|pat| {
-                iter::empty()
-                    .chain((0..num_x).map(|idx| {
+                chain![
+                    (0..num_x).map(|idx| {
                         if pat.nth_bit(idx) {
                             flipped_x[idx]
                         } else {
                             x[idx]
                         }
-                    }))
-                    .chain((0..distance).map(|idx| bit_to_field(pat.nth_bit(idx + num_x))))
-                    .collect_vec()
+                    }),
+                    (0..distance).map(|idx| bit_to_field(pat.nth_bit(idx + num_x)))
+                ]
+                .collect_vec()
             })
             .collect()
     } else {
@@ -520,16 +515,17 @@ pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>
         pattern
             .iter()
             .map(|pat| {
-                iter::empty()
-                    .chain((0..distance).map(|idx| bit_to_field(pat.nth_bit(idx))))
-                    .chain((0..num_x).map(|idx| {
+                chain![
+                    (0..distance).map(|idx| bit_to_field(pat.nth_bit(idx))),
+                    (0..num_x).map(|idx| {
                         if pat.nth_bit(idx + distance) {
                             flipped_x[idx]
                         } else {
                             x[idx]
                         }
-                    }))
-                    .collect_vec()
+                    })
+                ]
+                .collect_vec()
             })
             .collect()
     }
@@ -539,8 +535,8 @@ pub(crate) fn rotation_eval_point_pattern<const NEXT: bool>(
     num_vars: usize,
     distance: usize,
 ) -> Vec<usize> {
-    let bh = BooleanHypercube::new(num_vars);
-    let remainder = if NEXT { bh.primitive() } else { bh.x_inv() };
+    let bf = BinaryField::new(num_vars);
+    let remainder = if NEXT { bf.primitive() } else { bf.x_inv() };
     let mut pattern = vec![0; 1 << distance];
     for depth in 0..distance {
         for (e, o) in zip_self!(0..pattern.len(), 1 << (distance - depth)) {
@@ -560,11 +556,11 @@ pub(crate) fn rotation_eval_coeff_pattern<const NEXT: bool>(
     num_vars: usize,
     distance: usize,
 ) -> Vec<usize> {
-    let bh = BooleanHypercube::new(num_vars);
+    let bf = BinaryField::new(num_vars);
     let remainder = if NEXT {
-        bh.primitive() - (1 << num_vars)
+        bf.primitive() - (1 << num_vars)
     } else {
-        bh.x_inv() << distance
+        bf.x_inv() << distance
     };
     let mut pattern = vec![0; 1 << (distance - 1)];
     for depth in 0..distance - 1 {
@@ -651,8 +647,11 @@ mod test {
     use crate::{
         poly::multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
         util::{
-            arithmetic::{BooleanHypercube, Field},
-            expression::Rotation,
+            arithmetic::Field,
+            expression::{
+                rotate::{BinaryField, Rotatable},
+                Rotation,
+            },
             test::rand_vec,
             Itertools,
         },
@@ -672,8 +671,8 @@ mod test {
     #[test]
     fn fix_var() {
         let rand_x_i = || match OsRng.next_u32() % 3 {
-            0 => Fr::zero(),
-            1 => Fr::one(),
+            0 => Fr::ZERO,
+            1 => Fr::ONE,
             2 => Fr::random(OsRng),
             _ => unreachable!(),
         };
@@ -691,11 +690,11 @@ mod test {
     #[test]
     fn evaluate_for_rotation() {
         let mut rng = OsRng;
-        for num_vars in 0..16 {
-            let bh = BooleanHypercube::new(num_vars);
+        for num_vars in 1..16 {
+            let bf = BinaryField::new(num_vars);
             let rotate = |f: &Vec<Fr>| {
                 (0..1 << num_vars)
-                    .map(|idx| f[bh.rotate(idx, Rotation::next())])
+                    .map(|idx| f[bf.rotate(idx, Rotation::next())])
                     .collect_vec()
             };
             let f = rand_vec(1 << num_vars, &mut rng);

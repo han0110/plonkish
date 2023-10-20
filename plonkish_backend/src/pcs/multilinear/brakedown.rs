@@ -437,8 +437,8 @@ fn squeeze_challenge_idx<F: PrimeField>(
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::multilinear::{
-            brakedown::MultilinearBrakedown,
+        pcs::{
+            multilinear::brakedown::MultilinearBrakedown,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
         },
         util::{code::BrakedownSpec6, hash::Keccak256, transcript::Keccak256Transcript},

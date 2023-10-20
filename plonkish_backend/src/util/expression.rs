@@ -21,8 +21,11 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn new(poly: usize, rotation: Rotation) -> Self {
-        Self { poly, rotation }
+    pub fn new(poly: usize, rotation: impl Into<Rotation>) -> Self {
+        Self {
+            poly,
+            rotation: rotation.into(),
+        }
     }
 
     pub fn poly(&self) -> usize {
@@ -31,6 +34,12 @@ impl Query {
 
     pub fn rotation(&self) -> Rotation {
         self.rotation
+    }
+}
+
+impl<T: Into<Rotation>> From<(usize, T)> for Query {
+    fn from((poly, rotation): (usize, T)) -> Self {
+        Self::new(poly, rotation)
     }
 }
 

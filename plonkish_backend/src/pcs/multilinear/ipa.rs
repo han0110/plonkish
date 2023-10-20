@@ -324,8 +324,8 @@ fn h_coeffs<F: Field>(scalar: F, xi: &[F]) -> Vec<F> {
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::multilinear::{
-            ipa::MultilinearIpa,
+        pcs::{
+            multilinear::ipa::MultilinearIpa,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
         },
         util::transcript::Keccak256Transcript,

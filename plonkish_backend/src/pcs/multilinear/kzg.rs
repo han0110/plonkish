@@ -363,8 +363,8 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::multilinear::{
-            kzg::MultilinearKzg,
+        pcs::{
+            multilinear::kzg::MultilinearKzg,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
         },
         util::transcript::Keccak256Transcript,

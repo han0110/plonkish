@@ -5,7 +5,7 @@ use crate::{
         arithmetic::{Field, PrimeField},
         end_timer,
         expression::{rotate::Rotatable, Expression, Query, Rotation},
-        izip, izip_eq,
+        izip,
         parallel::par_map_collect,
         start_timer,
         transcript::{FieldTranscriptRead, FieldTranscriptWrite},
@@ -36,7 +36,7 @@ pub struct ProverState<'a, F: Field> {
     lagranges: HashMap<i32, (usize, F)>,
     identity: F,
     eq_xys: Vec<MultilinearPolynomial<F>>,
-    polys: Vec<Vec<Cow<'a, MultilinearPolynomial<F>>>>,
+    polys: HashMap<Query, Cow<'a, MultilinearPolynomial<F>>>,
     challenges: &'a [F],
     buf: MultilinearPolynomial<F>,
     round: usize,
@@ -65,15 +65,9 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
             .iter()
             .map(|y| MultilinearPolynomial::eq_xy(y))
             .collect_vec();
-        let polys = virtual_poly
-            .polys
-            .iter()
-            .map(|poly| {
-                let mut polys = vec![Cow::Owned(MultilinearPolynomial::zero()); 2 * num_vars];
-                polys[num_vars] = Cow::Borrowed(*poly);
-                polys
-            })
-            .collect_vec();
+        let polys = izip!(0.., virtual_poly.polys)
+            .map(|(idx, poly)| ((idx, 0).into(), Cow::Borrowed(poly)))
+            .collect();
         Self {
             num_vars,
             expression: virtual_poly.expression,
@@ -116,30 +110,29 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                 .filter(|rotation| rotation != &Rotation::cur())
                 .map(|rotation| (rotation, self.rotatable.rotation_map(rotation)))
                 .collect::<HashMap<_, _>>();
-            for query in self.expression.used_query() {
-                if query.rotation() != Rotation::cur() {
-                    let poly = &self.polys[query.poly()][self.num_vars];
+            let rotated_polys = self
+                .expression
+                .used_query()
+                .into_iter()
+                .filter(|query| query.rotation() != Rotation::cur())
+                .map(|query| {
+                    let poly = &self.polys[&(query.poly(), 0).into()];
                     let mut rotated = MultilinearPolynomial::new(par_map_collect(
                         &rotation_maps[&query.rotation()],
                         |b| poly[*b],
                     ));
                     rotated.fix_var_in_place(challenge, &mut self.buf);
-                    self.polys[query.poly()]
-                        [(query.rotation().0 + self.num_vars as i32) as usize] =
-                        Cow::Owned(rotated);
-                }
-            }
-            self.polys.iter_mut().for_each(|polys| {
-                polys[self.num_vars] = Cow::Owned(polys[self.num_vars].fix_var(challenge));
+                    (query, Cow::Owned(rotated))
+                })
+                .collect::<HashMap<_, _>>();
+            self.polys.iter_mut().for_each(|(_, poly)| {
+                *poly = Cow::Owned(poly.fix_var(challenge));
             });
+            self.polys.extend(rotated_polys);
         } else {
-            self.polys.iter_mut().for_each(|polys| {
-                polys.iter_mut().for_each(|poly| {
-                    if !poly.is_empty() {
-                        poly.to_mut().fix_var_in_place(challenge, &mut self.buf);
-                    }
-                });
-            });
+            self.polys
+                .iter_mut()
+                .for_each(|(_, poly)| poly.to_mut().fix_var_in_place(challenge, &mut self.buf));
         }
         self.round += 1;
         if self.round != self.num_vars {
@@ -147,17 +140,12 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
         }
     }
 
-    // TODO: Track polys by BTreeMap already
     fn into_evals(self) -> BTreeMap<Query, F> {
         assert_eq!(self.round, self.num_vars);
-        izip!(0.., self.polys)
-            .flat_map(|(idx, polys)| {
-                izip_eq!(-(self.num_vars as i32)..self.num_vars as i32, polys).flat_map(
-                    move |(rotation, poly)| {
-                        (!poly.is_empty()).then(|| (Query::new(idx, Rotation(rotation)), poly[0]))
-                    },
-                )
-            })
+        self.expression
+            .used_query()
+            .into_iter()
+            .map(|query| (query, self.polys[&query][0]))
             .collect()
     }
 }

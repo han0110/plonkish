@@ -213,10 +213,8 @@ where
 mod test {
     use crate::{
         pcs::{
-            multilinear::{
-                gemini::Gemini,
-                test::{run_batch_commit_open_verify, run_commit_open_verify},
-            },
+            multilinear::gemini::Gemini,
+            test::{run_batch_commit_open_verify, run_commit_open_verify},
             univariate::UnivariateKzg,
         },
         util::transcript::Keccak256Transcript,

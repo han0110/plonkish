@@ -1,9 +1,16 @@
-use crate::util::{
-    arithmetic::{div_ceil, field_size, CurveAffine, Field, Group, PrimeField},
-    parallel::{num_threads, parallelize, parallelize_iter},
-    start_timer, Itertools,
+use crate::{
+    pcs::Additive,
+    util::{
+        arithmetic::{div_ceil, field_size, CurveAffine, Field, Group, PrimeField},
+        chain,
+        parallel::{num_threads, parallelize, parallelize_iter},
+        start_timer, Itertools,
+    },
 };
-use std::mem::size_of;
+use std::{
+    mem::size_of,
+    ops::{Add, Mul, Neg},
+};
 
 pub fn window_size(num_scalars: usize) -> usize {
     if num_scalars < 32 {
@@ -176,6 +183,82 @@ fn variable_base_msm_serial<C: CurveAffine>(
         for bucket in buckets.into_iter().rev() {
             running_sum = bucket.add(running_sum);
             *result += &running_sum;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Msm<'a, F: Field, T: Additive<F>> {
+    Scalar(F),
+    Terms(F, Vec<(F, &'a T)>),
+}
+
+impl<'a, F: Field, T: Additive<F>> Neg for Msm<'a, F, T> {
+    type Output = Self;
+
+    fn neg(mut self) -> Self::Output {
+        match &mut self {
+            Msm::Scalar(constant) => *constant = -*constant,
+            Msm::Terms(constant, terms) => {
+                *constant = -*constant;
+                terms.iter_mut().for_each(|(scalar, _)| *scalar = -*scalar);
+            }
+        }
+        self
+    }
+}
+impl<'a, F: Field, T: Additive<F>> Add for Msm<'a, F, T> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Msm::Scalar(lhs), Msm::Scalar(rhs)) => Msm::Scalar(lhs + rhs),
+            (Msm::Scalar(scalar), Msm::Terms(constant, terms))
+            | (Msm::Terms(constant, terms), Msm::Scalar(scalar)) => {
+                Msm::Terms(constant + scalar, terms)
+            }
+            (Msm::Terms(lhs_constant, lhs_terms), Msm::Terms(rhs_constant, rhs_terms)) => {
+                Msm::Terms(
+                    lhs_constant + rhs_constant,
+                    chain![lhs_terms, rhs_terms].collect(),
+                )
+            }
+        }
+    }
+}
+
+impl<'a, F: Field, T: Additive<F>> Mul for Msm<'a, F, T> {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Msm::Scalar(lhs), Msm::Scalar(rhs)) => Msm::Scalar(lhs * rhs),
+            (Msm::Scalar(rhs), Msm::Terms(constant, terms))
+            | (Msm::Terms(constant, terms), Msm::Scalar(rhs)) => Msm::Terms(
+                constant * rhs,
+                chain![terms].map(|(lhs, base)| (lhs * rhs, base)).collect(),
+            ),
+            (Msm::Terms(_, _), Msm::Terms(_, _)) => unreachable!(),
+        }
+    }
+}
+
+impl<'a, F: Field, T: Additive<F>> Msm<'a, F, T> {
+    pub fn base(base: &'a T) -> Self {
+        Self::Terms(F::ZERO, vec![(F::ONE, base)])
+    }
+
+    pub fn scalar(scalar: F) -> Self {
+        Self::Scalar(scalar)
+    }
+
+    pub fn evaluate(self) -> (F, T) {
+        match self {
+            Msm::Scalar(constant) => (constant, T::default()),
+            Msm::Terms(constant, terms) => {
+                let (scalars, bases) = terms.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+                (constant, T::msm(&scalars, bases))
+            }
         }
     }
 }

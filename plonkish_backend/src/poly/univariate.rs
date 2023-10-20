@@ -1,8 +1,9 @@
 use crate::{
+    pcs::Additive,
     poly::{univariate::UnivariateBasis::*, Polynomial},
     util::{
         arithmetic::{div_ceil, horner, powers, Field},
-        impl_index,
+        impl_index, izip_eq,
         parallel::{num_threads, parallelize, parallelize_iter},
         Deserialize, Itertools, Serialize,
     },
@@ -31,6 +32,18 @@ pub struct UnivariatePolynomial<F> {
 impl<F> Default for UnivariatePolynomial<F> {
     fn default() -> Self {
         UnivariatePolynomial::zero()
+    }
+}
+
+impl<F: Field> Additive<F> for UnivariatePolynomial<F> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a F>,
+        bases: impl IntoIterator<Item = &'b Self>,
+    ) -> Self
+    where
+        Self: 'b,
+    {
+        izip_eq!(scalars, bases).sum()
     }
 }
 
@@ -88,6 +101,14 @@ impl<F: Field> Polynomial<F> for UnivariatePolynomial<F> {
     #[cfg(any(test, feature = "benchmark"))]
     fn rand_point(_: usize, rng: impl rand::RngCore) -> F {
         F::random(rng)
+    }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn squeeze_point(
+        _: usize,
+        transcript: &mut impl crate::util::transcript::FieldTranscript<F>,
+    ) -> Self::Point {
+        transcript.squeeze_challenge()
     }
 }
 
@@ -202,20 +223,19 @@ impl<F: Field> Neg for UnivariatePolynomial<F> {
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Add<&'rhs UnivariatePolynomial<F>> for &'lhs UnivariatePolynomial<F> {
+impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> Add<P> for &UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
-    fn add(self, rhs: &'rhs UnivariatePolynomial<F>) -> UnivariatePolynomial<F> {
-        assert_eq!(self.basis, rhs.basis);
-
+    fn add(self, rhs: P) -> UnivariatePolynomial<F> {
         let mut output = self.clone();
         output += rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn add_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
+impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> AddAssign<P> for UnivariatePolynomial<F> {
+    fn add_assign(&mut self, rhs: P) {
+        let rhs = rhs.borrow();
         assert_eq!(self.basis, rhs.basis);
 
         match self.basis {
@@ -253,10 +273,11 @@ impl<'rhs, F: Field> AddAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
     }
 }
 
-impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs UnivariatePolynomial<F>)>
+impl<F: Field, BF: Borrow<F>, P: Borrow<UnivariatePolynomial<F>>> AddAssign<(BF, P)>
     for UnivariatePolynomial<F>
 {
-    fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs UnivariatePolynomial<F>)) {
+    fn add_assign(&mut self, (scalar, rhs): (BF, P)) {
+        let (scalar, rhs) = (scalar.borrow(), rhs.borrow());
         assert_eq!(self.basis, rhs.basis);
 
         if scalar == &F::ONE {
@@ -303,21 +324,19 @@ impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs UnivariatePolynomial<F>)>
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Sub<&'rhs UnivariatePolynomial<F>> for &'lhs UnivariatePolynomial<F> {
+impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> Sub<P> for &UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
-    fn sub(self, rhs: &'rhs UnivariatePolynomial<F>) -> UnivariatePolynomial<F> {
-        assert_eq!(self.basis, Monomial);
-        assert_eq!(rhs.basis, Monomial);
-
+    fn sub(self, rhs: P) -> UnivariatePolynomial<F> {
         let mut output = self.clone();
         output -= rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sub_assign(&mut self, rhs: &'rhs UnivariatePolynomial<F>) {
+impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> SubAssign<P> for UnivariatePolynomial<F> {
+    fn sub_assign(&mut self, rhs: P) {
+        let rhs = rhs.borrow();
         assert_eq!(self.basis, rhs.basis);
 
         match self.basis {
@@ -355,18 +374,27 @@ impl<'rhs, F: Field> SubAssign<&'rhs UnivariatePolynomial<F>> for UnivariatePoly
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs UnivariatePolynomial<F> {
+impl<F: Field, BF: Borrow<F>, P: Borrow<UnivariatePolynomial<F>>> SubAssign<(BF, P)>
+    for UnivariatePolynomial<F>
+{
+    fn sub_assign(&mut self, (scalar, rhs): (BF, P)) {
+        *self += (-*scalar.borrow(), rhs);
+    }
+}
+
+impl<F: Field, BF: Borrow<F>> Mul<BF> for &UnivariatePolynomial<F> {
     type Output = UnivariatePolynomial<F>;
 
-    fn mul(self, rhs: &'rhs F) -> UnivariatePolynomial<F> {
+    fn mul(self, rhs: BF) -> UnivariatePolynomial<F> {
         let mut output = self.clone();
         output *= rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
-    fn mul_assign(&mut self, rhs: &'rhs F) {
+impl<F: Field, BF: Borrow<F>> MulAssign<BF> for UnivariatePolynomial<F> {
+    fn mul_assign(&mut self, rhs: BF) {
+        let rhs = rhs.borrow();
         if rhs == &F::ZERO {
             match self.basis {
                 Monomial => self.coeffs.clear(),
@@ -382,57 +410,34 @@ impl<'rhs, F: Field> MulAssign<&'rhs F> for UnivariatePolynomial<F> {
     }
 }
 
-impl<'a, F: Field> Sum<&'a UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = &'a UnivariatePolynomial<F>>>(
-        mut iter: I,
-    ) -> UnivariatePolynomial<F> {
+impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> Sum<P> for UnivariatePolynomial<F> {
+    fn sum<I: Iterator<Item = P>>(mut iter: I) -> UnivariatePolynomial<F> {
         let init = match (iter.next(), iter.next()) {
-            (Some(lhs), Some(rhs)) => lhs + rhs,
-            (Some(lhs), None) => return lhs.clone(),
+            (Some(lhs), Some(rhs)) => lhs.borrow() + rhs.borrow(),
+            (Some(lhs), None) => return lhs.borrow().clone(),
             _ => return Self::zero(),
         };
         iter.fold(init, |mut acc, poly| {
-            acc += poly;
+            acc += poly.borrow();
             acc
         })
     }
 }
 
-impl<F: Field> Sum<UnivariatePolynomial<F>> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = UnivariatePolynomial<F>>>(iter: I) -> UnivariatePolynomial<F> {
-        iter.reduce(|mut acc, poly| {
-            acc += &poly;
-            acc
-        })
-        .unwrap_or_else(Self::zero)
-    }
-}
-
-impl<F: Field> Sum<(F, UnivariatePolynomial<F>)> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = (F, UnivariatePolynomial<F>)>>(
-        mut iter: I,
-    ) -> UnivariatePolynomial<F> {
-        let (scalar, mut poly) = iter.next().unwrap();
-        poly *= &scalar;
-        iter.fold(poly, |mut acc, (scalar, poly)| {
-            acc += (&scalar, &poly);
-            acc
-        })
-    }
-}
-
-impl<'a, F: Field, P: Borrow<UnivariatePolynomial<F>>> Sum<(&'a F, P)> for UnivariatePolynomial<F> {
-    fn sum<I: Iterator<Item = (&'a F, P)>>(mut iter: I) -> UnivariatePolynomial<F> {
+impl<F: Field, BF: Borrow<F>, P: Borrow<UnivariatePolynomial<F>>> Sum<(BF, P)>
+    for UnivariatePolynomial<F>
+{
+    fn sum<I: Iterator<Item = (BF, P)>>(mut iter: I) -> UnivariatePolynomial<F> {
         let init = match iter.next() {
             Some((scalar, poly)) => {
                 let mut poly = poly.borrow().clone();
-                poly *= scalar;
+                poly *= scalar.borrow();
                 poly
             }
             _ => return Self::zero(),
         };
         iter.fold(init, |mut acc, (scalar, poly)| {
-            acc += (scalar, poly.borrow());
+            acc += (scalar.borrow(), poly.borrow());
             acc
         })
     }

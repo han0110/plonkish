@@ -206,7 +206,7 @@ fn poly<'a, F: PrimeField>(
     match expr {
         Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)) => &state.eq_xys[*idx],
         Expression::Polynomial(query) if query.rotation() == Rotation::cur() => {
-            &state.polys[query.poly()][state.num_vars]
+            &state.polys[&query]
         }
         _ => unimplemented!(),
     }

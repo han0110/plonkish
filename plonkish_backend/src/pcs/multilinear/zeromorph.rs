@@ -303,10 +303,8 @@ fn eval_and_quotient_scalars<F: Field>(y: F, x: F, z: F, u: &[F]) -> (F, Vec<F>)
 mod test {
     use crate::{
         pcs::{
-            multilinear::{
-                test::{run_batch_commit_open_verify, run_commit_open_verify},
-                zeromorph::Zeromorph,
-            },
+            multilinear::zeromorph::Zeromorph,
+            test::{run_batch_commit_open_verify, run_commit_open_verify},
             univariate::UnivariateKzg,
         },
         util::transcript::Keccak256Transcript,

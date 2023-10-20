@@ -316,8 +316,8 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::multilinear::{
-            hyrax::MultilinearHyrax,
+        pcs::{
+            multilinear::hyrax::MultilinearHyrax,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
         },
         util::transcript::Keccak256Transcript,

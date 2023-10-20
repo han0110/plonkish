@@ -261,7 +261,7 @@ pub(super) mod test {
                                 .rev()
                                 .enumerate()
                                 .map(|(idx, rotation)| {
-                                    Expression::<Fr>::Polynomial(Query::new(idx, rotation.into()))
+                                    Expression::<Fr>::Polynomial(Query::new(idx, rotation))
                                 })
                                 .collect_vec();
                             let gates = polys

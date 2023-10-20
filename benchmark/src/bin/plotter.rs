@@ -182,7 +182,7 @@ impl System {
                 ("multiexp", vec![vec!["variable_base_msm"]], None),
                 ("sum check", vec![vec!["sum_check_prove"]], None),
                 (
-                    "multilinear eval multiexp",
+                    "mleval multiexp",
                     vec![
                         vec!["prove_multilinear_eval", "variable_base_msm"],
                         vec![
@@ -194,12 +194,12 @@ impl System {
                     None,
                 ),
                 (
-                    "multilinear eval fft",
+                    "mleval fft",
                     vec![vec!["prove_multilinear_eval", "fft"]],
                     None,
                 ),
                 (
-                    "multilinear eval rest",
+                    "mleval rest",
                     vec![vec!["prove_multilinear_eval"]],
                     Some(vec![
                         vec!["prove_multilinear_eval", "variable_base_msm"],

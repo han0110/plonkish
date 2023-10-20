@@ -1,4 +1,5 @@
 pub use aggregation::AggregationCircuit;
+pub use keccak256::Keccak256Circuit;
 pub use sha256::Sha256Circuit;
 
 mod aggregation {
@@ -470,6 +471,55 @@ mod sha256 {
                 [33, 65, 129, 257, 513, 1025][k - 17]
             };
             Self { input_size }
+        }
+
+        fn instances(&self) -> Vec<Vec<Fr>> {
+            Vec::new()
+        }
+    }
+}
+
+mod keccak256 {
+    use halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner},
+        plonk::{Circuit, ConstraintSystem, Error},
+    };
+    use plonkish_backend::{frontend::halo2::CircuitExt, halo2_curves::bn256::Fr};
+    use rand::RngCore;
+    use zkevm_circuits::{
+        keccak_circuit::{KeccakCircuit, KeccakCircuitConfig},
+        util::Challenges,
+    };
+
+    pub struct Keccak256Circuit(KeccakCircuit<Fr>);
+
+    impl Circuit<Fr> for Keccak256Circuit {
+        type Config = (KeccakCircuitConfig<Fr>, Challenges);
+        type FloorPlanner = SimpleFloorPlanner;
+
+        fn without_witnesses(&self) -> Self {
+            unimplemented!()
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            KeccakCircuit::configure(meta)
+        }
+
+        fn synthesize(
+            &self,
+            config: Self::Config,
+            layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            self.0.synthesize(config, layouter)
+        }
+    }
+
+    impl CircuitExt<Fr> for Keccak256Circuit {
+        fn rand(k: usize, mut rng: impl RngCore) -> Self {
+            let capacity = KeccakCircuit::<Fr>::new(1 << k, Vec::new()).capacity();
+            let mut input = vec![0; (capacity.unwrap() - 1) * 136];
+            rng.fill_bytes(&mut input);
+            Keccak256Circuit(KeccakCircuit::new(1 << k, vec![input]))
         }
 
         fn instances(&self) -> Vec<Vec<Fr>> {

@@ -1,6 +1,6 @@
 use benchmark::{
     espresso,
-    halo2::{AggregationCircuit, Sha256Circuit},
+    halo2::{AggregationCircuit, Keccak256Circuit, Sha256Circuit},
 };
 use espresso_hyperplonk::{prelude::MockCircuit, HyperPlonkSNARK};
 use espresso_subroutines::{MultilinearKzgPCS, PolyIOP, PolynomialCommitmentScheme};
@@ -8,7 +8,7 @@ use halo2_proofs::{
     plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
     poly::kzg::{
         commitment::ParamsKZG,
-        multiopen::{ProverGWC, VerifierGWC},
+        multiopen::{ProverSHPLONK, VerifierSHPLONK},
         strategy::SingleStrategy,
     },
     transcript::{Blake2bRead, Blake2bWrite, TranscriptReadBuffer, TranscriptWriterBuffer},
@@ -109,11 +109,13 @@ fn bench_halo2<C: CircuitExt<Fr>>(k: usize) {
     end_timer(timer);
 
     let create_proof = |c, d, e, mut f: Blake2bWrite<_, _, _>| {
-        create_proof::<_, ProverGWC<_>, _, _, _, _, false>(&param, &pk, c, d, e, &mut f).unwrap();
+        create_proof::<_, ProverSHPLONK<_>, _, _, _, _, false>(&param, &pk, c, d, e, &mut f)
+            .unwrap();
         f.finalize()
     };
-    let verify_proof =
-        |c, d, e| verify_proof::<_, VerifierGWC<_>, _, _, _, false>(&param, pk.get_vk(), c, d, e);
+    let verify_proof = |c, d, e| {
+        verify_proof::<_, VerifierSHPLONK<_>, _, _, _, false>(&param, pk.get_vk(), c, d, e)
+    };
 
     let proof = sample(System::Halo2, k, || {
         let _timer = start_timer(|| format!("halo2_prove-{k}"));
@@ -195,11 +197,14 @@ impl System {
     fn support(&self, circuit: Circuit) -> bool {
         match self {
             System::HyperPlonk | System::UniHyperPlonk | System::Halo2 => match circuit {
-                Circuit::VanillaPlonk | Circuit::Aggregation | Circuit::Sha256 => true,
+                Circuit::VanillaPlonk
+                | Circuit::Aggregation
+                | Circuit::Sha256
+                | Circuit::Keccak256 => true,
             },
             System::EspressoHyperPlonk => match circuit {
                 Circuit::VanillaPlonk => true,
-                Circuit::Aggregation | Circuit::Sha256 => false,
+                Circuit::Aggregation | Circuit::Sha256 | Circuit::Keccak256 => false,
             },
         }
     }
@@ -217,20 +222,23 @@ impl System {
                 Circuit::VanillaPlonk => bench_hyperplonk::<VanillaPlonk<Fr>>(k),
                 Circuit::Aggregation => bench_hyperplonk::<AggregationCircuit<Bn256>>(k),
                 Circuit::Sha256 => bench_hyperplonk::<Sha256Circuit>(k),
+                Circuit::Keccak256 => bench_hyperplonk::<Keccak256Circuit>(k),
             },
             System::UniHyperPlonk => match circuit {
                 Circuit::VanillaPlonk => bench_unihyperplonk::<VanillaPlonk<Fr>>(k),
                 Circuit::Aggregation => bench_unihyperplonk::<AggregationCircuit<Bn256>>(k),
                 Circuit::Sha256 => bench_unihyperplonk::<Sha256Circuit>(k),
+                Circuit::Keccak256 => bench_unihyperplonk::<Keccak256Circuit>(k),
             },
             System::Halo2 => match circuit {
                 Circuit::VanillaPlonk => bench_halo2::<VanillaPlonk<Fr>>(k),
                 Circuit::Aggregation => bench_halo2::<AggregationCircuit<Bn256>>(k),
                 Circuit::Sha256 => bench_halo2::<Sha256Circuit>(k),
+                Circuit::Keccak256 => bench_halo2::<Keccak256Circuit>(k),
             },
             System::EspressoHyperPlonk => match circuit {
                 Circuit::VanillaPlonk => bench_espresso_hyperplonk(espresso::vanilla_plonk(k)),
-                Circuit::Aggregation | Circuit::Sha256 => unreachable!(),
+                Circuit::Aggregation | Circuit::Sha256 | Circuit::Keccak256 => unreachable!(),
             },
         }
     }
@@ -252,6 +260,7 @@ enum Circuit {
     VanillaPlonk,
     Aggregation,
     Sha256,
+    Keccak256,
 }
 
 impl Circuit {
@@ -260,6 +269,7 @@ impl Circuit {
             Circuit::VanillaPlonk => 4,
             Circuit::Aggregation => 20,
             Circuit::Sha256 => 17,
+            Circuit::Keccak256 => 10,
         }
     }
 }
@@ -270,6 +280,7 @@ impl Display for Circuit {
             Circuit::VanillaPlonk => write!(f, "vanilla_plonk"),
             Circuit::Aggregation => write!(f, "aggregation"),
             Circuit::Sha256 => write!(f, "sha256"),
+            Circuit::Keccak256 => write!(f, "keccak256"),
         }
     }
 }
@@ -293,6 +304,7 @@ fn parse_args() -> (Vec<System>, Circuit, Range<usize>) {
                     "vanilla_plonk" => circuit = Circuit::VanillaPlonk,
                     "aggregation" => circuit = Circuit::Aggregation,
                     "sha256" => circuit = Circuit::Sha256,
+                    "keccak256" => circuit = Circuit::Keccak256,
                     _ => panic!("circuit should be one of {{aggregation,vanilla_plonk}}"),
                 },
                 "--k" => {

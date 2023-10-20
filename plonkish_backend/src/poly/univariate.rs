@@ -263,8 +263,8 @@ impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> AddAssign<P> for UnivariatePo
             Lagrange => {
                 assert_eq!(self.coeffs.len(), rhs.coeffs.len());
 
-                parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
-                    for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                parallelize(&mut self.coeffs, |(lhs, start)| {
+                    for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                         *lhs += rhs;
                     }
                 });
@@ -312,9 +312,9 @@ impl<F: Field, BF: Borrow<F>, P: Borrow<UnivariatePolynomial<F>>> AddAssign<(BF,
                 Lagrange => {
                     assert_eq!(self.coeffs.len(), rhs.coeffs.len());
 
-                    parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
+                    parallelize(&mut self.coeffs, |(lhs, start)| {
                         let scalar = *scalar;
-                        for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                             *lhs += scalar * rhs;
                         }
                     });
@@ -352,7 +352,7 @@ impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> SubAssign<P> for UnivariatePo
                 }
                 ord @ (Greater | Equal) => {
                     parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
-                        for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                        for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                             *lhs -= rhs;
                         }
                     });
@@ -364,8 +364,8 @@ impl<F: Field, P: Borrow<UnivariatePolynomial<F>>> SubAssign<P> for UnivariatePo
             Lagrange => {
                 assert_eq!(self.coeffs.len(), rhs.coeffs.len());
 
-                parallelize(&mut self[..rhs.coeffs().len()], |(lhs, start)| {
-                    for (lhs, rhs) in lhs.iter_mut().zip_eq(rhs[start..].iter()) {
+                parallelize(&mut self.coeffs, |(lhs, start)| {
+                    for (lhs, rhs) in lhs.iter_mut().zip(rhs[start..].iter()) {
                         *lhs -= rhs;
                     }
                 });

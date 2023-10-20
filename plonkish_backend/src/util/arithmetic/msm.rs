@@ -2,14 +2,15 @@ use crate::{
     pcs::Additive,
     util::{
         arithmetic::{div_ceil, field_size, CurveAffine, Field, Group, PrimeField},
-        chain,
+        chain, izip_eq,
         parallel::{num_threads, parallelize, parallelize_iter},
         start_timer, Itertools,
     },
 };
 use std::{
+    iter::Sum,
     mem::size_of,
-    ops::{Add, Mul, Neg},
+    ops::{Add, Mul, Neg, Sub},
 };
 
 pub fn window_size(num_scalars: usize) -> usize {
@@ -187,10 +188,40 @@ fn variable_base_msm_serial<C: CurveAffine>(
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msm<'a, F: Field, T: Additive<F>> {
     Scalar(F),
     Terms(F, Vec<(F, &'a T)>),
+}
+
+impl<'a, F: Field, T: Additive<F>> Msm<'a, F, T> {
+    pub fn scalar(scalar: F) -> Self {
+        Self::Scalar(scalar)
+    }
+
+    pub fn base(base: &'a T) -> Self {
+        Self::term(F::ONE, base)
+    }
+
+    pub fn term(scalar: F, base: &'a T) -> Self {
+        Self::Terms(F::ZERO, vec![(scalar, base)])
+    }
+
+    pub fn evaluate(self) -> (F, T) {
+        match self {
+            Msm::Scalar(constant) => (constant, T::default()),
+            Msm::Terms(constant, terms) => {
+                let (scalars, bases) = terms.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+                (constant, T::msm(&scalars, bases))
+            }
+        }
+    }
+}
+
+impl<'a, F: Field, T: Additive<F>> Default for Msm<'a, F, T> {
+    fn default() -> Self {
+        Msm::Terms(F::ZERO, Vec::new())
+    }
 }
 
 impl<'a, F: Field, T: Additive<F>> Neg for Msm<'a, F, T> {
@@ -207,6 +238,7 @@ impl<'a, F: Field, T: Additive<F>> Neg for Msm<'a, F, T> {
         self
     }
 }
+
 impl<'a, F: Field, T: Additive<F>> Add for Msm<'a, F, T> {
     type Output = Self;
 
@@ -227,6 +259,14 @@ impl<'a, F: Field, T: Additive<F>> Add for Msm<'a, F, T> {
     }
 }
 
+impl<'a, F: Field, T: Additive<F>> Sub for Msm<'a, F, T> {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self + (-rhs)
+    }
+}
+
 impl<'a, F: Field, T: Additive<F>> Mul for Msm<'a, F, T> {
     type Output = Self;
 
@@ -243,22 +283,22 @@ impl<'a, F: Field, T: Additive<F>> Mul for Msm<'a, F, T> {
     }
 }
 
-impl<'a, F: Field, T: Additive<F>> Msm<'a, F, T> {
-    pub fn base(base: &'a T) -> Self {
-        Self::Terms(F::ZERO, vec![(F::ONE, base)])
+impl<'a, F: Field, T: Additive<F>> Sum for Msm<'a, F, T> {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, item| acc + item).unwrap()
     }
+}
 
-    pub fn scalar(scalar: F) -> Self {
-        Self::Scalar(scalar)
-    }
-
-    pub fn evaluate(self) -> (F, T) {
-        match self {
-            Msm::Scalar(constant) => (constant, T::default()),
-            Msm::Terms(constant, terms) => {
-                let (scalars, bases) = terms.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
-                (constant, T::msm(&scalars, bases))
-            }
-        }
+impl<'c, F: Field, T: Additive<F>> Additive<F> for Msm<'c, F, T> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a F>,
+        bases: impl IntoIterator<Item = &'b Self>,
+    ) -> Self
+    where
+        Self: 'b,
+    {
+        izip_eq!(scalars, bases)
+            .map(|(scalar, base)| Msm::scalar(*scalar) * base.clone())
+            .sum()
     }
 }

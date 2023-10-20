@@ -117,7 +117,7 @@ mod additive {
         },
         poly::multilinear::MultilinearPolynomial,
         util::{
-            arithmetic::{inner_product, PrimeField},
+            arithmetic::{fe_to_bytes, inner_product, PrimeField},
             end_timer,
             expression::{Expression, Query, Rotation},
             start_timer,
@@ -145,6 +145,21 @@ mod additive {
         Pcs::Commitment: Additive<F>,
     {
         validate_input("batch open", num_vars, polys.clone(), points)?;
+
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(
+                points
+                    .iter()
+                    .map(|point| point.iter().map(fe_to_bytes::<F>).collect_vec())
+                    .unique()
+                    .count(),
+                points.len()
+            );
+            for eval in evals {
+                let (poly, point) = (&polys[eval.poly()], &points[eval.point()]);
+                assert_eq!(poly.evaluate(point), *eval.value());
+            }
+        }
 
         let ell = evals.len().next_power_of_two().ilog2() as usize;
         let t = transcript.squeeze_challenges(ell);

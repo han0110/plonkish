@@ -1,5 +1,5 @@
 use crate::util::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{fmt::Debug, ops::Neg};
 
 mod binary_field;
 mod lexical;
@@ -26,11 +26,23 @@ impl Rotation {
     pub const fn distance(&self) -> usize {
         self.0.unsigned_abs() as usize
     }
+
+    pub fn positive(&self, n: usize) -> Rotation {
+        Rotation(self.0.rem_euclid(n as i32))
+    }
 }
 
 impl From<i32> for Rotation {
     fn from(rotation: i32) -> Self {
         Self(rotation)
+    }
+}
+
+impl Neg for Rotation {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self(-self.0)
     }
 }
 

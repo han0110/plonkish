@@ -79,8 +79,8 @@ mod additive {
         poly::univariate::UnivariatePolynomial,
         util::{
             arithmetic::{
-                barycentric_interpolate, barycentric_weights, inner_product, powers, Field,
-                PrimeField,
+                barycentric_interpolate, barycentric_weights, fe_to_bytes, inner_product, powers,
+                Field, PrimeField,
             },
             chain, izip, izip_eq,
             transcript::{TranscriptRead, TranscriptWrite},
@@ -103,7 +103,17 @@ mod additive {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
         Pcs::Commitment: Additive<F>,
     {
-        let polys = polys.into_iter().collect_vec();
+        if cfg!(feature = "sanity-check") {
+            assert_eq!(
+                points.iter().map(fe_to_bytes::<F>).unique().count(),
+                points.len()
+            );
+            for eval in evals {
+                let (poly, point) = (&polys[eval.poly()], &points[eval.point()]);
+                assert_eq!(poly.evaluate(point), *eval.value());
+            }
+        }
+
         let (sets, superset) = eval_sets(evals);
 
         let beta = transcript.squeeze_challenge();
@@ -160,7 +170,6 @@ mod additive {
         Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
         Pcs::Commitment: Additive<F>,
     {
-        let comms = comms.into_iter().collect_vec();
         let (sets, superset) = eval_sets(evals);
 
         let beta = transcript.squeeze_challenge();

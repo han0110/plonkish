@@ -3,7 +3,11 @@ use crate::util::{
         radix2_fft, root_of_unity, root_of_unity_inv, BatchInvert, WithSmallOrderMulGroup,
     },
     chain,
-    expression::{evaluator::ExpressionRegistry, CommonPolynomial, Expression, Query, Rotation},
+    expression::{
+        evaluator::ExpressionRegistry,
+        rotate::{Lexical, Rotatable},
+        CommonPolynomial, Expression, Query, Rotation,
+    },
     izip,
     parallel::parallelize,
     BitIndex, Itertools,
@@ -113,12 +117,18 @@ impl<F: WithSmallOrderMulGroup<3>> Radix2Domain<F> {
     }
 
     pub fn rotate_point(&self, x: F, rotation: Rotation) -> F {
-        let omega = match rotation.0.cmp(&0) {
+        let rotation = Lexical::new(self.k).rotate(0, rotation);
+        let rotation = if rotation > self.n >> 1 {
+            rotation as i32 - self.n as i32
+        } else {
+            rotation as i32
+        };
+        let omega = match rotation.cmp(&0) {
             Ordering::Less => self.omega_inv,
             Ordering::Greater => self.omega,
             Ordering::Equal => return x,
         };
-        let exponent = rotation.0.unsigned_abs() as usize;
+        let exponent = rotation.unsigned_abs() as usize;
         let mut scalar = F::ONE;
         for nth in (1..=(usize::BITS - exponent.leading_zeros()) as usize).rev() {
             if exponent.nth_bit(nth) {

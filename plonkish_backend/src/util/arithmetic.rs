@@ -1,4 +1,4 @@
-use crate::util::{izip, parallel::parallelize, BigUint, Itertools};
+use crate::util::{izip_eq, parallel::parallelize, BigUint, Itertools};
 use halo2_curves::{
     bn256, grumpkin,
     pairing::{self, MillerLoopResult},
@@ -101,7 +101,7 @@ pub fn inner_product<'a, 'b, F: Field>(
     lhs: impl IntoIterator<Item = &'a F>,
     rhs: impl IntoIterator<Item = &'b F>,
 ) -> F {
-    izip!(lhs, rhs)
+    izip_eq!(lhs, rhs)
         .map(|(lhs, rhs)| *lhs * rhs)
         .reduce(|acc, product| acc + product)
         .unwrap_or_default()
@@ -199,6 +199,10 @@ pub fn fe_truncated<F: PrimeField>(fe: F, num_bits: usize) -> F {
     repr.as_mut()[num_bytes + 1..].fill(0);
     repr.as_mut()[num_bytes] &= (1 << num_bits_last_byte) - 1;
     F::from_repr(repr).unwrap()
+}
+
+pub fn fe_to_bytes<F: PrimeField>(fe: impl Borrow<F>) -> Vec<u8> {
+    fe.borrow().to_repr().as_ref().to_vec()
 }
 
 pub fn usize_from_bits_le(bits: &[bool]) -> usize {

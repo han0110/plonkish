@@ -10,7 +10,7 @@ use crate::{
         },
         PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding,
     },
-    pcs::PolynomialCommitmentScheme,
+    pcs::{Additive, PolynomialCommitmentScheme},
     piop::multilinear_eval::ph23::{prove_multilinear_eval, s_polys, verify_multilinear_eval},
     poly::{multilinear::MultilinearPolynomial, univariate::UnivariatePolynomial},
     util::{
@@ -80,6 +80,7 @@ impl<F, Pcs> PlonkishBackend<F> for UniHyperPlonk<Pcs>
 where
     F: WithSmallOrderMulGroup<3> + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
+    Pcs::Commitment: Additive<F>,
 {
     type Pcs = Pcs;
     type ProverParam = UniHyperPlonkProverParam<F, Pcs>;

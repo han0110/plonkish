@@ -1,36 +1,34 @@
 use crate::{
     pcs::{
         multilinear::{additive, err_too_many_variates, validate_input},
-        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
+        univariate::ipa::{prove_bulletproof_reduction, verify_bulletproof_reduction},
+        Additive, Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{
-            batch_projective_to_affine, inner_product, variable_base_msm, Curve, CurveAffine,
-            CurveExt, Field, Group,
+            batch_projective_to_affine, variable_base_msm, Curve, CurveAffine, CurveExt, Group,
         },
-        chain,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
-        Deserialize, DeserializeOwned, Itertools, Serialize,
+        Deserialize, DeserializeOwned, Either, Itertools, Serialize,
     },
     Error,
 };
-use halo2_curves::group::ff::BatchInvert;
 use rand::RngCore;
-use std::{iter, marker::PhantomData, slice};
+use std::{marker::PhantomData, slice};
 
 #[derive(Clone, Debug)]
 pub struct MultilinearIpa<C: CurveAffine>(PhantomData<C>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearIpaParams<C: CurveAffine> {
+pub struct MultilinearIpaParam<C: CurveAffine> {
     num_vars: usize,
     g: Vec<C>,
     h: C,
 }
 
-impl<C: CurveAffine> MultilinearIpaParams<C> {
+impl<C: CurveAffine> MultilinearIpaParam<C> {
     pub fn num_vars(&self) -> usize {
         self.num_vars
     }
@@ -71,15 +69,13 @@ impl<C: CurveAffine> From<C> for MultilinearIpaCommitment<C> {
     }
 }
 
-impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearIpaCommitment<C> {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
+impl<C: CurveAffine> Additive<C::Scalar> for MultilinearIpaCommitment<C> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a C::Scalar>,
+        bases: impl IntoIterator<Item = &'b Self>,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
         let bases = bases.into_iter().map(|base| &base.0).collect_vec();
-        assert_eq!(scalars.len(), bases.len());
-
         MultilinearIpaCommitment(variable_base_msm(scalars, bases).to_affine())
     }
 }
@@ -89,9 +85,9 @@ where
     C: CurveAffine + Serialize + DeserializeOwned,
     C::ScalarExt: Serialize + DeserializeOwned,
 {
-    type Param = MultilinearIpaParams<C>;
-    type ProverParam = MultilinearIpaParams<C>;
-    type VerifierParam = MultilinearIpaParams<C>;
+    type Param = MultilinearIpaParam<C>;
+    type ProverParam = MultilinearIpaParam<C>;
+    type VerifierParam = MultilinearIpaParam<C>;
     type Polynomial = MultilinearPolynomial<C::Scalar>;
     type Commitment = MultilinearIpaCommitment<C>;
     type CommitmentChunk = C;
@@ -175,62 +171,10 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let xi_0 = transcript.squeeze_challenge();
-        let h_prime = (pp.h * xi_0).to_affine();
-
-        let mut bases = pp.g().to_vec();
-        let mut coeffs = poly.evals().to_vec();
-        let mut zs = MultilinearPolynomial::eq_xy(point).into_evals();
-
-        for i in 0..pp.num_vars() {
-            let mid = 1 << (pp.num_vars() - i - 1);
-
-            let (bases_l, bases_r) = bases.split_at(mid);
-            let (coeffs_l, coeffs_r) = coeffs.split_at(mid);
-            let (zs_l, zs_r) = zs.split_at(mid);
-            let (c_l, c_r) = (inner_product(coeffs_r, zs_l), inner_product(coeffs_l, zs_r));
-            let l_i = variable_base_msm(
-                chain![coeffs_r, Some(&c_l)],
-                chain![bases_l, Some(&h_prime)],
-            );
-            let r_i = variable_base_msm(
-                chain![coeffs_l, Some(&c_r)],
-                chain![bases_r, Some(&h_prime)],
-            );
-            transcript.write_commitment(&l_i.to_affine())?;
-            transcript.write_commitment(&r_i.to_affine())?;
-
-            let xi_i = transcript.squeeze_challenge();
-            let xi_i_inv = xi_i.invert().unwrap();
-
-            let (bases_l, bases_r) = bases.split_at_mut(mid);
-            let (coeffs_l, coeffs_r) = coeffs.split_at_mut(mid);
-            let (zs_l, zs_r) = zs.split_at_mut(mid);
-            parallelize(bases_l, |(bases_l, start)| {
-                let mut tmp = Vec::with_capacity(bases_l.len());
-                for (lhs, rhs) in bases_l.iter().zip(bases_r[start..].iter()) {
-                    tmp.push(lhs.to_curve() + *rhs * xi_i);
-                }
-                C::Curve::batch_normalize(&tmp, bases_l);
-            });
-            parallelize(coeffs_l, |(coeffs_l, start)| {
-                for (lhs, rhs) in coeffs_l.iter_mut().zip(coeffs_r[start..].iter()) {
-                    *lhs += xi_i_inv * rhs;
-                }
-            });
-            parallelize(zs_l, |(zs_l, start)| {
-                for (lhs, rhs) in zs_l.iter_mut().zip(zs_r[start..].iter()) {
-                    *lhs += xi_i * rhs;
-                }
-            });
-            bases.truncate(mid);
-            coeffs.truncate(mid);
-            zs.truncate(mid);
-        }
-
-        transcript.write_field_element(&coeffs[0])?;
-
-        Ok(())
+        let bases = pp.g();
+        let coeffs = poly.evals();
+        let zs = MultilinearPolynomial::eq_xy(point).into_evals();
+        prove_bulletproof_reduction(bases, pp.h(), coeffs, zs, transcript)
     }
 
     fn batch_open<'a>(
@@ -266,35 +210,9 @@ where
         eval: &C::Scalar,
         transcript: &mut impl TranscriptRead<C, C::Scalar>,
     ) -> Result<(), Error> {
-        validate_input("verify", vp.num_vars(), [], [point])?;
-
-        let xi_0 = transcript.squeeze_challenge();
-
-        let (ls, rs, xis) = iter::repeat_with(|| {
-            Ok((
-                transcript.read_commitment()?,
-                transcript.read_commitment()?,
-                transcript.squeeze_challenge(),
-            ))
-        })
-        .take(vp.num_vars())
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
-        let neg_c = -transcript.read_field_element()?;
-
-        let xi_invs = {
-            let mut xi_invs = xis.clone();
-            xi_invs.iter_mut().batch_invert();
-            xi_invs
-        };
-        let neg_c_h = MultilinearPolynomial::new(h_coeffs(neg_c, &xis));
-        let u = &(xi_0 * (neg_c_h.evaluate(point) + eval));
-        let scalars = chain![&xi_invs, &xis, neg_c_h.evals(), Some(u)];
-        let bases = chain![&ls, &rs, vp.g(), Some(vp.h())];
-        bool::from((variable_base_msm(scalars, bases) + comm.0).is_identity())
-            .then_some(())
-            .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear IPA open".to_string()))
+        let bases = vp.g();
+        let point = Either::Right(point.as_slice());
+        verify_bulletproof_reduction(bases, vp.h(), comm, point, eval, transcript)
     }
 
     fn batch_verify<'a>(
@@ -309,31 +227,11 @@ where
     }
 }
 
-fn h_coeffs<F: Field>(scalar: F, xi: &[F]) -> Vec<F> {
-    assert!(!xi.is_empty());
-
-    let mut coeffs = vec![F::ZERO; 1 << xi.len()];
-    coeffs[0] = scalar;
-
-    for (len, xi) in xi.iter().rev().enumerate().map(|(i, xi)| (1 << i, xi)) {
-        let (left, right) = coeffs.split_at_mut(len);
-        let right = &mut right[0..len];
-        right.copy_from_slice(left);
-        parallelize(right, |(right, _)| {
-            for coeff in right {
-                *coeff *= xi;
-            }
-        });
-    }
-
-    coeffs
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::multilinear::{
-            ipa::MultilinearIpa,
+        pcs::{
+            multilinear::ipa::MultilinearIpa,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
         },
         util::transcript::Keccak256Transcript,

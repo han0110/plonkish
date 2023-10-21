@@ -3,6 +3,7 @@
 use crate::util::{
     arithmetic::{Field, GroupOpsOwned, ScalarMulOwned},
     parallel::{join, num_threads},
+    start_timer,
 };
 
 pub trait FftGroup<Scalar: Field>:
@@ -17,7 +18,9 @@ where
 {
 }
 
-pub fn fft<Scalar: Field, G: FftGroup<Scalar>>(a: &mut [G], omega: Scalar, log_n: usize) {
+pub fn radix2_fft<Scalar: Field, G: FftGroup<Scalar>>(a: &mut [G], omega: Scalar, log2_n: usize) {
+    let _timer = start_timer(|| "fft");
+
     fn bitreverse(mut n: usize, l: usize) -> usize {
         let mut r = 0;
         for _ in 0..l {
@@ -29,10 +32,10 @@ pub fn fft<Scalar: Field, G: FftGroup<Scalar>>(a: &mut [G], omega: Scalar, log_n
 
     let log_num_threads = num_threads().ilog2() as usize;
     let n = a.len();
-    assert_eq!(n, 1 << log_n);
+    assert_eq!(n, 1 << log2_n);
 
     for k in 0..n {
-        let rk = bitreverse(k, log_n);
+        let rk = bitreverse(k, log2_n);
         if k < rk {
             a.swap(rk, k);
         }
@@ -46,10 +49,10 @@ pub fn fft<Scalar: Field, G: FftGroup<Scalar>>(a: &mut [G], omega: Scalar, log_n
         })
         .collect();
 
-    if log_n <= log_num_threads {
+    if log2_n <= log_num_threads {
         let mut chunk = 2;
         let mut twiddle_chunk = n / 2;
-        for _ in 0..log_n {
+        for _ in 0..log2_n {
             a.chunks_mut(chunk).for_each(|coeffs| {
                 let (left, right) = coeffs.split_at_mut(chunk / 2);
 

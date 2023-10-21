@@ -1,26 +1,31 @@
-#![allow(dead_code)]
-
 use crate::util::{
     arithmetic::{
-        fft, root_of_unity, root_of_unity_inv, BatchInvert, PrimeField, WithSmallOrderMulGroup,
+        radix2_fft, root_of_unity, root_of_unity_inv, BatchInvert, WithSmallOrderMulGroup,
     },
-    expression::{evaluator::ExpressionRegistry, CommonPolynomial, Expression, Query, Rotation},
+    chain,
+    expression::{
+        evaluator::ExpressionRegistry,
+        rotate::{Lexical, Rotatable},
+        CommonPolynomial, Expression, Query, Rotation,
+    },
     izip,
     parallel::parallelize,
-    Itertools,
+    BitIndex, Itertools,
 };
 use std::{
     borrow::Cow,
+    cmp::Ordering,
     collections::{BTreeMap, HashMap},
     iter,
 };
 
 #[derive(Clone, Debug)]
-pub(crate) struct Domain<F> {
+pub struct Radix2Domain<F> {
     k: usize,
     n: usize,
     extended_k: usize,
     extended_n: usize,
+    magnification: usize,
     omega: F,
     omega_inv: F,
     extended_omega: F,
@@ -35,9 +40,8 @@ pub(crate) struct Domain<F> {
     extended_n_inv_zeta_inv: F,
 }
 
-impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
-    pub(crate) fn new(k: usize, degree: usize) -> Self {
-        let n = 1 << k;
+impl<F: WithSmallOrderMulGroup<3>> Radix2Domain<F> {
+    pub fn new(k: usize, degree: usize) -> Self {
         let quotient_degree = degree.checked_sub(1).unwrap_or_default();
         let extended_k = k + quotient_degree.next_power_of_two().ilog2() as usize;
         let extended_n = 1 << extended_k;
@@ -61,9 +65,10 @@ impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
 
         Self {
             k,
-            n,
+            n: 1 << k,
             extended_k,
             extended_n,
+            magnification: 1 << (extended_k - k),
             omega,
             omega_inv,
             extended_omega,
@@ -79,55 +84,104 @@ impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
         }
     }
 
-    pub(crate) fn k(&self) -> usize {
+    pub fn k(&self) -> usize {
         self.k
     }
 
-    pub(crate) fn n(&self) -> usize {
+    pub fn n(&self) -> usize {
         self.n
     }
 
-    pub(crate) fn n_inv(&self) -> F {
+    pub fn n_inv(&self) -> F {
         self.n_inv
     }
 
-    pub(crate) fn extended_k(&self) -> usize {
+    pub fn extended_k(&self) -> usize {
         self.extended_k
     }
 
-    pub(crate) fn extended_n(&self) -> usize {
+    pub fn extended_n(&self) -> usize {
         self.extended_n
     }
 
-    pub(crate) fn omega(&self) -> F {
-        self.omega
-    }
-
-    pub(crate) fn extended_omega(&self) -> F {
+    pub fn extended_omega(&self) -> F {
         self.extended_omega
     }
 
-    pub(crate) fn zeta(&self) -> F {
+    pub fn zeta(&self) -> F {
         self.zeta
     }
 
-    pub(crate) fn zeta_inv(&self) -> F {
+    pub fn zeta_inv(&self) -> F {
         self.zeta_inv
     }
 
-    pub(crate) fn identity(&self) -> Vec<F> {
-        iter::successors(Some(F::ZETA), move |state| {
-            Some(self.extended_omega * state)
-        })
-        .take(self.extended_n())
-        .collect_vec()
+    pub fn rotate_point(&self, x: F, rotation: Rotation) -> F {
+        let rotation = Lexical::new(self.k).rotate(0, rotation);
+        let rotation = if rotation > self.n >> 1 {
+            rotation as i32 - self.n as i32
+        } else {
+            rotation as i32
+        };
+        let omega = match rotation.cmp(&0) {
+            Ordering::Less => self.omega_inv,
+            Ordering::Greater => self.omega,
+            Ordering::Equal => return x,
+        };
+        let exponent = rotation.unsigned_abs() as usize;
+        let mut scalar = F::ONE;
+        for nth in (1..=(usize::BITS - exponent.leading_zeros()) as usize).rev() {
+            if exponent.nth_bit(nth) {
+                scalar *= omega;
+            }
+            scalar = scalar.square();
+        }
+        if exponent.nth_bit(0) {
+            scalar *= omega;
+        }
+        scalar * x
     }
 
-    pub(crate) fn lagrange_to_monomial(&self, buf: Cow<[F]>) -> Vec<F> {
+    pub fn evaluate(
+        &self,
+        expression: &Expression<F>,
+        evals: &HashMap<Query, F>,
+        challenges: &[F],
+        x: F,
+    ) -> F {
+        let lagrange = {
+            let common = (x.pow_vartime([self.n as u64]) - F::ONE) * self.n_inv;
+            let used_lagrange = expression.used_langrange();
+            let mut denoms = chain![&used_lagrange]
+                .map(|i| x - self.rotate_point(F::ONE, Rotation(*i)))
+                .collect_vec();
+            denoms.batch_invert();
+            izip!(used_lagrange, denoms)
+                .map(|(i, denom)| (i, self.rotate_point(common * denom, Rotation(i))))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        expression.evaluate(
+            &|scalar| scalar,
+            &|poly| match poly {
+                CommonPolynomial::Identity => x,
+                CommonPolynomial::Lagrange(i) => lagrange[&i],
+                CommonPolynomial::EqXY(_) => unreachable!(),
+            },
+            &|query| evals[&query],
+            &|idx| challenges[idx],
+            &|scalar| -scalar,
+            &|lhs, rhs| lhs + &rhs,
+            &|lhs, rhs| lhs * &rhs,
+            &|value, scalar| scalar * value,
+        )
+    }
+
+    pub fn lagrange_to_monomial(&self, buf: Cow<[F]>) -> Vec<F> {
         assert_eq!(buf.len(), self.n);
         let mut buf = buf.into_owned();
 
-        fft(&mut buf, self.omega_inv, self.k);
+        radix2_fft(&mut buf, self.omega_inv, self.k);
 
         parallelize(&mut buf, |(buf, _)| {
             buf.iter_mut().for_each(|buf| *buf *= self.n_inv)
@@ -136,11 +190,11 @@ impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
         buf
     }
 
-    pub(crate) fn lagrange_to_extended_lagrange(&self, buf: Cow<[F]>) -> Vec<F> {
+    pub fn lagrange_to_extended_lagrange(&self, buf: Cow<[F]>) -> Vec<F> {
         assert_eq!(buf.len(), self.n);
         let mut buf = buf.into_owned();
 
-        fft(&mut buf, self.omega_inv, self.k);
+        radix2_fft(&mut buf, self.omega_inv, self.k);
 
         let scalars = [self.n_inv, self.n_inv_zeta, self.n_inv_zeta_inv];
         parallelize(&mut buf, |(buf, start)| {
@@ -149,12 +203,12 @@ impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
         });
 
         buf.resize(self.extended_n, F::ZERO);
-        fft(&mut buf, self.extended_omega, self.extended_k);
+        radix2_fft(&mut buf, self.extended_omega, self.extended_k);
 
         buf
     }
 
-    pub(crate) fn monomial_to_extended_lagrange(&self, buf: Cow<[F]>) -> Vec<F> {
+    pub fn monomial_to_extended_lagrange(&self, buf: Cow<[F]>) -> Vec<F> {
         assert!(buf.len() <= self.n);
         let mut buf = buf.into_owned();
 
@@ -168,16 +222,16 @@ impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
         });
 
         buf.resize(self.extended_n, F::ZERO);
-        fft(&mut buf, self.extended_omega, self.extended_k);
+        radix2_fft(&mut buf, self.extended_omega, self.extended_k);
 
         buf
     }
 
-    pub(crate) fn extended_lagrange_to_monomial(&self, buf: Cow<[F]>) -> Vec<F> {
+    pub fn extended_lagrange_to_monomial(&self, buf: Cow<[F]>) -> Vec<F> {
         assert_eq!(buf.len(), self.extended_n);
         let mut buf = buf.into_owned();
 
-        fft(&mut buf, self.extended_omega_inv, self.extended_k);
+        radix2_fft(&mut buf, self.extended_omega_inv, self.extended_k);
 
         let scalars = [
             self.extended_n_inv,
@@ -194,8 +248,9 @@ impl<F: WithSmallOrderMulGroup<3>> Domain<F> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct QuotientEvaluator<'a, F: WithSmallOrderMulGroup<3>> {
-    domain: &'a Domain<F>,
+pub struct QuotientEvaluator<'a, F: WithSmallOrderMulGroup<3>> {
+    magnification: i32,
+    extended_n: i32,
     reg: ExpressionRegistry<F>,
     eval_idx: usize,
     identity: Vec<F>,
@@ -205,8 +260,8 @@ pub(crate) struct QuotientEvaluator<'a, F: WithSmallOrderMulGroup<3>> {
 }
 
 impl<'a, F: WithSmallOrderMulGroup<3>> QuotientEvaluator<'a, F> {
-    pub(crate) fn new(
-        domain: &'a Domain<F>,
+    pub fn new(
+        domain: &'a Radix2Domain<F>,
         expression: &Expression<F>,
         lagranges: BTreeMap<i32, &'a [F]>,
         polys: impl IntoIterator<Item = &'a [F]>,
@@ -219,14 +274,20 @@ impl<'a, F: WithSmallOrderMulGroup<3>> QuotientEvaluator<'a, F> {
 
         let identity = reg
             .has_identity()
-            .then(|| domain.identity())
+            .then(|| {
+                iter::successors(Some(F::ZETA), move |state| {
+                    Some(domain.extended_omega * state)
+                })
+                .take(domain.extended_n)
+                .collect_vec()
+            })
             .unwrap_or_default();
         let lagranges = reg.lagranges().iter().map(|i| lagranges[i]).collect_vec();
         let polys = polys.into_iter().collect_vec();
         let vanishing_invs = {
-            let step = domain.extended_omega.pow([domain.n as u64]);
+            let step = domain.extended_omega.pow([domain.n() as u64]);
             let mut vanishing_invs = iter::successors(
-                Some(match domain.n % 3 {
+                Some(match domain.n() % 3 {
                     1 => domain.zeta,
                     2 => domain.zeta_inv,
                     _ => unreachable!(),
@@ -234,14 +295,15 @@ impl<'a, F: WithSmallOrderMulGroup<3>> QuotientEvaluator<'a, F> {
                 |value| Some(step * value),
             )
             .map(|value| value - F::ONE)
-            .take(1 << (domain.extended_k - domain.k))
+            .take(domain.magnification)
             .collect_vec();
             vanishing_invs.batch_invert();
             vanishing_invs
         };
 
         Self {
-            domain,
+            magnification: domain.magnification as i32,
+            extended_n: domain.extended_n as i32,
             reg,
             eval_idx,
             identity,
@@ -251,11 +313,11 @@ impl<'a, F: WithSmallOrderMulGroup<3>> QuotientEvaluator<'a, F> {
         }
     }
 
-    pub(crate) fn cache(&self) -> Vec<F> {
+    pub fn cache(&self) -> Vec<F> {
         self.reg.cache()
     }
 
-    pub(crate) fn evaluate(&self, eval: &mut F, cache: &mut [F], row: usize) {
+    pub fn evaluate(&self, eval: &mut F, cache: &mut [F], row: usize) {
         if self.reg.has_identity() {
             cache[self.reg.offsets().identity()] = self.identity[row];
         }
@@ -282,38 +344,15 @@ impl<'a, F: WithSmallOrderMulGroup<3>> QuotientEvaluator<'a, F> {
     }
 
     fn rotated_row(&self, row: usize, rotation: Rotation) -> usize {
-        ((row as i32 + rotation.0).rem_euclid(self.domain.extended_n() as i32)) as usize
+        ((row as i32 + self.magnification * rotation.0).rem_euclid(self.extended_n)) as usize
     }
-}
-
-pub(crate) fn evaluate<F: PrimeField>(
-    expression: &Expression<F>,
-    _k: usize,
-    evals: &HashMap<Query, F>,
-    challenges: &[F],
-    x: F,
-) -> F {
-    expression.evaluate(
-        &|scalar| scalar,
-        &|poly| match poly {
-            CommonPolynomial::Identity => x,
-            CommonPolynomial::Lagrange(_i) => unimplemented!(),
-            CommonPolynomial::EqXY(_) => unreachable!(),
-        },
-        &|query| evals[&query],
-        &|idx| challenges[idx],
-        &|scalar| -scalar,
-        &|lhs, rhs| lhs + &rhs,
-        &|lhs, rhs| lhs * &rhs,
-        &|value, scalar| scalar * value,
-    )
 }
 
 #[cfg(test)]
 mod test {
     use crate::util::{
         arithmetic::Field,
-        expression::evaluator::quotient::Domain,
+        expression::evaluator::quotient::Radix2Domain,
         test::{rand_vec, seeded_std_rng},
         Itertools,
     };
@@ -325,7 +364,7 @@ mod test {
 
         let lagrange = rand_vec::<Fr>(1 << 16, &mut rng);
         for (k, degree) in (1..16).cartesian_product(1..9) {
-            let domain = Domain::new(k, degree);
+            let domain = Radix2Domain::new(k, degree);
             let extended = domain.lagrange_to_extended_lagrange((&lagrange[..domain.n()]).into());
             let monomial = domain.extended_lagrange_to_monomial(extended.into());
             assert_eq!(

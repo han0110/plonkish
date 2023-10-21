@@ -1,5 +1,9 @@
 use crate::{
-    backend::PlonkishCircuitInfo,
+    backend::{
+        hyperplonk::{HyperPlonkProverParam, HyperPlonkVerifierParam},
+        PlonkishCircuitInfo,
+    },
+    pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, steps, PrimeField},
@@ -7,10 +11,11 @@ use crate::{
         expression::{Expression, Query, Rotation},
         Itertools,
     },
+    Error,
 };
-use std::{array, borrow::Cow, iter, mem};
+use std::{array, borrow::Cow, mem};
 
-pub(super) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -> usize {
+pub(crate) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -> usize {
     let num_lookups = circuit_info.lookups.len();
     let num_permutation_polys = circuit_info.permutation_polys().len();
     chain![
@@ -22,7 +27,85 @@ pub(super) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -
     .sum()
 }
 
-pub(super) fn compose<F: PrimeField>(
+#[allow(clippy::type_complexity)]
+pub(crate) fn preprocess<F: PrimeField, Pcs: PolynomialCommitmentScheme<F>>(
+    param: &Pcs::Param,
+    circuit_info: &PlonkishCircuitInfo<F>,
+    batch_commit: impl Fn(
+        &Pcs::ProverParam,
+        Vec<MultilinearPolynomial<F>>,
+    ) -> Result<(Vec<MultilinearPolynomial<F>>, Vec<Pcs::Commitment>), Error>,
+) -> Result<
+    (
+        HyperPlonkProverParam<F, Pcs>,
+        HyperPlonkVerifierParam<F, Pcs>,
+    ),
+    Error,
+> {
+    assert!(circuit_info.is_well_formed());
+
+    let num_vars = circuit_info.k;
+    let poly_size = 1 << num_vars;
+    let batch_size = batch_size(circuit_info);
+    let (pcs_pp, pcs_vp) = Pcs::trim(param, poly_size, batch_size)?;
+
+    // Compute preprocesses comms
+    let preprocess_polys = circuit_info
+        .preprocess_polys
+        .iter()
+        .cloned()
+        .map(MultilinearPolynomial::new)
+        .collect_vec();
+    let (preprocess_polys, preprocess_comms) = batch_commit(&pcs_pp, preprocess_polys)?;
+
+    // Compute permutation polys and comms
+    let permutation_polys = permutation_polys(
+        num_vars,
+        &circuit_info.permutation_polys(),
+        &circuit_info.permutations,
+    );
+    let (permutation_polys, permutation_comms) = batch_commit(&pcs_pp, permutation_polys)?;
+
+    // Compose expression
+    let (num_permutation_z_polys, expression) = compose(circuit_info);
+    let vp = HyperPlonkVerifierParam {
+        pcs: pcs_vp,
+        num_instances: circuit_info.num_instances.clone(),
+        num_witness_polys: circuit_info.num_witness_polys.clone(),
+        num_challenges: circuit_info.num_challenges.clone(),
+        num_lookups: circuit_info.lookups.len(),
+        num_permutation_z_polys,
+        num_vars,
+        expression: expression.clone(),
+        preprocess_comms: preprocess_comms.clone(),
+        permutation_comms: circuit_info
+            .permutation_polys()
+            .into_iter()
+            .zip(permutation_comms.clone())
+            .collect(),
+    };
+    let pp = HyperPlonkProverParam {
+        pcs: pcs_pp,
+        num_instances: circuit_info.num_instances.clone(),
+        num_witness_polys: circuit_info.num_witness_polys.clone(),
+        num_challenges: circuit_info.num_challenges.clone(),
+        lookups: circuit_info.lookups.clone(),
+        num_permutation_z_polys,
+        num_vars,
+        expression,
+        preprocess_polys,
+        preprocess_comms,
+        permutation_polys: circuit_info
+            .permutation_polys()
+            .into_iter()
+            .zip(permutation_polys)
+            .collect(),
+        permutation_comms,
+    };
+    Ok((pp, vp))
+}
+
+pub(crate) fn compose<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
 ) -> (usize, Expression<F>) {
     let challenge_offset = circuit_info.num_challenges.iter().sum::<usize>();
@@ -41,17 +124,16 @@ pub(super) fn compose<F: PrimeField>(
     );
 
     let expression = {
-        let constraints = iter::empty()
-            .chain(circuit_info.constraints.iter())
-            .chain(lookup_constraints.iter())
-            .chain(permutation_constraints.iter())
-            .collect_vec();
+        let constraints = chain![
+            circuit_info.constraints.iter(),
+            lookup_constraints.iter(),
+            permutation_constraints.iter(),
+        ]
+        .collect_vec();
         let eq = Expression::eq_xy(0);
         let zero_check_on_every_row = Expression::distribute_powers(constraints, alpha) * eq;
         Expression::distribute_powers(
-            iter::empty()
-                .chain(lookup_zero_checks.iter())
-                .chain(Some(&zero_check_on_every_row)),
+            chain![lookup_zero_checks.iter(), [&zero_check_on_every_row]],
             alpha,
         )
     };
@@ -67,13 +149,14 @@ pub(super) fn max_degree<F: PrimeField>(
         let dummy_challenge = Expression::zero();
         Cow::Owned(self::lookup_constraints(circuit_info, &dummy_challenge, &dummy_challenge).0)
     });
-    iter::empty()
-        .chain(circuit_info.constraints.iter().map(Expression::degree))
-        .chain(lookup_constraints.iter().map(Expression::degree))
-        .chain(circuit_info.max_degree)
-        .chain(Some(2))
-        .max()
-        .unwrap()
+    chain![
+        circuit_info.constraints.iter().map(Expression::degree),
+        lookup_constraints.iter().map(Expression::degree),
+        circuit_info.max_degree,
+        [2],
+    ]
+    .max()
+    .unwrap()
 }
 
 pub(super) fn lookup_constraints<F: PrimeField>(
@@ -139,37 +222,36 @@ pub(crate) fn permutation_constraints<F: PrimeField>(
         .take(num_chunks)
         .collect_vec();
     let z_0_next = Expression::<F>::Polynomial(Query::new(z_offset, Rotation::next()));
-    let l_1 = &Expression::<F>::lagrange(1);
+    let l_0 = &Expression::<F>::lagrange(0);
     let one = &Expression::one();
-    let constraints = iter::empty()
-        .chain(zs.first().map(|z_0| l_1 * (z_0 - one)))
-        .chain(
-            polys
-                .chunks(chunk_size)
-                .zip(ids.chunks(chunk_size))
-                .zip(permutations.chunks(chunk_size))
-                .zip(zs.iter())
-                .zip(zs.iter().skip(1).chain(Some(&z_0_next)))
-                .map(|((((polys, ids), permutations), z_lhs), z_rhs)| {
-                    z_lhs
+    let constraints = chain![
+        zs.first().map(|z_0| l_0 * (z_0 - one)),
+        polys
+            .chunks(chunk_size)
+            .zip(ids.chunks(chunk_size))
+            .zip(permutations.chunks(chunk_size))
+            .zip(zs.iter())
+            .zip(zs.iter().skip(1).chain([&z_0_next]))
+            .map(|((((polys, ids), permutations), z_lhs), z_rhs)| {
+                z_lhs
+                    * polys
+                        .iter()
+                        .zip(ids)
+                        .map(|(poly, id)| poly + beta * id + gamma)
+                        .product::<Expression<_>>()
+                    - z_rhs
                         * polys
                             .iter()
-                            .zip(ids)
-                            .map(|(poly, id)| poly + beta * id + gamma)
+                            .zip(permutations)
+                            .map(|(poly, permutation)| poly + beta * permutation + gamma)
                             .product::<Expression<_>>()
-                        - z_rhs
-                            * polys
-                                .iter()
-                                .zip(permutations)
-                                .map(|(poly, permutation)| poly + beta * permutation + gamma)
-                                .product::<Expression<_>>()
-                }),
-        )
-        .collect();
+            }),
+    ]
+    .collect();
     (num_chunks, constraints)
 }
 
-pub(super) fn permutation_polys<F: PrimeField>(
+pub(crate) fn permutation_polys<F: PrimeField>(
     num_vars: usize,
     permutation_polys: &[usize],
     cycles: &[Vec<(usize, usize)>],
@@ -192,7 +274,6 @@ pub(super) fn permutation_polys<F: PrimeField>(
         let (i0, j0) = cycle[0];
         let mut last = permutations[poly_index[i0]][j0];
         for &(i, j) in cycle.iter().cycle().skip(1).take(cycle.len()) {
-            assert_ne!(j, 0);
             mem::swap(&mut permutations[poly_index[i]][j], &mut last);
         }
     }
@@ -205,9 +286,7 @@ pub(super) fn permutation_polys<F: PrimeField>(
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        backend::hyperplonk::util::{
-            vanilla_plonk_expression, vanilla_plonk_with_lookup_expression,
-        },
+        backend::hyperplonk::util::{vanilla_plonk_expression, vanilla_plonk_w_lookup_expression},
         util::expression::{Expression, Query, Rotation},
     };
     use halo2_curves::bn256::Fr;
@@ -230,12 +309,12 @@ pub(crate) mod test {
             let [id_1, id_2, id_3] = array::from_fn(|idx| {
                 Expression::Constant(Fr::from((idx << num_vars) as u64)) + Expression::identity()
             });
-            let l_1 = Expression::<Fr>::lagrange(1);
+            let l_0 = Expression::<Fr>::lagrange(0);
             let one = Expression::one();
             let constraints = {
                 vec![
                     q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c + pi,
-                    l_1 * (z - one),
+                    l_0 * (z - one),
                     (z * ((w_l + beta * id_1 + gamma)
                         * (w_r + beta * id_2 + gamma)
                         * (w_o + beta * id_3 + gamma)))
@@ -251,9 +330,9 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn compose_vanilla_plonk_with_lookup() {
+    fn compose_vanilla_plonk_w_lookup() {
         let num_vars = 3;
-        let expression = vanilla_plonk_with_lookup_expression(num_vars);
+        let expression = vanilla_plonk_w_lookup_expression(num_vars);
         assert_eq!(expression, {
             let [pi, q_l, q_r, q_m, q_o, q_c, q_lookup, t_l, t_r, t_o, w_l, w_r, w_o, s_1, s_2, s_3] =
                 &array::from_fn(|poly| Query::new(poly, Rotation::cur()))
@@ -272,7 +351,7 @@ pub(crate) mod test {
             let [id_1, id_2, id_3] = array::from_fn(|idx| {
                 Expression::Constant(Fr::from((idx << num_vars) as u64)) + Expression::identity()
             });
-            let l_1 = &Expression::<Fr>::lagrange(1);
+            let l_0 = &Expression::<Fr>::lagrange(0);
             let one = &Expression::one();
             let lookup_input =
                 &Expression::distribute_powers(&[w_l, w_r, w_o].map(|w| q_lookup * w), beta);
@@ -283,7 +362,7 @@ pub(crate) mod test {
                     lookup_h * (lookup_input + gamma) * (lookup_table + gamma)
                         - (lookup_table + gamma)
                         + lookup_m * (lookup_input + gamma),
-                    l_1 * (perm_z - one),
+                    l_0 * (perm_z - one),
                     (perm_z
                         * ((w_l + beta * id_1 + gamma)
                             * (w_r + beta * id_2 + gamma)

@@ -2,6 +2,7 @@ use crate::{
     pcs::{CommitmentChunk, PolynomialCommitmentScheme},
     util::{
         arithmetic::Field,
+        chain,
         expression::Expression,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
@@ -9,9 +10,10 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{collections::BTreeSet, fmt::Debug, iter};
+use std::{collections::BTreeSet, fmt::Debug};
 
 pub mod hyperplonk;
+pub mod unihyperplonk;
 
 pub trait PlonkishBackend<F: Field>: Clone + Debug {
     type Pcs: PolynomialCommitmentScheme<F>;
@@ -76,12 +78,12 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
     pub fn is_well_formed(&self) -> bool {
         let num_poly = self.num_poly();
         let num_challenges = self.num_challenges.iter().sum::<usize>();
-        let polys = iter::empty()
-            .chain(self.expressions().flat_map(Expression::used_poly))
-            .chain(self.permutation_polys())
-            .collect::<BTreeSet<_>>();
-        let challenges = iter::empty()
-            .chain(self.expressions().flat_map(Expression::used_challenge))
+        let polys = chain![
+            self.expressions().flat_map(Expression::used_poly),
+            self.permutation_polys(),
+        ]
+        .collect::<BTreeSet<_>>();
+        let challenges = chain![self.expressions().flat_map(Expression::used_challenge)]
             .collect::<BTreeSet<_>>();
         // Same amount of phases
         self.num_witness_polys.len() == self.num_challenges.len()
@@ -121,11 +123,11 @@ impl<F: Clone> PlonkishCircuitInfo<F> {
     }
 
     pub fn expressions(&self) -> impl Iterator<Item = &Expression<F>> {
-        iter::empty().chain(self.constraints.iter()).chain(
-            self.lookups
-                .iter()
+        chain![
+            &self.constraints,
+            chain![&self.lookups]
                 .flat_map(|lookup| lookup.iter().flat_map(|(input, table)| [input, table])),
-        )
+        ]
     }
 }
 

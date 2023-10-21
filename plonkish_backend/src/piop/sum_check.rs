@@ -1,14 +1,14 @@
 use crate::{
     poly::multilinear::MultilinearPolynomial,
     util::{
-        arithmetic::{inner_product, powers, product, BooleanHypercube, Field, PrimeField},
-        expression::{CommonPolynomial, Expression, Query},
+        arithmetic::{inner_product, powers, product, Field, PrimeField},
+        expression::{rotate::Rotatable, CommonPolynomial, Expression, Query},
         transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         BitIndex, Itertools,
     },
     Error,
 };
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::BTreeMap, fmt::Debug};
 
 pub mod classic;
 
@@ -40,13 +40,14 @@ pub trait SumCheck<F: Field>: Clone + Debug {
     type ProverParam: Clone + Debug;
     type VerifierParam: Clone + Debug;
 
+    #[allow(clippy::type_complexity)]
     fn prove(
         pp: &Self::ProverParam,
         num_vars: usize,
         virtual_poly: VirtualPolynomial<F>,
         sum: F,
         transcript: &mut impl FieldTranscriptWrite<F>,
-    ) -> Result<(F, Vec<F>, Vec<F>), Error>;
+    ) -> Result<(F, Vec<F>, BTreeMap<Query, F>), Error>;
 
     fn verify(
         vp: &Self::VerifierParam,
@@ -57,26 +58,23 @@ pub trait SumCheck<F: Field>: Clone + Debug {
     ) -> Result<(F, Vec<F>), Error>;
 }
 
-pub fn evaluate<F: PrimeField>(
+pub fn evaluate<F: PrimeField, R: Rotatable + From<usize>>(
     expression: &Expression<F>,
     num_vars: usize,
-    evals: &HashMap<Query, F>,
+    evals: &BTreeMap<Query, F>,
     challenges: &[F],
     ys: &[&[F]],
     x: &[F],
 ) -> F {
-    assert!(num_vars > 0 && expression.max_used_rotation_distance() <= num_vars);
+    let rotatable = R::from(num_vars);
+
     let identity = identity_eval(x);
     let lagranges = {
-        let bh = BooleanHypercube::new(num_vars).iter().collect_vec();
         expression
             .used_langrange()
             .into_iter()
-            .map(|i| {
-                let b = bh[i.rem_euclid(1 << num_vars as i32) as usize];
-                (i, lagrange_eval(x, b))
-            })
-            .collect::<HashMap<_, _>>()
+            .map(|i| (i, lagrange_eval(x, rotatable.nth(i))))
+            .collect::<BTreeMap<_, _>>()
     };
     let eq_xys = ys.iter().map(|y| eq_xy_eval(x, y)).collect_vec();
     expression.evaluate(
@@ -128,225 +126,224 @@ fn identity_eval<F: PrimeField>(x: &[F]) -> F {
 pub(super) mod test {
     use crate::{
         piop::sum_check::{evaluate, SumCheck, VirtualPolynomial},
-        poly::multilinear::{rotation_eval, MultilinearPolynomial},
+        poly::multilinear::MultilinearPolynomial,
         util::{
-            expression::Expression,
+            arithmetic::Field,
+            expression::{rotate::Rotatable, Expression},
             transcript::{InMemoryTranscript, Keccak256Transcript},
         },
     };
     use halo2_curves::bn256::Fr;
+    use itertools::Itertools;
     use std::ops::Range;
 
-    pub fn run_sum_check<S: SumCheck<Fr>>(
+    pub fn run_sum_check<S: SumCheck<Fr>, R: Rotatable + From<usize>>(
         num_vars_range: Range<usize>,
         expression_fn: impl Fn(usize) -> Expression<Fr>,
         param_fn: impl Fn(usize) -> (S::ProverParam, S::VerifierParam),
-        assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
+        assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Vec<Fr>>),
         sum: Fr,
     ) {
         for num_vars in num_vars_range {
             let expression = expression_fn(num_vars);
             let degree = expression.degree();
             let (pp, vp) = param_fn(expression.degree());
-            let (polys, challenges, y) = assignment_fn(num_vars);
-            let ys = [y];
-            let proof = {
+            let (polys, challenges, ys) = assignment_fn(num_vars);
+            let (evals, proof) = {
                 let virtual_poly = VirtualPolynomial::new(&expression, &polys, &challenges, &ys);
                 let mut transcript = Keccak256Transcript::default();
-                S::prove(&pp, num_vars, virtual_poly, sum, &mut transcript).unwrap();
-                transcript.into_proof()
+                let (_, _, evals) =
+                    S::prove(&pp, num_vars, virtual_poly, sum, &mut transcript).unwrap();
+                (evals, transcript.into_proof())
             };
             let accept = {
                 let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
                 let (x_eval, x) =
-                    S::verify(&vp, num_vars, degree, Fr::zero(), &mut transcript).unwrap();
-                let evals = expression
-                    .used_query()
-                    .into_iter()
-                    .map(|query| {
-                        let evaluate_for_rotation =
-                            polys[query.poly()].evaluate_for_rotation(&x, query.rotation());
-                        let eval = rotation_eval(&x, query.rotation(), &evaluate_for_rotation);
-                        (query, eval)
-                    })
-                    .collect();
-                x_eval == evaluate(&expression, num_vars, &evals, &challenges, &[&ys[0]], &x)
+                    S::verify(&vp, num_vars, degree, Fr::ZERO, &mut transcript).unwrap();
+                let ys = ys.iter().map(Vec::as_slice).collect_vec();
+                x_eval == evaluate::<_, R>(&expression, num_vars, &evals, &challenges, &ys, &x)
             };
             assert!(accept);
         }
     }
 
-    pub fn run_zero_check<S: SumCheck<Fr>>(
+    pub fn run_zero_check<S: SumCheck<Fr>, R: Rotatable + From<usize>>(
         num_vars_range: Range<usize>,
         expression_fn: impl Fn(usize) -> Expression<Fr>,
         param_fn: impl Fn(usize) -> (S::ProverParam, S::VerifierParam),
-        assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
+        assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Vec<Fr>>),
     ) {
-        run_sum_check::<S>(
+        run_sum_check::<S, R>(
             num_vars_range,
             expression_fn,
             param_fn,
             assignment_fn,
-            Fr::zero(),
+            Fr::ZERO,
         )
     }
 
     macro_rules! tests {
-        ($impl:ty) => {
-            #[test]
-            fn sum_check_lagrange() {
-                use halo2_curves::bn256::Fr;
-                use $crate::{
-                    piop::sum_check::test::run_zero_check,
-                    poly::multilinear::MultilinearPolynomial,
-                    util::{
-                        arithmetic::{BooleanHypercube, Field},
-                        expression::{CommonPolynomial, Expression, Query, Rotation},
-                        test::{rand_vec, seeded_std_rng},
-                        Itertools,
-                    },
-                };
+        ($suffix:ident, $impl:ty, $rotatable:ident) => {
+            paste::paste! {
+                #[test]
+                fn [<lagrange_w_ $suffix>]() {
+                    use halo2_curves::bn256::Fr;
+                    use $crate::{
+                        piop::sum_check::test::run_zero_check,
+                        poly::multilinear::MultilinearPolynomial,
+                        util::{
+                            arithmetic::Field,
+                            expression::{
+                                rotate::Rotatable, CommonPolynomial, Expression, Query, Rotation,
+                            },
+                            test::{rand_vec, seeded_std_rng},
+                            Itertools,
+                        },
+                    };
 
-                run_zero_check::<$impl>(
-                    2..4,
-                    |num_vars| {
-                        let polys = (0..1 << num_vars)
-                            .map(|idx| {
-                                Expression::<Fr>::Polynomial(Query::new(idx, Rotation::cur()))
-                            })
-                            .collect_vec();
-                        let gates = polys
-                            .iter()
-                            .enumerate()
-                            .map(|(i, poly)| {
-                                Expression::CommonPolynomial(CommonPolynomial::Lagrange(i as i32))
-                                    - poly
-                            })
-                            .collect_vec();
-                        let alpha = Expression::Challenge(0);
-                        let eq = Expression::eq_xy(0);
-                        Expression::distribute_powers(&gates, &alpha) * eq
-                    },
-                    |_| ((), ()),
-                    |num_vars| {
-                        let polys = BooleanHypercube::new(num_vars)
-                            .iter()
-                            .map(|idx| {
-                                let mut polys =
-                                    MultilinearPolynomial::new(vec![Fr::zero(); 1 << num_vars]);
-                                polys[idx] = Fr::one();
-                                polys
-                            })
-                            .collect_vec();
-                        let alpha = Fr::random(seeded_std_rng());
-                        (polys, vec![alpha], rand_vec(num_vars, seeded_std_rng()))
-                    },
-                );
-            }
+                    run_zero_check::<$impl, $rotatable>(
+                        2..4,
+                        |num_vars| {
+                            let polys = (0..$rotatable::new(num_vars).usable_indices().len())
+                                .map(|idx| {
+                                    Expression::<Fr>::Polynomial(Query::new(idx, Rotation::cur()))
+                                })
+                                .collect_vec();
+                            let gates = polys
+                                .iter()
+                                .enumerate()
+                                .map(|(i, poly)| {
+                                    Expression::CommonPolynomial(CommonPolynomial::Lagrange(i as i32))
+                                        - poly
+                                })
+                                .collect_vec();
+                            let alpha = Expression::Challenge(0);
+                            let eq = Expression::eq_xy(0);
+                            Expression::distribute_powers(&gates, &alpha) * eq
+                        },
+                        |_| ((), ()),
+                        |num_vars| {
+                            let polys = $rotatable::new(num_vars)
+                                .usable_indices()
+                                .into_iter()
+                                .map(|idx| {
+                                    let mut polys =
+                                        MultilinearPolynomial::new(vec![Fr::ZERO; 1 << num_vars]);
+                                    polys[idx] = Fr::ONE;
+                                    polys
+                                })
+                                .collect_vec();
+                            let alpha = Fr::random(seeded_std_rng());
+                            (polys, vec![alpha], vec![rand_vec(num_vars, seeded_std_rng())])
+                        },
+                    );
+                }
 
-            #[test]
-            fn sum_check_rotation() {
-                use halo2_curves::bn256::Fr;
-                use std::iter;
-                use $crate::{
-                    piop::sum_check::test::run_zero_check,
-                    poly::multilinear::MultilinearPolynomial,
-                    util::{
-                        arithmetic::{BooleanHypercube, Field},
-                        expression::{Expression, Query, Rotation},
-                        test::{rand_vec, seeded_std_rng},
-                        Itertools,
-                    },
-                };
+                #[test]
+                fn [<rotation_w_ $suffix>]() {
+                    use halo2_curves::bn256::Fr;
+                    use std::iter;
+                    use $crate::{
+                        piop::sum_check::test::run_zero_check,
+                        poly::multilinear::MultilinearPolynomial,
+                        util::{
+                            arithmetic::Field,
+                            expression::{rotate::Rotatable, Expression, Query, Rotation},
+                            test::{rand_vec, seeded_std_rng},
+                            Itertools,
+                        },
+                    };
 
-                run_zero_check::<$impl>(
-                    2..16,
-                    |num_vars| {
-                        let polys = (-(num_vars as i32) + 1..num_vars as i32)
-                            .rev()
-                            .enumerate()
-                            .map(|(idx, rotation)| {
-                                Expression::<Fr>::Polynomial(Query::new(idx, rotation.into()))
-                            })
-                            .collect_vec();
-                        let gates = polys
-                            .windows(2)
-                            .map(|polys| &polys[1] - &polys[0])
-                            .collect_vec();
-                        let alpha = Expression::Challenge(0);
-                        let eq = Expression::eq_xy(0);
-                        Expression::distribute_powers(&gates, &alpha) * eq
-                    },
-                    |_| ((), ()),
-                    |num_vars| {
-                        let bh = BooleanHypercube::new(num_vars);
-                        let rotate = |f: &Vec<Fr>| {
-                            (0..1 << num_vars)
-                                .map(|idx| f[bh.rotate(idx, Rotation::next())])
-                                .collect_vec()
-                        };
-                        let poly = rand_vec(1 << num_vars, seeded_std_rng());
-                        let polys = iter::successors(Some(poly), |poly| Some(rotate(poly)))
-                            .map(MultilinearPolynomial::new)
-                            .take(2 * num_vars - 1)
-                            .collect_vec();
-                        let alpha = Fr::random(seeded_std_rng());
-                        (polys, vec![alpha], rand_vec(num_vars, seeded_std_rng()))
-                    },
-                );
-            }
+                    run_zero_check::<$impl, $rotatable>(
+                        2..16,
+                        |num_vars| {
+                            let polys = (-(num_vars as i32) + 1..num_vars as i32)
+                                .rev()
+                                .enumerate()
+                                .map(|(idx, rotation)| {
+                                    Expression::<Fr>::Polynomial(Query::new(idx, rotation))
+                                })
+                                .collect_vec();
+                            let gates = polys
+                                .windows(2)
+                                .map(|polys| &polys[1] - &polys[0])
+                                .collect_vec();
+                            let alpha = Expression::Challenge(0);
+                            let eq = Expression::eq_xy(0);
+                            Expression::distribute_powers(&gates, &alpha) * eq
+                        },
+                        |_| ((), ()),
+                        |num_vars| {
+                            let rotatable = $rotatable::from(num_vars);
+                            let rotate = |f: &Vec<Fr>| {
+                                (0..1 << num_vars)
+                                    .map(|idx| f[rotatable.rotate(idx, Rotation::next())])
+                                    .collect_vec()
+                            };
+                            let poly = rand_vec(1 << num_vars, seeded_std_rng());
+                            let polys = iter::successors(Some(poly), |poly| Some(rotate(poly)))
+                                .map(MultilinearPolynomial::new)
+                                .take(2 * num_vars - 1)
+                                .collect_vec();
+                            let alpha = Fr::random(seeded_std_rng());
+                            (polys, vec![alpha], vec![rand_vec(num_vars, seeded_std_rng())])
+                        },
+                    );
+                }
 
-            #[test]
-            fn sum_check_vanilla_plonk() {
-                use halo2_curves::bn256::Fr;
-                use $crate::{
-                    backend::hyperplonk::util::{
-                        rand_vanilla_plonk_assignment, vanilla_plonk_expression,
-                    },
-                    piop::sum_check::test::run_zero_check,
-                    util::test::{rand_vec, seeded_std_rng},
-                };
+                #[test]
+                fn [<vanilla_plonk_w_ $suffix>]() {
+                    use halo2_curves::bn256::Fr;
+                    use $crate::{
+                        backend::hyperplonk::util::{
+                            rand_vanilla_plonk_assignment, vanilla_plonk_expression,
+                        },
+                        piop::sum_check::test::run_zero_check,
+                        util::test::{rand_vec, seeded_std_rng},
+                    };
 
-                run_zero_check::<$impl>(
-                    2..16,
-                    |num_vars| vanilla_plonk_expression(num_vars),
-                    |_| ((), ()),
-                    |num_vars| {
-                        let (polys, challenges) = rand_vanilla_plonk_assignment(
-                            num_vars,
-                            seeded_std_rng(),
-                            seeded_std_rng(),
-                        );
-                        (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
-                    },
-                );
-            }
+                    run_zero_check::<$impl, $rotatable>(
+                        2..16,
+                        |num_vars| vanilla_plonk_expression(num_vars),
+                        |_| ((), ()),
+                        |num_vars| {
+                            let (polys, challenges) = rand_vanilla_plonk_assignment::<_, $rotatable>(
+                                num_vars,
+                                seeded_std_rng(),
+                                seeded_std_rng(),
+                            );
+                            (polys, challenges, vec![rand_vec(num_vars, seeded_std_rng())])
+                        },
+                    );
+                }
 
-            #[test]
-            fn sum_check_vanilla_plonk_with_lookup() {
-                use halo2_curves::bn256::Fr;
-                use $crate::{
-                    backend::hyperplonk::util::{
-                        rand_vanilla_plonk_with_lookup_assignment,
-                        vanilla_plonk_with_lookup_expression,
-                    },
-                    piop::sum_check::test::run_zero_check,
-                    util::test::{rand_vec, seeded_std_rng},
-                };
+                #[test]
+                fn [<vanilla_plonk_w_lookup_w_ $suffix>]() {
+                    use halo2_curves::bn256::Fr;
+                    use $crate::{
+                        backend::hyperplonk::util::{
+                            rand_vanilla_plonk_w_lookup_assignment,
+                            vanilla_plonk_w_lookup_expression,
+                        },
+                        piop::sum_check::test::run_zero_check,
+                        util::test::{rand_vec, seeded_std_rng},
+                    };
 
-                run_zero_check::<$impl>(
-                    2..16,
-                    |num_vars| vanilla_plonk_with_lookup_expression(num_vars),
-                    |_| ((), ()),
-                    |num_vars| {
-                        let (polys, challenges) = rand_vanilla_plonk_with_lookup_assignment(
-                            num_vars,
-                            seeded_std_rng(),
-                            seeded_std_rng(),
-                        );
-                        (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
-                    },
-                );
+                    run_zero_check::<$impl, $rotatable>(
+                        2..16,
+                        |num_vars| vanilla_plonk_w_lookup_expression(num_vars),
+                        |_| ((), ()),
+                        |num_vars| {
+                            let (polys, challenges) = rand_vanilla_plonk_w_lookup_assignment::<
+                                _,
+                                $rotatable,
+                            >(
+                                num_vars, seeded_std_rng(), seeded_std_rng()
+                            );
+                            (polys, challenges, vec![rand_vec(num_vars, seeded_std_rng())])
+                        },
+                    );
+                }
             }
         };
     }

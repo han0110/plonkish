@@ -1,7 +1,7 @@
 use crate::{
     pcs::{
         multilinear::{additive, err_too_many_variates, quotients, validate_input},
-        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
+        Additive, Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::multilinear::MultilinearPolynomial,
     util::{
@@ -9,7 +9,7 @@ use crate::{
             batch_projective_to_affine, fixed_base_msm, variable_base_msm, window_size,
             window_table, Curve, CurveAffine, Field, MultiMillerLoop, PrimeCurveAffine,
         },
-        izip,
+        chain, izip,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
@@ -23,14 +23,14 @@ use std::{iter, marker::PhantomData, ops::Neg, slice};
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearKzgParams<M: MultiMillerLoop> {
+pub struct MultilinearKzgParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     eqs: Vec<Vec<M::G1Affine>>,
     g2: M::G2Affine,
     ss: Vec<M::G2Affine>,
 }
 
-impl<M: MultiMillerLoop> MultilinearKzgParams<M> {
+impl<M: MultiMillerLoop> MultilinearKzgParam<M> {
     pub fn num_vars(&self) -> usize {
         self.eqs.len()
     }
@@ -53,12 +53,12 @@ impl<M: MultiMillerLoop> MultilinearKzgParams<M> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearKzgProverParams<M: MultiMillerLoop> {
+pub struct MultilinearKzgProverParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     eqs: Vec<Vec<M::G1Affine>>,
 }
 
-impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
+impl<M: MultiMillerLoop> MultilinearKzgProverParam<M> {
     pub fn num_vars(&self) -> usize {
         self.eqs.len() - 1
     }
@@ -77,13 +77,13 @@ impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearKzgVerifierParams<M: MultiMillerLoop> {
+pub struct MultilinearKzgVerifierParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     g2: M::G2Affine,
     ss: Vec<M::G2Affine>,
 }
 
-impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
+impl<M: MultiMillerLoop> MultilinearKzgVerifierParam<M> {
     pub fn num_vars(&self) -> usize {
         self.ss.len()
     }
@@ -136,15 +136,13 @@ impl<C: CurveAffine> From<C> for MultilinearKzgCommitment<C> {
     }
 }
 
-impl<C: CurveAffine> AdditiveCommitment<C::Scalar> for MultilinearKzgCommitment<C> {
-    fn sum_with_scalar<'a>(
-        scalars: impl IntoIterator<Item = &'a C::Scalar> + 'a,
-        bases: impl IntoIterator<Item = &'a Self> + 'a,
+impl<C: CurveAffine> Additive<C::Scalar> for MultilinearKzgCommitment<C> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a C::Scalar>,
+        bases: impl IntoIterator<Item = &'b Self>,
     ) -> Self {
         let scalars = scalars.into_iter().collect_vec();
         let bases = bases.into_iter().map(|base| &base.0).collect_vec();
-        assert_eq!(scalars.len(), bases.len());
-
         MultilinearKzgCommitment(variable_base_msm(scalars, bases).to_affine())
     }
 }
@@ -156,15 +154,16 @@ where
     M::G1Affine: Serialize + DeserializeOwned,
     M::G2Affine: Serialize + DeserializeOwned,
 {
-    type Param = MultilinearKzgParams<M>;
-    type ProverParam = MultilinearKzgProverParams<M>;
-    type VerifierParam = MultilinearKzgVerifierParams<M>;
+    type Param = MultilinearKzgParam<M>;
+    type ProverParam = MultilinearKzgProverParam<M>;
+    type VerifierParam = MultilinearKzgVerifierParam<M>;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
     type Commitment = MultilinearKzgCommitment<M::G1Affine>;
     type CommitmentChunk = M::G1Affine;
 
     fn setup(poly_size: usize, _: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());
+
         let num_vars = poly_size.ilog2() as usize;
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
             .take(num_vars)
@@ -330,21 +329,21 @@ where
 
         let window_size = window_size(point.len());
         let window_table = window_table(window_size, vp.g2);
-        let rhs = iter::empty()
-            .chain(Some(vp.g2.neg()))
-            .chain(
-                vp.ss(point.len())
-                    .iter()
-                    .cloned()
-                    .zip_eq(fixed_base_msm(window_size, &window_table, point))
-                    .map(|(s_i, x_i)| (s_i - x_i.into()).into()),
-            )
-            .map_into()
-            .collect_vec();
-        let lhs = iter::empty()
-            .chain(Some((comm.0.to_curve() - vp.g1 * eval).into()))
-            .chain(quotients.iter().cloned())
-            .collect_vec();
+        let rhs = chain![
+            [vp.g2.neg()],
+            vp.ss(point.len())
+                .iter()
+                .cloned()
+                .zip_eq(fixed_base_msm(window_size, &window_table, point))
+                .map(|(s_i, x_i)| (s_i - x_i.into()).into()),
+        ]
+        .map_into()
+        .collect_vec();
+        let lhs = chain![
+            [(comm.0.to_curve() - vp.g1 * eval).into()],
+            quotients.iter().cloned()
+        ]
+        .collect_vec();
         M::pairings_product_is_identity(&lhs.iter().zip_eq(rhs.iter()).collect_vec())
             .then_some(())
             .ok_or_else(|| Error::InvalidPcsOpen("Invalid multilinear KZG open".to_string()))
@@ -365,8 +364,8 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        pcs::multilinear::{
-            kzg::MultilinearKzg,
+        pcs::{
+            multilinear::kzg::MultilinearKzg,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
         },
         util::transcript::Keccak256Transcript,

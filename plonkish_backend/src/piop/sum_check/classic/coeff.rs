@@ -3,6 +3,7 @@ use crate::{
     poly::multilinear::{zip_self, MultilinearPolynomial},
     util::{
         arithmetic::{div_ceil, horner, PrimeField},
+        chain,
         expression::{CommonPolynomial, Expression, Rotation},
         impl_index, izip_eq,
         parallel::{num_threads, parallelize_iter},
@@ -11,7 +12,7 @@ use crate::{
     },
     Error,
 };
-use std::{array, fmt::Debug, iter, ops::AddAssign};
+use std::{array, fmt::Debug, ops::AddAssign};
 
 #[derive(Debug)]
 pub struct Coefficients<F>(Vec<F>);
@@ -114,11 +115,7 @@ where
                 {
                     outputs.push((
                         *lhs_scalar * rhs_scalar,
-                        iter::empty()
-                            .chain(lhs_polys)
-                            .chain(rhs_polys)
-                            .cloned()
-                            .collect_vec(),
+                        chain![lhs_polys, rhs_polys].cloned().collect_vec(),
                     ));
                 }
                 (lhs_constant * rhs_constant, outputs)
@@ -209,7 +206,7 @@ fn poly<'a, F: PrimeField>(
     match expr {
         Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)) => &state.eq_xys[*idx],
         Expression::Polynomial(query) if query.rotation() == Rotation::cur() => {
-            &state.polys[query.poly()][state.num_vars]
+            &state.polys[&query]
         }
         _ => unimplemented!(),
     }

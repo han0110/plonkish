@@ -1,9 +1,11 @@
 use crate::{
+    pcs::Additive,
     poly::Polynomial,
     util::{
-        arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field},
-        expression::Rotation,
-        impl_index,
+        arithmetic::{div_ceil, usize_from_bits_le, Field},
+        chain,
+        expression::{rotate::BinaryField, Rotation},
+        impl_index, izip_eq,
         parallel::{num_threads, parallelize, parallelize_iter},
         BitIndex, Deserialize, Itertools, Serialize,
     },
@@ -11,13 +13,13 @@ use crate::{
 use num_integer::Integer;
 use rand::RngCore;
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, Cow},
     iter::{self, Sum},
     mem,
     ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultilinearPolynomial<F> {
     evals: Vec<F>,
     num_vars: usize,
@@ -26,6 +28,18 @@ pub struct MultilinearPolynomial<F> {
 impl<F> Default for MultilinearPolynomial<F> {
     fn default() -> Self {
         MultilinearPolynomial::zero()
+    }
+}
+
+impl<F: Field> Additive<F> for MultilinearPolynomial<F> {
+    fn msm<'a, 'b>(
+        scalars: impl IntoIterator<Item = &'a F>,
+        bases: impl IntoIterator<Item = &'b Self>,
+    ) -> Self
+    where
+        Self: 'b,
+    {
+        izip_eq!(scalars, bases).sum()
     }
 }
 
@@ -71,21 +85,14 @@ impl<F> MultilinearPolynomial<F> {
 }
 
 impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
-    type Basis = ();
     type Point = Vec<F>;
-
-    fn new(_: (), evals: Vec<F>) -> Self {
-        Self::new(evals)
-    }
-
-    fn basis(&self) {}
 
     fn coeffs(&self) -> &[F] {
         self.evals.as_slice()
     }
 
     fn evaluate(&self, point: &Self::Point) -> F {
-        MultilinearPolynomial::evaluate(self, point.as_slice())
+        MultilinearPolynomial::evaluate(self, point)
     }
 
     #[cfg(any(test, feature = "benchmark"))]
@@ -96,6 +103,16 @@ impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
     #[cfg(any(test, feature = "benchmark"))]
     fn rand_point(k: usize, rng: impl rand::RngCore) -> Self::Point {
         crate::util::test::rand_vec(k, rng)
+    }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn squeeze_point(
+        k: usize,
+        transcript: &mut impl crate::util::transcript::FieldTranscript<F>,
+    ) -> Self::Point {
+        iter::repeat_with(|| transcript.squeeze_challenge())
+            .take(k)
+            .collect()
     }
 }
 
@@ -148,23 +165,7 @@ impl<F: Field> MultilinearPolynomial<F> {
 
     pub fn evaluate(&self, x: &[F]) -> F {
         assert_eq!(x.len(), self.num_vars);
-
-        let mut evals = Cow::Borrowed(self.evals());
-        let mut bits = Vec::new();
-        let mut buf = Vec::with_capacity(self.evals.len() >> 1);
-        for x_i in x.iter() {
-            if x_i == &F::ZERO || x_i == &F::ONE {
-                bits.push(x_i == &F::ONE);
-                continue;
-            }
-
-            let distance = bits.len() + 1;
-            let skip = usize_from_bits_le(&bits);
-            merge_in_place(&mut evals, x_i, distance, skip, &mut buf);
-            bits.clear();
-        }
-
-        evals[usize_from_bits_le(&bits)]
+        evaluate(&self.evals, x)
     }
 
     pub fn fix_last_vars(&self, x: &[F]) -> Self {
@@ -275,18 +276,19 @@ impl<F: Field> MultilinearPolynomial<F> {
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Add<&'rhs MultilinearPolynomial<F>> for &'lhs MultilinearPolynomial<F> {
+impl<F: Field, P: Borrow<MultilinearPolynomial<F>>> Add<P> for &MultilinearPolynomial<F> {
     type Output = MultilinearPolynomial<F>;
 
-    fn add(self, rhs: &'rhs MultilinearPolynomial<F>) -> MultilinearPolynomial<F> {
+    fn add(self, rhs: P) -> MultilinearPolynomial<F> {
         let mut output = self.clone();
         output += rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> AddAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
-    fn add_assign(&mut self, rhs: &'rhs MultilinearPolynomial<F>) {
+impl<F: Field, P: Borrow<MultilinearPolynomial<F>>> AddAssign<P> for MultilinearPolynomial<F> {
+    fn add_assign(&mut self, rhs: P) {
+        let rhs = rhs.borrow();
         match (self.is_empty(), rhs.is_empty()) {
             (_, true) => {}
             (true, false) => *self = rhs.clone(),
@@ -303,10 +305,11 @@ impl<'rhs, F: Field> AddAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPo
     }
 }
 
-impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs MultilinearPolynomial<F>)>
+impl<F: Field, BF: Borrow<F>, P: Borrow<MultilinearPolynomial<F>>> AddAssign<(BF, P)>
     for MultilinearPolynomial<F>
 {
-    fn add_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs MultilinearPolynomial<F>)) {
+    fn add_assign(&mut self, (scalar, rhs): (BF, P)) {
+        let (scalar, rhs) = (scalar.borrow(), rhs.borrow());
         match (self.is_empty(), rhs.is_empty() | (scalar == &F::ZERO)) {
             (_, true) => {}
             (true, false) => {
@@ -332,18 +335,19 @@ impl<'rhs, F: Field> AddAssign<(&'rhs F, &'rhs MultilinearPolynomial<F>)>
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Sub<&'rhs MultilinearPolynomial<F>> for &'lhs MultilinearPolynomial<F> {
+impl<F: Field, P: Borrow<MultilinearPolynomial<F>>> Sub<P> for &MultilinearPolynomial<F> {
     type Output = MultilinearPolynomial<F>;
 
-    fn sub(self, rhs: &'rhs MultilinearPolynomial<F>) -> MultilinearPolynomial<F> {
+    fn sub(self, rhs: P) -> MultilinearPolynomial<F> {
         let mut output = self.clone();
         output -= rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
-    fn sub_assign(&mut self, rhs: &'rhs MultilinearPolynomial<F>) {
+impl<F: Field, P: Borrow<MultilinearPolynomial<F>>> SubAssign<P> for MultilinearPolynomial<F> {
+    fn sub_assign(&mut self, rhs: P) {
+        let rhs = rhs.borrow();
         match (self.is_empty(), rhs.is_empty()) {
             (_, true) => {}
             (true, false) => {
@@ -363,26 +367,27 @@ impl<'rhs, F: Field> SubAssign<&'rhs MultilinearPolynomial<F>> for MultilinearPo
     }
 }
 
-impl<'rhs, F: Field> SubAssign<(&'rhs F, &'rhs MultilinearPolynomial<F>)>
+impl<F: Field, BF: Borrow<F>, P: Borrow<MultilinearPolynomial<F>>> SubAssign<(BF, P)>
     for MultilinearPolynomial<F>
 {
-    fn sub_assign(&mut self, (scalar, rhs): (&'rhs F, &'rhs MultilinearPolynomial<F>)) {
-        *self += (&-*scalar, rhs);
+    fn sub_assign(&mut self, (scalar, rhs): (BF, P)) {
+        *self += (-*scalar.borrow(), rhs);
     }
 }
 
-impl<'lhs, 'rhs, F: Field> Mul<&'rhs F> for &'lhs MultilinearPolynomial<F> {
+impl<F: Field, BF: Borrow<F>> Mul<BF> for &MultilinearPolynomial<F> {
     type Output = MultilinearPolynomial<F>;
 
-    fn mul(self, rhs: &'rhs F) -> MultilinearPolynomial<F> {
+    fn mul(self, rhs: BF) -> MultilinearPolynomial<F> {
         let mut output = self.clone();
         output *= rhs;
         output
     }
 }
 
-impl<'rhs, F: Field> MulAssign<&'rhs F> for MultilinearPolynomial<F> {
-    fn mul_assign(&mut self, rhs: &'rhs F) {
+impl<F: Field, BF: Borrow<F>> MulAssign<BF> for MultilinearPolynomial<F> {
+    fn mul_assign(&mut self, rhs: BF) {
+        let rhs = rhs.borrow();
         if rhs == &F::ZERO {
             self.evals = vec![F::ZERO; self.evals.len()]
         } else if rhs == &-F::ONE {
@@ -401,46 +406,61 @@ impl<'rhs, F: Field> MulAssign<&'rhs F> for MultilinearPolynomial<F> {
     }
 }
 
-impl<'a, F: Field> Sum<&'a MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
-    fn sum<I: Iterator<Item = &'a MultilinearPolynomial<F>>>(
-        mut iter: I,
-    ) -> MultilinearPolynomial<F> {
+impl<F: Field, P: Borrow<MultilinearPolynomial<F>>> Sum<P> for MultilinearPolynomial<F> {
+    fn sum<I: Iterator<Item = P>>(mut iter: I) -> MultilinearPolynomial<F> {
         let init = match (iter.next(), iter.next()) {
-            (Some(lhs), Some(rhs)) => lhs + rhs,
-            (Some(lhs), None) => return lhs.clone(),
-            _ => unreachable!(),
+            (Some(lhs), Some(rhs)) => lhs.borrow() + rhs.borrow(),
+            (Some(lhs), None) => return lhs.borrow().clone(),
+            _ => return Self::zero(),
         };
         iter.fold(init, |mut acc, poly| {
-            acc += poly;
+            acc += poly.borrow();
             acc
         })
     }
 }
 
-impl<F: Field> Sum<MultilinearPolynomial<F>> for MultilinearPolynomial<F> {
-    fn sum<I: Iterator<Item = MultilinearPolynomial<F>>>(iter: I) -> MultilinearPolynomial<F> {
-        iter.reduce(|mut acc, poly| {
-            acc += &poly;
-            acc
-        })
-        .unwrap()
-    }
-}
-
-impl<F: Field> Sum<(F, MultilinearPolynomial<F>)> for MultilinearPolynomial<F> {
-    fn sum<I: Iterator<Item = (F, MultilinearPolynomial<F>)>>(
-        mut iter: I,
-    ) -> MultilinearPolynomial<F> {
-        let (scalar, mut poly) = iter.next().unwrap();
-        poly *= &scalar;
-        iter.fold(poly, |mut acc, (scalar, poly)| {
-            acc += (&scalar, &poly);
+impl<F: Field, BF: Borrow<F>, P: Borrow<MultilinearPolynomial<F>>> Sum<(BF, P)>
+    for MultilinearPolynomial<F>
+{
+    fn sum<I: Iterator<Item = (BF, P)>>(mut iter: I) -> MultilinearPolynomial<F> {
+        let init = match iter.next() {
+            Some((scalar, poly)) => {
+                let mut poly = poly.borrow().clone();
+                poly *= scalar.borrow();
+                poly
+            }
+            _ => return Self::zero(),
+        };
+        iter.fold(init, |mut acc, (scalar, poly)| {
+            acc += (scalar.borrow(), poly.borrow());
             acc
         })
     }
 }
 
 impl_index!(MultilinearPolynomial, evals);
+
+pub(crate) fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
+    assert_eq!(1 << x.len(), evals.len());
+
+    let mut evals = Cow::Borrowed(evals);
+    let mut bits = Vec::new();
+    let mut buf = Vec::with_capacity(evals.len() >> 1);
+    for x_i in x.iter() {
+        if x_i == &F::ZERO || x_i == &F::ONE {
+            bits.push(x_i == &F::ONE);
+            continue;
+        }
+
+        let distance = bits.len() + 1;
+        let skip = usize_from_bits_le(&bits);
+        merge_in_place(&mut evals, x_i, distance, skip, &mut buf);
+        bits.clear();
+    }
+
+    evals[usize_from_bits_le(&bits)]
+}
 
 pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: &[F]) -> F {
     if rotation == Rotation::cur() {
@@ -501,16 +521,17 @@ pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>
         pattern
             .iter()
             .map(|pat| {
-                iter::empty()
-                    .chain((0..num_x).map(|idx| {
+                chain![
+                    (0..num_x).map(|idx| {
                         if pat.nth_bit(idx) {
                             flipped_x[idx]
                         } else {
                             x[idx]
                         }
-                    }))
-                    .chain((0..distance).map(|idx| bit_to_field(pat.nth_bit(idx + num_x))))
-                    .collect_vec()
+                    }),
+                    (0..distance).map(|idx| bit_to_field(pat.nth_bit(idx + num_x)))
+                ]
+                .collect_vec()
             })
             .collect()
     } else {
@@ -520,16 +541,17 @@ pub fn rotation_eval_points<F: Field>(x: &[F], rotation: Rotation) -> Vec<Vec<F>
         pattern
             .iter()
             .map(|pat| {
-                iter::empty()
-                    .chain((0..distance).map(|idx| bit_to_field(pat.nth_bit(idx))))
-                    .chain((0..num_x).map(|idx| {
+                chain![
+                    (0..distance).map(|idx| bit_to_field(pat.nth_bit(idx))),
+                    (0..num_x).map(|idx| {
                         if pat.nth_bit(idx + distance) {
                             flipped_x[idx]
                         } else {
                             x[idx]
                         }
-                    }))
-                    .collect_vec()
+                    })
+                ]
+                .collect_vec()
             })
             .collect()
     }
@@ -539,8 +561,8 @@ pub(crate) fn rotation_eval_point_pattern<const NEXT: bool>(
     num_vars: usize,
     distance: usize,
 ) -> Vec<usize> {
-    let bh = BooleanHypercube::new(num_vars);
-    let remainder = if NEXT { bh.primitive() } else { bh.x_inv() };
+    let bf = BinaryField::new(num_vars);
+    let remainder = if NEXT { bf.primitive() } else { bf.x_inv() };
     let mut pattern = vec![0; 1 << distance];
     for depth in 0..distance {
         for (e, o) in zip_self!(0..pattern.len(), 1 << (distance - depth)) {
@@ -560,11 +582,11 @@ pub(crate) fn rotation_eval_coeff_pattern<const NEXT: bool>(
     num_vars: usize,
     distance: usize,
 ) -> Vec<usize> {
-    let bh = BooleanHypercube::new(num_vars);
+    let bf = BinaryField::new(num_vars);
     let remainder = if NEXT {
-        bh.primitive() - (1 << num_vars)
+        bf.primitive() - (1 << num_vars)
     } else {
-        bh.x_inv() << distance
+        bf.x_inv() << distance
     };
     let mut pattern = vec![0; 1 << (distance - 1)];
     for depth in 0..distance - 1 {
@@ -651,8 +673,11 @@ mod test {
     use crate::{
         poly::multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
         util::{
-            arithmetic::{BooleanHypercube, Field},
-            expression::Rotation,
+            arithmetic::Field,
+            expression::{
+                rotate::{BinaryField, Rotatable},
+                Rotation,
+            },
             test::rand_vec,
             Itertools,
         },
@@ -672,8 +697,8 @@ mod test {
     #[test]
     fn fix_var() {
         let rand_x_i = || match OsRng.next_u32() % 3 {
-            0 => Fr::zero(),
-            1 => Fr::one(),
+            0 => Fr::ZERO,
+            1 => Fr::ONE,
             2 => Fr::random(OsRng),
             _ => unreachable!(),
         };
@@ -691,11 +716,11 @@ mod test {
     #[test]
     fn evaluate_for_rotation() {
         let mut rng = OsRng;
-        for num_vars in 0..16 {
-            let bh = BooleanHypercube::new(num_vars);
+        for num_vars in 1..16 {
+            let bf = BinaryField::new(num_vars);
             let rotate = |f: &Vec<Fr>| {
                 (0..1 << num_vars)
-                    .map(|idx| f[bh.rotate(idx, Rotation::next())])
+                    .map(|idx| f[bf.rotate(idx, Rotation::next())])
                     .collect_vec()
             };
             let f = rand_vec(1 << num_vars, &mut rng);

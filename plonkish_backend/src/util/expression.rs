@@ -1,5 +1,6 @@
 use crate::util::{arithmetic::Field, izip, Deserialize, Itertools, Serialize};
 use std::{
+    borrow::Borrow,
     collections::BTreeSet,
     fmt::Debug,
     io::{self, Cursor},
@@ -7,35 +8,11 @@ use std::{
     ops::{Add, Mul, Neg, Sub},
 };
 
-pub(crate) mod evaluator;
+pub mod evaluator;
 pub mod relaxed;
+pub mod rotate;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Rotation(pub i32);
-
-impl Rotation {
-    pub const fn cur() -> Self {
-        Rotation(0)
-    }
-
-    pub const fn prev() -> Self {
-        Rotation(-1)
-    }
-
-    pub const fn next() -> Self {
-        Rotation(1)
-    }
-
-    pub const fn distance(&self) -> usize {
-        self.0.unsigned_abs() as usize
-    }
-}
-
-impl From<i32> for Rotation {
-    fn from(rotation: i32) -> Self {
-        Self(rotation)
-    }
-}
+pub use rotate::Rotation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Query {
@@ -44,8 +21,11 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn new(poly: usize, rotation: Rotation) -> Self {
-        Self { poly, rotation }
+    pub fn new(poly: usize, rotation: impl Into<Rotation>) -> Self {
+        Self {
+            poly,
+            rotation: rotation.into(),
+        }
     }
 
     pub fn poly(&self) -> usize {
@@ -54,6 +34,12 @@ impl Query {
 
     pub fn rotation(&self) -> Rotation {
         self.rotation
+    }
+}
+
+impl<T: Into<Rotation>> From<(usize, T)> for Query {
+    fn from((poly, rotation): (usize, T)) -> Self {
+        Self::new(poly, rotation)
     }
 }
 
@@ -90,18 +76,18 @@ impl<F: Clone> Expression<F> {
         Expression::CommonPolynomial(CommonPolynomial::EqXY(idx))
     }
 
-    pub fn distribute_powers<'a>(
-        exprs: impl IntoIterator<Item = &'a Self> + 'a,
-        base: &Self,
-    ) -> Self
-    where
-        F: 'a,
-    {
-        let mut exprs = exprs.into_iter().cloned().collect_vec();
+    pub fn distribute_powers(
+        exprs: impl IntoIterator<Item = impl Borrow<Self>>,
+        base: impl Borrow<Self>,
+    ) -> Self {
+        let exprs = exprs
+            .into_iter()
+            .map(|expr| expr.borrow().clone())
+            .collect_vec();
         match exprs.len() {
             0 => unreachable!(),
-            1 => exprs.pop().unwrap(),
-            _ => Expression::DistributePowers(exprs, base.clone().into()),
+            1 => exprs.into_iter().next().unwrap(),
+            _ => Expression::DistributePowers(exprs, base.borrow().clone().into()),
         }
     }
 

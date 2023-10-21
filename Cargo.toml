@@ -1,5 +1,6 @@
 [workspace]
 members = ["benchmark", "plonkish_backend"]
+resolver = "2"
 
 [profile.flamegraph]
 inherits = "release"

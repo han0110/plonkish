@@ -1,6 +1,7 @@
 use crate::{
     backend::{
-        hyperplonk::{
+        hyperplonk::{HyperPlonkProverParam, HyperPlonkVerifierParam},
+        unihyperplonk::{
             preprocessor::{batch_size, preprocess},
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
@@ -10,15 +11,13 @@ use crate::{
         },
         PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding,
     },
-    pcs::PolynomialCommitmentScheme,
-    poly::multilinear::MultilinearPolynomial,
+    pcs::{Additive, PolynomialCommitmentScheme},
+    piop::multilinear_eval::ph23::{self, s_polys},
+    poly::{multilinear::MultilinearPolynomial, univariate::UnivariatePolynomial},
     util::{
-        arithmetic::{powers, PrimeField},
+        arithmetic::{powers, WithSmallOrderMulGroup},
         chain, end_timer,
-        expression::{
-            rotate::{BinaryField, Rotatable},
-            Expression,
-        },
+        expression::rotate::{Lexical, Rotatable},
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
@@ -26,64 +25,69 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{fmt::Debug, hash::Hash, iter, marker::PhantomData};
+use std::{borrow::Cow, fmt::Debug, hash::Hash, iter, marker::PhantomData, ops::Deref};
 
 pub(crate) mod preprocessor;
 pub(crate) mod prover;
 pub(crate) mod verifier;
 
-#[cfg(any(test, feature = "benchmark"))]
-pub mod util;
-
 #[derive(Clone, Debug)]
-pub struct HyperPlonk<Pcs>(PhantomData<Pcs>);
+pub struct UniHyperPlonk<Pcs, const ADDITIVE_PCS: bool>(PhantomData<Pcs>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HyperPlonkProverParam<F, Pcs>
+#[serde(bound(serialize = "F: Serialize", deserialize = "F: DeserializeOwned"))]
+pub struct UniHyperPlonkProverParam<F, Pcs>
 where
-    F: PrimeField,
+    F: WithSmallOrderMulGroup<3>,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    pub(crate) pcs: Pcs::ProverParam,
-    pub(crate) num_instances: Vec<usize>,
-    pub(crate) num_witness_polys: Vec<usize>,
-    pub(crate) num_challenges: Vec<usize>,
-    pub(crate) lookups: Vec<Vec<(Expression<F>, Expression<F>)>>,
-    pub(crate) num_permutation_z_polys: usize,
-    pub(crate) num_vars: usize,
-    pub(crate) expression: Expression<F>,
-    pub(crate) preprocess_polys: Vec<MultilinearPolynomial<F>>,
-    pub(crate) preprocess_comms: Vec<Pcs::Commitment>,
-    pub(crate) permutation_polys: Vec<(usize, MultilinearPolynomial<F>)>,
-    pub(crate) permutation_comms: Vec<Pcs::Commitment>,
+    pub(crate) pp: HyperPlonkProverParam<F, Pcs>,
+    pub(crate) s_polys: Vec<Vec<F>>,
+}
+
+impl<F, Pcs> Deref for UniHyperPlonkProverParam<F, Pcs>
+where
+    F: WithSmallOrderMulGroup<3>,
+    Pcs: PolynomialCommitmentScheme<F>,
+{
+    type Target = HyperPlonkProverParam<F, Pcs>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pp
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HyperPlonkVerifierParam<F, Pcs>
+#[serde(bound(serialize = "F: Serialize", deserialize = "F: DeserializeOwned"))]
+pub struct UniHyperPlonkVerifierParam<F, Pcs>
 where
-    F: PrimeField,
+    F: WithSmallOrderMulGroup<3>,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    pub(crate) pcs: Pcs::VerifierParam,
-    pub(crate) num_instances: Vec<usize>,
-    pub(crate) num_witness_polys: Vec<usize>,
-    pub(crate) num_challenges: Vec<usize>,
-    pub(crate) num_lookups: usize,
-    pub(crate) num_permutation_z_polys: usize,
-    pub(crate) num_vars: usize,
-    pub(crate) expression: Expression<F>,
-    pub(crate) preprocess_comms: Vec<Pcs::Commitment>,
-    pub(crate) permutation_comms: Vec<(usize, Pcs::Commitment)>,
+    pub(crate) vp: HyperPlonkVerifierParam<F, Pcs>,
 }
 
-impl<F, Pcs> PlonkishBackend<F> for HyperPlonk<Pcs>
+impl<F, Pcs> Deref for UniHyperPlonkVerifierParam<F, Pcs>
 where
-    F: PrimeField + Hash + Serialize + DeserializeOwned,
-    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+    F: WithSmallOrderMulGroup<3>,
+    Pcs: PolynomialCommitmentScheme<F>,
+{
+    type Target = HyperPlonkVerifierParam<F, Pcs>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.vp
+    }
+}
+
+impl<F, Pcs> PlonkishBackend<F> for UniHyperPlonk<Pcs, true>
+where
+    F: WithSmallOrderMulGroup<3> + Hash + Serialize + DeserializeOwned,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
+    Pcs::Commitment: Additive<F>,
 {
     type Pcs = Pcs;
-    type ProverParam = HyperPlonkProverParam<F, Pcs>;
-    type VerifierParam = HyperPlonkVerifierParam<F, Pcs>;
+    type ProverParam = UniHyperPlonkProverParam<F, Pcs>;
+    type VerifierParam = UniHyperPlonkVerifierParam<F, Pcs>;
 
     fn setup(
         circuit_info: &PlonkishCircuitInfo<F>,
@@ -101,10 +105,14 @@ where
         param: &Pcs::Param,
         circuit_info: &PlonkishCircuitInfo<F>,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        preprocess(param, circuit_info, |pp, polys| {
-            let comms = Pcs::batch_commit(pp, &polys)?;
-            Ok((polys, comms))
-        })
+        let (pp, vp) = preprocess(param, circuit_info, |pp, polys| {
+            batch_commit::<_, Pcs>(pp, polys)
+        })?;
+        let s_polys = s_polys(circuit_info.k);
+        Ok((
+            UniHyperPlonkProverParam { pp, s_polys },
+            UniHyperPlonkVerifierParam { vp },
+        ))
     }
 
     fn prove(
@@ -121,7 +129,7 @@ where
                     transcript.common_field_element(instance)?;
                 }
             }
-            instance_polys::<_, BinaryField>(pp.num_vars, instances)
+            instance_polys::<_, Lexical>(pp.num_vars, instances)
         };
 
         // Round 0..n
@@ -144,11 +152,17 @@ where
             assert_eq!(polys.len(), *num_witness_polys);
             end_timer(timer);
 
-            witness_comms.extend(Pcs::batch_commit_and_write(&pp.pcs, &polys, transcript)?);
+            let (polys, comms) = batch_commit_and_write::<_, Pcs>(&pp.pcs, polys, transcript)?;
+            witness_comms.extend(comms);
             witness_polys.extend(polys);
             challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
-        let polys = chain![&instance_polys, &pp.preprocess_polys, &witness_polys].collect_vec();
+        let polys = chain![
+            instance_polys.into_iter().map(Cow::Owned),
+            pp.preprocess_polys.iter().map(Cow::Borrowed),
+            witness_polys.into_iter().map(Cow::Owned)
+        ]
+        .collect_vec();
 
         // Round n
 
@@ -158,7 +172,7 @@ where
         let lookup_compressed_polys = {
             let max_lookup_width = pp.lookups.iter().map(Vec::len).max().unwrap_or_default();
             let betas = powers(beta).take(max_lookup_width).collect_vec();
-            lookup_compressed_polys::<_, BinaryField>(&pp.lookups, &polys, &challenges, &betas)
+            lookup_compressed_polys::<_, Lexical>(&pp.lookups, &polys, &challenges, &betas)
         };
         end_timer(timer);
 
@@ -166,7 +180,8 @@ where
         let lookup_m_polys = lookup_m_polys(&lookup_compressed_polys)?;
         end_timer(timer);
 
-        let lookup_m_comms = Pcs::batch_commit_and_write(&pp.pcs, &lookup_m_polys, transcript)?;
+        let (lookup_m_polys, lookup_m_comms) =
+            batch_commit_and_write::<_, Pcs>(&pp.pcs, lookup_m_polys, transcript)?;
 
         // Round n+1
 
@@ -177,7 +192,7 @@ where
         end_timer(timer);
 
         let timer = start_timer(|| format!("permutation_z_polys-{}", pp.permutation_polys.len()));
-        let permutation_z_polys = permutation_z_polys::<_, BinaryField>(
+        let permutation_z_polys = permutation_z_polys::<_, Lexical>(
             pp.num_permutation_z_polys,
             &pp.permutation_polys,
             &polys,
@@ -187,9 +202,9 @@ where
         end_timer(timer);
 
         let lookup_h_permutation_z_polys =
-            chain![lookup_h_polys.iter(), permutation_z_polys.iter()].collect_vec();
-        let lookup_h_permutation_z_comms =
-            Pcs::batch_commit_and_write(&pp.pcs, lookup_h_permutation_z_polys.clone(), transcript)?;
+            chain![lookup_h_polys, permutation_z_polys].collect_vec();
+        let (lookup_h_permutation_z_polys, lookup_h_permutation_z_comms) =
+            batch_commit_and_write::<_, Pcs>(&pp.pcs, lookup_h_permutation_z_polys, transcript)?;
 
         // Round n+2
 
@@ -198,13 +213,13 @@ where
 
         let polys = chain![
             polys,
-            pp.permutation_polys.iter().map(|(_, poly)| poly),
-            lookup_m_polys.iter(),
-            lookup_h_permutation_z_polys,
+            chain![&pp.permutation_polys].map(|(_, poly)| Cow::Borrowed(poly)),
+            lookup_m_polys.into_iter().map(Cow::Owned),
+            lookup_h_permutation_z_polys.into_iter().map(Cow::Owned),
         ]
         .collect_vec();
         challenges.extend([beta, gamma, alpha]);
-        let (points, evals) = prove_zero_check(
+        let (point, evals) = prove_zero_check(
             pp.num_instances.len(),
             &pp.expression,
             &polys,
@@ -213,8 +228,13 @@ where
             transcript,
         )?;
 
-        // PCS open
+        // Prove PH23 multilinear evaluation
 
+        let polys = polys
+            .into_iter()
+            .map(|poly| poly.into_owned().into_evals())
+            .map(UnivariatePolynomial::lagrange)
+            .collect_vec();
         let dummy_comm = Pcs::Commitment::default();
         let comms = chain![
             iter::repeat(&dummy_comm).take(pp.num_instances.len()),
@@ -225,8 +245,17 @@ where
             &lookup_h_permutation_z_comms,
         ]
         .collect_vec();
-        let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
-        Pcs::batch_open(&pp.pcs, polys, comms, &points, &evals, transcript)?;
+        let timer = start_timer(|| format!("prove_multilinear_eval-{}", evals.len()));
+        ph23::additive::prove_multilinear_eval::<_, Pcs>(
+            &pp.pcs,
+            pp.num_vars,
+            &pp.s_polys,
+            &polys,
+            comms,
+            &point,
+            &evals,
+            transcript,
+        )?;
         end_timer(timer);
 
         Ok(())
@@ -278,7 +307,7 @@ where
         let y = transcript.squeeze_challenges(vp.num_vars);
 
         challenges.extend([beta, gamma, alpha]);
-        let (points, evals) = verify_zero_check(
+        let (point, evals) = verify_zero_check(
             vp.num_vars,
             &vp.expression,
             instances,
@@ -287,7 +316,7 @@ where
             transcript,
         )?;
 
-        // PCS verify
+        // Verify PH23 multilinear evaluation
 
         let dummy_comm = Pcs::Commitment::default();
         let comms = chain![
@@ -299,72 +328,109 @@ where
             &lookup_h_permutation_z_comms,
         ]
         .collect_vec();
-        Pcs::batch_verify(&vp.pcs, comms, &points, &evals, transcript)?;
+        ph23::additive::verify_multilinear_eval::<_, Pcs>(
+            &vp.pcs,
+            vp.num_vars,
+            comms,
+            &point,
+            &evals,
+            transcript,
+        )?;
 
         Ok(())
     }
 }
 
-impl<Pcs> WitnessEncoding for HyperPlonk<Pcs> {
+impl<Pcs, const ADDITIVE_PCS: bool> WitnessEncoding for UniHyperPlonk<Pcs, ADDITIVE_PCS> {
     fn row_mapping(k: usize) -> Vec<usize> {
-        BinaryField::new(k).usable_indices()
+        Lexical::new(k).usable_indices()
     }
+}
+
+#[allow(clippy::type_complexity)]
+fn batch_commit<F, Pcs>(
+    pp: &Pcs::ProverParam,
+    polys: impl IntoIterator<Item = MultilinearPolynomial<F>>,
+) -> Result<(Vec<MultilinearPolynomial<F>>, Vec<Pcs::Commitment>), Error>
+where
+    F: WithSmallOrderMulGroup<3> + Hash + Serialize + DeserializeOwned,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
+{
+    let polys = polys
+        .into_iter()
+        .map(MultilinearPolynomial::into_evals)
+        .map(UnivariatePolynomial::lagrange)
+        .collect_vec();
+    let comms = Pcs::batch_commit(pp, &polys)?;
+    let polys = polys
+        .into_iter()
+        .map(UnivariatePolynomial::into_coeffs)
+        .map(MultilinearPolynomial::new)
+        .collect_vec();
+    Ok((polys, comms))
+}
+
+#[allow(clippy::type_complexity)]
+fn batch_commit_and_write<F, Pcs>(
+    pp: &Pcs::ProverParam,
+    polys: impl IntoIterator<Item = MultilinearPolynomial<F>>,
+    transcript: &mut impl TranscriptWrite<Pcs::CommitmentChunk, F>,
+) -> Result<(Vec<MultilinearPolynomial<F>>, Vec<Pcs::Commitment>), Error>
+where
+    F: WithSmallOrderMulGroup<3> + Hash + Serialize + DeserializeOwned,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
+{
+    let polys = polys
+        .into_iter()
+        .map(MultilinearPolynomial::into_evals)
+        .map(UnivariatePolynomial::lagrange)
+        .collect_vec();
+    let comms = Pcs::batch_commit_and_write(pp, &polys, transcript)?;
+    let polys = polys
+        .into_iter()
+        .map(UnivariatePolynomial::into_coeffs)
+        .map(MultilinearPolynomial::new)
+        .collect_vec();
+    Ok((polys, comms))
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
         backend::{
-            hyperplonk::{
-                util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_w_lookup_circuit},
-                HyperPlonk,
-            },
+            hyperplonk::util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_w_lookup_circuit},
             test::run_plonkish_backend,
+            unihyperplonk::UniHyperPlonk,
         },
-        pcs::{
-            multilinear::{
-                Gemini, MultilinearBrakedown, MultilinearHyrax, MultilinearIpa, MultilinearKzg,
-                Zeromorph,
-            },
-            univariate::UnivariateKzg,
-        },
+        pcs::univariate::UnivariateKzg,
         util::{
-            code::BrakedownSpec6, expression::rotate::BinaryField, hash::Keccak256,
-            test::seeded_std_rng, transcript::Keccak256Transcript,
+            expression::rotate::Lexical, test::seeded_std_rng, transcript::Keccak256Transcript,
         },
     };
-    use halo2_curves::{
-        bn256::{self, Bn256},
-        grumpkin,
-    };
+    use halo2_curves::bn256::Bn256;
 
     macro_rules! tests {
-        ($suffix:ident, $pcs:ty, $num_vars_range:expr) => {
+        ($suffix:ident, $pcs:ty, $additive:literal, $num_vars_range:expr) => {
             paste::paste! {
                 #[test]
                 fn [<vanilla_plonk_w_ $suffix>]() {
-                    run_plonkish_backend::<_, HyperPlonk<$pcs>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        rand_vanilla_plonk_circuit::<_, BinaryField>(num_vars, seeded_std_rng(), seeded_std_rng())
+                    run_plonkish_backend::<_, UniHyperPlonk<$pcs, $additive>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                        rand_vanilla_plonk_circuit::<_, Lexical>(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
 
                 #[test]
                 fn [<vanilla_plonk_w_lookup_w_ $suffix>]() {
-                    run_plonkish_backend::<_, HyperPlonk<$pcs>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        rand_vanilla_plonk_w_lookup_circuit::<_, BinaryField>(num_vars, seeded_std_rng(), seeded_std_rng())
+                    run_plonkish_backend::<_, UniHyperPlonk<$pcs, $additive>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                        rand_vanilla_plonk_w_lookup_circuit::<_, Lexical>(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
             }
         };
-        ($suffix:ident, $pcs:ty) => {
-            tests!($suffix, $pcs, 2..16);
+        ($suffix:ident, $pcs:ty, $additive:literal) => {
+            tests!($suffix, $pcs, $additive, 2..16);
         };
     }
 
-    tests!(brakedown, MultilinearBrakedown<bn256::Fr, Keccak256, BrakedownSpec6>);
-    tests!(hyrax, MultilinearHyrax<grumpkin::G1Affine>, 5..16);
-    tests!(ipa, MultilinearIpa<grumpkin::G1Affine>);
-    tests!(kzg, MultilinearKzg<Bn256>);
-    tests!(gemini_kzg, Gemini<UnivariateKzg<Bn256>>);
-    tests!(zeromorph_kzg, Zeromorph<UnivariateKzg<Bn256>>);
+    tests!(kzg, UnivariateKzg<Bn256>, true);
 }

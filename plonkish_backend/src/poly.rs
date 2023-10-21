@@ -7,12 +7,7 @@ pub mod univariate;
 pub trait Polynomial<F: Field>:
     Clone + Debug + Default + for<'a> AddAssign<(&'a F, &'a Self)>
 {
-    type Basis: Copy + Debug;
     type Point: Clone + Debug;
-
-    fn new(basis: Self::Basis, coeffs: Vec<F>) -> Self;
-
-    fn basis(&self) -> Self::Basis;
 
     fn coeffs(&self) -> &[F];
 
@@ -23,4 +18,10 @@ pub trait Polynomial<F: Field>:
 
     #[cfg(any(test, feature = "benchmark"))]
     fn rand_point(k: usize, rng: impl rand::RngCore) -> Self::Point;
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn squeeze_point(
+        k: usize,
+        transcript: &mut impl crate::util::transcript::FieldTranscript<F>,
+    ) -> Self::Point;
 }

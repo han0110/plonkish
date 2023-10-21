@@ -23,13 +23,15 @@ use crate::{
             verifier::verify_sum_check,
             HyperPlonk,
         },
-        PlonkishCircuit, PlonkishCircuitInfo,
+        PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding,
     },
-    pcs::{AdditiveCommitment, CommitmentChunk, PolynomialCommitmentScheme},
+    pcs::{Additive, CommitmentChunk, PolynomialCommitmentScheme},
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{powers, PrimeField},
-        end_timer, start_timer,
+        chain, end_timer,
+        expression::rotate::BinaryField,
+        start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
         DeserializeOwned, Itertools, Serialize,
     },
@@ -45,8 +47,7 @@ impl<F, Pcs, const STRATEGY: usize> AccumulationScheme<F> for Protostar<HyperPlo
 where
     F: PrimeField + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-    Pcs::Commitment: AdditiveCommitment<F>,
-    Pcs::CommitmentChunk: AdditiveCommitment<F>,
+    Pcs::Commitment: Additive<F>,
 {
     type Pcs = Pcs;
     type ProverParam = ProtostarProverParam<F, HyperPlonk<Pcs>>;
@@ -147,17 +148,10 @@ where
 
         let timer = start_timer(|| format!("lookup_compressed_polys-{}", pp.lookups.len()));
         let lookup_compressed_polys = {
-            let instance_polys = instance_polys(pp.num_vars, instances);
-            let polys = iter::empty()
-                .chain(instance_polys.iter())
-                .chain(pp.preprocess_polys.iter())
-                .chain(witness_polys.iter())
-                .collect_vec();
-            let thetas = iter::empty()
-                .chain(Some(F::ONE))
-                .chain(theta_primes.iter().cloned())
-                .collect_vec();
-            lookup_compressed_polys(&pp.lookups, &polys, &challenges, &thetas)
+            let instance_polys = instance_polys::<_, BinaryField>(pp.num_vars, instances);
+            let polys = chain![&instance_polys, &pp.preprocess_polys, &witness_polys].collect_vec();
+            let thetas = chain![[F::ONE], theta_primes.iter().cloned()].collect_vec();
+            lookup_compressed_polys::<_, BinaryField>(&pp.lookups, &polys, &challenges, &thetas)
         };
         end_timer(timer);
 
@@ -211,25 +205,21 @@ where
 
         Ok(PlonkishNark::new(
             instances.to_vec(),
-            iter::empty()
-                .chain(challenges)
-                .chain(theta_primes)
-                .chain(Some(beta_prime))
-                .chain(zeta)
-                .chain(alpha_primes)
-                .collect(),
-            iter::empty()
-                .chain(witness_comms)
-                .chain(lookup_m_comms)
-                .chain(lookup_h_comms)
-                .chain(powers_of_zeta_comm)
-                .collect(),
-            iter::empty()
-                .chain(witness_polys)
-                .chain(lookup_m_polys)
-                .chain(lookup_h_polys.into_iter().flatten())
-                .chain(powers_of_zeta_poly)
-                .collect(),
+            chain![challenges, theta_primes, [beta_prime], zeta, alpha_primes,].collect(),
+            chain![
+                witness_comms,
+                lookup_m_comms,
+                lookup_h_comms,
+                powers_of_zeta_comm,
+            ]
+            .collect(),
+            chain![
+                witness_polys,
+                lookup_m_polys,
+                lookup_h_polys.into_iter().flatten(),
+                powers_of_zeta_poly,
+            ]
+            .collect(),
         ))
     }
 
@@ -397,19 +387,14 @@ where
 
         let nark = PlonkishNarkInstance::new(
             instances.to_vec(),
-            iter::empty()
-                .chain(challenges)
-                .chain(theta_primes)
-                .chain(Some(beta_prime))
-                .chain(zeta)
-                .chain(alpha_primes)
-                .collect(),
-            iter::empty()
-                .chain(witness_comms)
-                .chain(lookup_m_comms)
-                .chain(lookup_h_comms)
-                .chain(powers_of_zeta_comm)
-                .collect(),
+            chain![challenges, theta_primes, [beta_prime], zeta, alpha_primes,].collect(),
+            chain![
+                witness_comms,
+                lookup_m_comms,
+                lookup_h_comms,
+                powers_of_zeta_comm,
+            ]
+            .collect(),
         );
         let incoming = ProtostarAccumulatorInstance::from_nark(*strategy, nark);
         accumulator.absorb_into(transcript)?;
@@ -463,14 +448,16 @@ where
 
         let timer = start_timer(|| format!("permutation_z_polys-{}", pp.permutation_polys.len()));
         let builtin_witness_poly_offset = pp.num_witness_polys.iter().sum::<usize>();
-        let instance_polys = instance_polys(pp.num_vars, &accumulator.instance.instances);
-        let polys = iter::empty()
-            .chain(&instance_polys)
-            .chain(&pp.preprocess_polys)
-            .chain(&accumulator.witness_polys[..builtin_witness_poly_offset])
-            .chain(pp.permutation_polys.iter().map(|(_, poly)| poly))
-            .collect_vec();
-        let permutation_z_polys = permutation_z_polys(
+        let instance_polys =
+            instance_polys::<_, BinaryField>(pp.num_vars, &accumulator.instance.instances);
+        let polys = chain![
+            &instance_polys,
+            &pp.preprocess_polys,
+            &accumulator.witness_polys[..builtin_witness_poly_offset],
+            pp.permutation_polys.iter().map(|(_, poly)| poly),
+        ]
+        .collect_vec();
+        let permutation_z_polys = permutation_z_polys::<_, BinaryField>(
             pp.num_permutation_z_polys,
             &pp.permutation_polys,
             &polys,
@@ -487,17 +474,19 @@ where
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_challenges(pp.num_vars);
 
-        let polys = iter::empty()
-            .chain(polys)
-            .chain(&accumulator.witness_polys[builtin_witness_poly_offset..])
-            .chain(permutation_z_polys.iter())
-            .chain(Some(&accumulator.e_poly))
-            .collect_vec();
-        let challenges = iter::empty()
-            .chain(accumulator.instance.challenges.iter().copied())
-            .chain([accumulator.instance.u])
-            .chain([beta, gamma, alpha])
-            .collect();
+        let polys = chain![
+            polys,
+            &accumulator.witness_polys[builtin_witness_poly_offset..],
+            &permutation_z_polys,
+            [&accumulator.e_poly],
+        ]
+        .collect_vec();
+        let challenges = chain![
+            accumulator.instance.challenges.iter().copied(),
+            [accumulator.instance.u],
+            [beta, gamma, alpha],
+        ]
+        .collect();
         let (points, evals) = {
             prove_sum_check(
                 pp.num_instances.len(),
@@ -513,15 +502,16 @@ where
         // PCS open
 
         let dummy_comm = Pcs::Commitment::default();
-        let comms = iter::empty()
-            .chain(iter::repeat(&dummy_comm).take(pp.num_instances.len()))
-            .chain(&pp.preprocess_comms)
-            .chain(&accumulator.instance.witness_comms[..builtin_witness_poly_offset])
-            .chain(&pp.permutation_comms)
-            .chain(&accumulator.instance.witness_comms[builtin_witness_poly_offset..])
-            .chain(&permutation_z_comms)
-            .chain(Some(&accumulator.instance.e_comm))
-            .collect_vec();
+        let comms = chain![
+            iter::repeat(&dummy_comm).take(pp.num_instances.len()),
+            &pp.preprocess_comms,
+            &accumulator.instance.witness_comms[..builtin_witness_poly_offset],
+            &pp.permutation_comms,
+            &accumulator.instance.witness_comms[builtin_witness_poly_offset..],
+            &permutation_z_comms,
+            [&accumulator.instance.e_comm],
+        ]
+        .collect_vec();
         let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
         Pcs::batch_open(&pp.pcs, polys, comms, &points, &evals, transcript)?;
         end_timer(timer);
@@ -552,11 +542,12 @@ where
         let alpha = transcript.squeeze_challenge();
         let y = transcript.squeeze_challenges(vp.num_vars);
 
-        let challenges = iter::empty()
-            .chain(accumulator.challenges.iter().copied())
-            .chain([accumulator.u])
-            .chain([beta, gamma, alpha])
-            .collect_vec();
+        let challenges = chain![
+            accumulator.challenges.iter().copied(),
+            [accumulator.u],
+            [beta, gamma, alpha],
+        ]
+        .collect_vec();
         let (points, evals) = {
             verify_sum_check(
                 vp.num_vars,
@@ -573,18 +564,25 @@ where
 
         let builtin_witness_poly_offset = vp.num_witness_polys.iter().sum::<usize>();
         let dummy_comm = Pcs::Commitment::default();
-        let comms = iter::empty()
-            .chain(iter::repeat(&dummy_comm).take(vp.num_instances.len()))
-            .chain(&vp.preprocess_comms)
-            .chain(&accumulator.witness_comms[..builtin_witness_poly_offset])
-            .chain(vp.permutation_comms.iter().map(|(_, comm)| comm))
-            .chain(&accumulator.witness_comms[builtin_witness_poly_offset..])
-            .chain(&permutation_z_comms)
-            .chain(Some(&accumulator.e_comm))
-            .collect_vec();
+        let comms = chain![
+            iter::repeat(&dummy_comm).take(vp.num_instances.len()),
+            &vp.preprocess_comms,
+            &accumulator.witness_comms[..builtin_witness_poly_offset],
+            vp.permutation_comms.iter().map(|(_, comm)| comm),
+            &accumulator.witness_comms[builtin_witness_poly_offset..],
+            &permutation_z_comms,
+            [&accumulator.e_comm],
+        ]
+        .collect_vec();
         Pcs::batch_verify(&vp.pcs, comms, &points, &evals, transcript)?;
 
         Ok(())
+    }
+}
+
+impl<Pcs, const STRATEGY: usize> WitnessEncoding for Protostar<HyperPlonk<Pcs>, STRATEGY> {
+    fn row_mapping(k: usize) -> Vec<usize> {
+        HyperPlonk::<Pcs>::row_mapping(k)
     }
 }
 
@@ -593,7 +591,7 @@ pub(crate) mod test {
     use crate::{
         accumulation::{protostar::Protostar, test::run_accumulation_scheme},
         backend::hyperplonk::{
-            util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_with_lookup_circuit},
+            util::{rand_vanilla_plonk_circuit, rand_vanilla_plonk_w_lookup_circuit},
             HyperPlonk,
         },
         pcs::{
@@ -601,6 +599,7 @@ pub(crate) mod test {
             univariate::UnivariateKzg,
         },
         util::{
+            expression::rotate::BinaryField,
             test::{seeded_std_rng, std_rng},
             transcript::Keccak256Transcript,
             Itertools,
@@ -610,14 +609,14 @@ pub(crate) mod test {
     use std::iter;
 
     macro_rules! tests {
-        ($name:ident, $pcs:ty, $num_vars_range:expr) => {
+        ($suffix:ident, $pcs:ty, $num_vars_range:expr) => {
             paste::paste! {
                 #[test]
-                fn [<$name _protostar_hyperplonk_vanilla_plonk>]() {
+                fn [<vanilla_plonk_w_ $suffix>]() {
                     run_accumulation_scheme::<_, Protostar<HyperPlonk<$pcs>>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        let (circuit_info, _) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
+                        let (circuit_info, _) = rand_vanilla_plonk_circuit::<_, BinaryField>(num_vars, std_rng(), seeded_std_rng());
                         let circuits = iter::repeat_with(|| {
-                            let (_, circuit) = rand_vanilla_plonk_circuit(num_vars, std_rng(), seeded_std_rng());
+                            let (_, circuit) = rand_vanilla_plonk_circuit::<_, BinaryField>(num_vars, std_rng(), seeded_std_rng());
                             circuit
                         }).take(3).collect_vec();
                         (circuit_info, circuits)
@@ -625,11 +624,11 @@ pub(crate) mod test {
                 }
 
                 #[test]
-                fn [<$name _protostar_hyperplonk_vanilla_plonk_with_lookup>]() {
+                fn [<vanilla_plonk_w_lookup_w_ $suffix>]() {
                     run_accumulation_scheme::<_, Protostar<HyperPlonk<$pcs>>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
-                        let (circuit_info, _) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
+                        let (circuit_info, _) = rand_vanilla_plonk_w_lookup_circuit::<_, BinaryField>(num_vars, std_rng(), seeded_std_rng());
                         let circuits = iter::repeat_with(|| {
-                            let (_, circuit) = rand_vanilla_plonk_with_lookup_circuit(num_vars, std_rng(), seeded_std_rng());
+                            let (_, circuit) = rand_vanilla_plonk_w_lookup_circuit::<_, BinaryField>(num_vars, std_rng(), seeded_std_rng());
                             circuit
                         }).take(3).collect_vec();
                         (circuit_info, circuits)
@@ -637,8 +636,8 @@ pub(crate) mod test {
                 }
             }
         };
-        ($name:ident, $pcs:ty) => {
-            tests!($name, $pcs, 2..16);
+        ($suffix:ident, $pcs:ty) => {
+            tests!($suffix, $pcs, 2..16);
         };
     }
 

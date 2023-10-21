@@ -15,6 +15,7 @@ plonkish_backend = { path = "../plonkish_backend", features = ["benchmark"] }
 halo2_proofs = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark" }
 halo2_gadgets = { git = "https://github.com/han0110/halo2.git", branch = "feature/for-benchmark", features = ["unstable"] }
 snark-verifier = { git = "https://github.com/han0110/snark-verifier", branch = "feature/for-benchmark", default-features = false, features = ["loader_halo2", "system_halo2"] }
+zkevm-circuits = { git = "https://github.com/han0110/zkevm-circuits", branch = "feature/for-benchmark" }
 
 # espresso
 ark-ff = { version = "0.4.0", default-features = false }

@@ -20,7 +20,7 @@ use crate::{
     },
     Error,
 };
-use std::{array, collections::HashMap, iter};
+use std::{array, iter};
 
 type SumCheck<F> = ClassicSumCheck<EvaluationsProver<F>>;
 
@@ -143,10 +143,10 @@ pub fn prove_fractional_sum_check<'a, F: PrimeField>(
 
     let expression = sum_check_expression(num_batching);
 
-    let (p_xs, q_xs, x) = layers.iter().rev().fold(
-        Ok((claimed_p_0s, claimed_q_0s, Vec::new())),
+    let (p_xs, q_xs, x) = layers.iter().rev().try_fold(
+        (claimed_p_0s, claimed_q_0s, Vec::new()),
         |result, layers| {
-            let (claimed_p_ys, claimed_q_ys, y) = result?;
+            let (claimed_p_ys, claimed_q_ys, y) = result;
 
             let num_vars = layers[0].num_vars();
             let polys = layers.iter().flat_map(|layer| layer.polys());
@@ -167,7 +167,7 @@ pub fn prove_fractional_sum_check<'a, F: PrimeField>(
                     )?
                 };
 
-                (x, evals)
+                (x, evals.into_values().collect_vec())
             };
 
             transcript.write_field_elements(&evals)?;
@@ -222,10 +222,10 @@ pub fn verify_fractional_sum_check<F: PrimeField>(
 
     let expression = sum_check_expression(num_batching);
 
-    let (p_xs, q_xs, x) = (0..num_vars).fold(
-        Ok((claimed_p_0s, claimed_q_0s, Vec::new())),
+    let (p_xs, q_xs, x) = (0..num_vars).try_fold(
+        (claimed_p_0s, claimed_q_0s, Vec::new()),
         |result, num_vars| {
-            let (claimed_p_ys, claimed_q_ys, y) = result?;
+            let (claimed_p_ys, claimed_q_ys, y) = result;
 
             let (mut x, evals) = if num_vars == 0 {
                 let evals = transcript.read_field_elements(4 * num_batching)?;
@@ -249,8 +249,12 @@ pub fn verify_fractional_sum_check<F: PrimeField>(
 
                 let evals = transcript.read_field_elements(4 * num_batching)?;
 
-                let eval_by_query = eval_by_query(&evals);
-                if x_eval != evaluate(&expression, num_vars, &eval_by_query, &[gamma], &[&y], &x) {
+                let query_eval = {
+                    let queries = (0..).map(|idx| Query::new(idx, Rotation::cur()));
+                    let evals = izip!(queries, evals.iter().cloned()).collect();
+                    evaluate::<_, usize>(&expression, num_vars, &evals, &[gamma], &[&y], &x)
+                };
+                if x_eval != query_eval {
                     return Err(err_unmatched_sum_check_output());
                 }
 
@@ -293,14 +297,6 @@ fn layer_down_claim<F: PrimeField>(evals: &[F], mu: F) -> (Vec<F>, Vec<F>) {
         .tuples()
         .map(|(&p_l, &p_r, &q_l, &q_r)| (p_l + mu * (p_r - p_l), q_l + mu * (q_r - q_l)))
         .unzip()
-}
-
-fn eval_by_query<F: PrimeField>(evals: &[F]) -> HashMap<Query, F> {
-    izip!(
-        (0..).map(|idx| Query::new(idx, Rotation::cur())),
-        evals.iter().cloned()
-    )
-    .collect()
 }
 
 fn err_unmatched_sum_check_output() -> Error {

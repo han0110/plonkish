@@ -1,4 +1,4 @@
-use crate::util::{parallel::parallelize, BigUint, Itertools};
+use crate::util::{izip_eq, parallel::parallelize, BigUint, Itertools};
 use halo2_curves::{
     bn256, grumpkin,
     pairing::{self, MillerLoopResult},
@@ -7,13 +7,11 @@ use halo2_curves::{
 use num_integer::Integer;
 use std::{borrow::Borrow, fmt::Debug, iter};
 
-mod bh;
 mod fft;
 mod msm;
 
-pub use bh::BooleanHypercube;
 pub use bitvec::field::BitField;
-pub use fft::fft;
+pub use fft::radix2_fft;
 pub use halo2_curves::{
     group::{
         ff::{
@@ -25,7 +23,7 @@ pub use halo2_curves::{
     },
     Coordinates, CurveAffine, CurveExt,
 };
-pub use msm::{fixed_base_msm, variable_base_msm, window_size, window_table};
+pub use msm::{fixed_base_msm, variable_base_msm, window_size, window_table, Msm};
 
 pub trait MultiMillerLoop: pairing::MultiMillerLoop + Debug + Sync {
     fn pairings_product_is_identity(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> bool {
@@ -103,8 +101,7 @@ pub fn inner_product<'a, 'b, F: Field>(
     lhs: impl IntoIterator<Item = &'a F>,
     rhs: impl IntoIterator<Item = &'b F>,
 ) -> F {
-    lhs.into_iter()
-        .zip_eq(rhs.into_iter())
+    izip_eq!(lhs, rhs)
         .map(|(lhs, rhs)| *lhs * rhs)
         .reduce(|acc, product| acc + product)
         .unwrap_or_default()
@@ -118,19 +115,20 @@ pub fn barycentric_weights<F: Field>(points: &[F]) -> Vec<F> {
             points
                 .iter()
                 .enumerate()
-                .filter_map(|(i, point_i)| (i != j).then(|| *point_j - point_i))
+                .filter(|(i, _)| i != &j)
+                .map(|(_, point_i)| *point_j - point_i)
                 .reduce(|acc, value| acc * &value)
                 .unwrap_or(F::ONE)
         })
         .collect_vec();
-    weights.iter_mut().batch_invert();
+    weights.batch_invert();
     weights
 }
 
 pub fn barycentric_interpolate<F: Field>(weights: &[F], points: &[F], evals: &[F], x: &F) -> F {
     let (coeffs, sum_inv) = {
         let mut coeffs = points.iter().map(|point| *x - point).collect_vec();
-        coeffs.iter_mut().batch_invert();
+        coeffs.batch_invert();
         coeffs.iter_mut().zip(weights).for_each(|(coeff, weight)| {
             *coeff *= weight;
         });
@@ -201,6 +199,10 @@ pub fn fe_truncated<F: PrimeField>(fe: F, num_bits: usize) -> F {
     repr.as_mut()[num_bytes + 1..].fill(0);
     repr.as_mut()[num_bytes] &= (1 << num_bits_last_byte) - 1;
     F::from_repr(repr).unwrap()
+}
+
+pub fn fe_to_bytes<F: PrimeField>(fe: impl Borrow<F>) -> Vec<u8> {
+    fe.borrow().to_repr().as_ref().to_vec()
 }
 
 pub fn usize_from_bits_le(bits: &[bool]) -> usize {

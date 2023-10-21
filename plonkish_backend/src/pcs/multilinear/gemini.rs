@@ -4,13 +4,12 @@
 use crate::{
     pcs::{
         multilinear::additive,
-        univariate::{UnivariateKzg, UnivariateKzgCommitment},
+        univariate::{err_too_large_deree, UnivariateKzg, UnivariateKzgCommitment},
         Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::{
         multilinear::{merge_into, MultilinearPolynomial},
-        univariate::{UnivariateBasis::Monomial, UnivariatePolynomial},
-        Polynomial,
+        univariate::UnivariatePolynomial,
     },
     util::{
         arithmetic::{squares, Field, MultiMillerLoop},
@@ -55,11 +54,8 @@ where
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         if pp.degree() + 1 < poly.evals().len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to commit (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.evals().len()
-            )));
+            let got = poly.evals().len() - 1;
+            return Err(err_too_large_deree("commit", pp.degree(), got));
         }
 
         Ok(UnivariateKzg::commit_monomial(pp, poly.evals()))
@@ -85,11 +81,8 @@ where
     ) -> Result<(), Error> {
         let num_vars = point.len();
         if pp.degree() + 1 < poly.evals().len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to open (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.evals().len()
-            )));
+            let got = poly.evals().len() - 1;
+            return Err(err_too_large_deree("open", pp.degree(), got));
         }
 
         if cfg!(feature = "sanity-check") {
@@ -99,12 +92,12 @@ where
 
         let fs = {
             let mut fs = Vec::with_capacity(num_vars);
-            fs.push(UnivariatePolynomial::new(Monomial, poly.evals().to_vec()));
+            fs.push(UnivariatePolynomial::monomial(poly.evals().to_vec()));
             for x_i in &point[..num_vars - 1] {
                 let f_i_minus_one = fs.last().unwrap().coeffs();
                 let mut f_i = Vec::with_capacity(f_i_minus_one.len() >> 1);
                 merge_into(&mut f_i, f_i_minus_one, x_i, 1, 0);
-                fs.push(UnivariatePolynomial::new(Monomial, f_i));
+                fs.push(UnivariatePolynomial::monomial(f_i));
             }
 
             if cfg!(feature = "sanity-check") {
@@ -214,10 +207,8 @@ where
 mod test {
     use crate::{
         pcs::{
-            multilinear::{
-                gemini::Gemini,
-                test::{run_batch_commit_open_verify, run_commit_open_verify},
-            },
+            multilinear::gemini::Gemini,
+            test::{run_batch_commit_open_verify, run_commit_open_verify},
             univariate::UnivariateKzg,
         },
         util::transcript::Keccak256Transcript,

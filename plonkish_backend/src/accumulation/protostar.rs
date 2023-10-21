@@ -4,7 +4,7 @@ use crate::{
         PlonkishNark, PlonkishNarkInstance,
     },
     backend::PlonkishBackend,
-    pcs::{AdditiveCommitment, PolynomialCommitmentScheme},
+    pcs::{Additive, PolynomialCommitmentScheme},
     util::{
         arithmetic::{inner_product, powers, Field},
         chain,
@@ -136,7 +136,7 @@ where
         cross_term_comms: &[Pcs::Commitment],
         r: &F,
     ) where
-        Pcs::Commitment: AdditiveCommitment<F>,
+        Pcs::Commitment: Additive<F>,
     {
         self.instance
             .fold_uncompressed(&rhs.instance, cross_term_comms, r);
@@ -154,7 +154,7 @@ where
         compressed_cross_term_sums: &[F],
         r: &F,
     ) where
-        Pcs::Commitment: AdditiveCommitment<F>,
+        Pcs::Commitment: Additive<F>,
     {
         self.instance.fold_compressed(
             &rhs.instance,
@@ -257,19 +257,19 @@ where
 
     fn fold_uncompressed(&mut self, rhs: &Self, cross_term_comms: &[C], r: &F)
     where
-        C: AdditiveCommitment<F>,
+        C: Additive<F>,
     {
         let one = F::ONE;
         let powers_of_r = powers(*r).take(cross_term_comms.len() + 2).collect_vec();
         izip_eq!(&mut self.instances, &rhs.instances)
             .for_each(|(lhs, rhs)| izip_eq!(lhs, rhs).for_each(|(lhs, rhs)| *lhs += &(*rhs * r)));
         izip_eq!(&mut self.witness_comms, &rhs.witness_comms)
-            .for_each(|(lhs, rhs)| *lhs = C::sum_with_scalar([&one, r], [lhs, rhs]));
+            .for_each(|(lhs, rhs)| *lhs = C::msm([&one, r], [lhs, rhs]));
         izip_eq!(&mut self.challenges, &rhs.challenges).for_each(|(lhs, rhs)| *lhs += &(*rhs * r));
         self.u += &(rhs.u * r);
         self.e_comm = {
             let comms = chain![[&self.e_comm], cross_term_comms, [&rhs.e_comm]];
-            C::sum_with_scalar(&powers_of_r, comms)
+            C::msm(&powers_of_r, comms)
         };
     }
 
@@ -280,7 +280,7 @@ where
         compressed_cross_term_sums: &[F],
         r: &F,
     ) where
-        C: AdditiveCommitment<F>,
+        C: Additive<F>,
     {
         let one = F::ONE;
         let powers_of_r = powers(*r)
@@ -289,12 +289,12 @@ where
         izip_eq!(&mut self.instances, &rhs.instances)
             .for_each(|(lhs, rhs)| izip_eq!(lhs, rhs).for_each(|(lhs, rhs)| *lhs += &(*rhs * r)));
         izip_eq!(&mut self.witness_comms, &rhs.witness_comms)
-            .for_each(|(lhs, rhs)| *lhs = C::sum_with_scalar([&one, r], [lhs, rhs]));
+            .for_each(|(lhs, rhs)| *lhs = C::msm([&one, r], [lhs, rhs]));
         izip_eq!(&mut self.challenges, &rhs.challenges).for_each(|(lhs, rhs)| *lhs += &(*rhs * r));
         self.u += &(rhs.u * r);
         self.e_comm = {
             let comms = [&self.e_comm, zeta_cross_term_comm, &rhs.e_comm];
-            C::sum_with_scalar(&powers_of_r[..3], comms)
+            C::msm(&powers_of_r[..3], comms)
         };
         *self.compressed_e_sum.as_mut().unwrap() += &inner_product(
             &powers_of_r[1..],

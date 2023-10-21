@@ -3,7 +3,7 @@ pub use vanilla_plonk::VanillaPlonk;
 mod vanilla_plonk {
     use crate::{
         frontend::halo2::CircuitExt,
-        util::{arithmetic::Field, Itertools},
+        util::{arithmetic::Field, chain, Itertools},
     };
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
@@ -100,19 +100,18 @@ mod vanilla_plonk {
         fn rand(k: usize, mut rng: impl RngCore) -> Self {
             let mut rand_row =
                 || [(); 8].map(|_| Assigned::Rational(F::random(&mut rng), F::random(&mut rng)));
-            let values = iter::empty()
-                .chain(Some(rand_row()))
-                .chain(
-                    iter::repeat_with(|| {
-                        let mut values = rand_row();
-                        let [q_l, q_r, q_m, q_o, _, w_l, w_r, w_o] = values;
-                        values[4] = -(q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o);
-                        values
-                    })
-                    .take((1 << k) - 7)
-                    .collect_vec(),
-                )
-                .collect();
+            let values = chain![
+                [rand_row()],
+                iter::repeat_with(|| {
+                    let mut values = rand_row();
+                    let [q_l, q_r, q_m, q_o, _, w_l, w_r, w_o] = values;
+                    values[4] = -(q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o);
+                    values
+                })
+                .take((1 << k) - 7)
+                .collect_vec(),
+            ]
+            .collect();
             Self(k, values)
         }
 

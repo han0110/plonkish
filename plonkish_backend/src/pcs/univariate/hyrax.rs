@@ -1,15 +1,22 @@
 use crate::{
     pcs::{
-        multilinear::{
-            additive, err_too_many_variates,
-            ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParam},
+        univariate::{
+            additive, err_too_large_deree,
+            ipa::{
+                UnivariateIpa, UnivariateIpaCommitment, UnivariateIpaParam,
+                UnivariateIpaVerifierParam,
+            },
             validate_input,
         },
         Additive, Evaluation, Point, PolynomialCommitmentScheme,
     },
-    poly::multilinear::MultilinearPolynomial,
+    poly::univariate::{UnivariateBasis::*, UnivariatePolynomial},
     util::{
-        arithmetic::{batch_projective_to_affine, div_ceil, variable_base_msm, CurveAffine, Group},
+        arithmetic::{
+            batch_projective_to_affine, div_ceil, powers, squares, variable_base_msm, CurveAffine,
+            Field, Group,
+        },
+        chain, izip,
         parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
@@ -20,39 +27,47 @@ use rand::RngCore;
 use std::{borrow::Cow, iter, marker::PhantomData};
 
 #[derive(Clone, Debug)]
-pub struct MultilinearHyrax<C: CurveAffine>(PhantomData<C>);
+pub struct UnivariateHyrax<C: CurveAffine>(PhantomData<C>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearHyraxParam<C: CurveAffine> {
-    num_vars: usize,
-    batch_num_vars: usize,
-    row_num_vars: usize,
-    ipa: MultilinearIpaParam<C>,
+pub struct UnivariateHyraxParam<C: CurveAffine> {
+    k: usize,
+    batch_k: usize,
+    row_k: usize,
+    ipa: UnivariateIpaParam<C>,
 }
 
-impl<C: CurveAffine> MultilinearHyraxParam<C> {
-    pub fn num_vars(&self) -> usize {
-        self.num_vars
+impl<C: CurveAffine> UnivariateHyraxParam<C> {
+    pub fn k(&self) -> usize {
+        self.k
     }
 
-    pub fn batch_num_vars(&self) -> usize {
-        self.batch_num_vars
+    pub fn degree(&self) -> usize {
+        (1 << self.k) - 1
     }
 
-    pub fn row_num_vars(&self) -> usize {
-        self.row_num_vars
+    pub fn batch_k(&self) -> usize {
+        self.batch_k
+    }
+
+    pub fn row_k(&self) -> usize {
+        self.row_k
     }
 
     pub fn row_len(&self) -> usize {
-        1 << self.row_num_vars
+        1 << self.row_k
     }
 
     pub fn num_chunks(&self) -> usize {
-        1 << (self.num_vars - self.row_num_vars)
+        1 << (self.k - self.row_k)
     }
 
-    pub fn g(&self) -> &[C] {
-        self.ipa.g()
+    pub fn monomial(&self) -> &[C] {
+        self.ipa.monomial()
+    }
+
+    pub fn lagrange(&self) -> &[C] {
+        self.ipa.lagrange()
     }
 
     pub fn h(&self) -> &C {
@@ -60,23 +75,45 @@ impl<C: CurveAffine> MultilinearHyraxParam<C> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MultilinearHyraxCommitment<C: CurveAffine>(pub Vec<C>);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UnivariateHyraxVerifierParam<C: CurveAffine> {
+    k: usize,
+    batch_k: usize,
+    row_k: usize,
+    ipa: UnivariateIpaVerifierParam<C>,
+}
 
-impl<C: CurveAffine> Default for MultilinearHyraxCommitment<C> {
+impl<C: CurveAffine> UnivariateHyraxVerifierParam<C> {
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    pub fn row_k(&self) -> usize {
+        self.row_k
+    }
+
+    pub fn num_chunks(&self) -> usize {
+        1 << (self.k - self.row_k)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnivariateHyraxCommitment<C: CurveAffine>(pub Vec<C>);
+
+impl<C: CurveAffine> Default for UnivariateHyraxCommitment<C> {
     fn default() -> Self {
         Self(Vec::new())
     }
 }
 
-impl<C: CurveAffine> AsRef<[C]> for MultilinearHyraxCommitment<C> {
+impl<C: CurveAffine> AsRef<[C]> for UnivariateHyraxCommitment<C> {
     fn as_ref(&self) -> &[C] {
         &self.0
     }
 }
 
 // TODO: Batch all MSMs into one
-impl<C: CurveAffine> Additive<C::Scalar> for MultilinearHyraxCommitment<C> {
+impl<C: CurveAffine> Additive<C::Scalar> for UnivariateHyraxCommitment<C> {
     fn msm<'a, 'b>(
         scalars: impl IntoIterator<Item = &'a C::Scalar>,
         bases: impl IntoIterator<Item = &'b Self>,
@@ -98,36 +135,37 @@ impl<C: CurveAffine> Additive<C::Scalar> for MultilinearHyraxCommitment<C> {
                 *output = variable_base_msm(scalars.clone(), bases.iter().map(|base| &base.0[idx]))
             }
         });
-        MultilinearHyraxCommitment(batch_projective_to_affine(&output))
+        UnivariateHyraxCommitment(batch_projective_to_affine(&output))
     }
 }
 
-impl<C> PolynomialCommitmentScheme<C::Scalar> for MultilinearHyrax<C>
+impl<C> PolynomialCommitmentScheme<C::Scalar> for UnivariateHyrax<C>
 where
     C: CurveAffine + Serialize + DeserializeOwned,
     C::ScalarExt: Serialize + DeserializeOwned,
 {
-    type Param = MultilinearHyraxParam<C>;
-    type ProverParam = MultilinearHyraxParam<C>;
-    type VerifierParam = MultilinearHyraxParam<C>;
-    type Polynomial = MultilinearPolynomial<C::Scalar>;
-    type Commitment = MultilinearHyraxCommitment<C>;
+    type Param = UnivariateHyraxParam<C>;
+    type ProverParam = UnivariateHyraxParam<C>;
+    type VerifierParam = UnivariateHyraxVerifierParam<C>;
+    type Polynomial = UnivariatePolynomial<C::Scalar>;
+    type Commitment = UnivariateHyraxCommitment<C>;
     type CommitmentChunk = C;
 
     fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
+        // TODO: Support arbitrary degree.
         assert!(poly_size.is_power_of_two());
         assert!(batch_size > 0 && batch_size <= poly_size);
 
-        let num_vars = poly_size.ilog2() as usize;
-        let batch_num_vars = (poly_size * batch_size).next_power_of_two().ilog2() as usize;
-        let row_num_vars = div_ceil(batch_num_vars, 2);
+        let k = poly_size.ilog2() as usize;
+        let batch_k = (poly_size * batch_size).next_power_of_two().ilog2() as usize;
+        let row_k = div_ceil(batch_k, 2);
 
-        let ipa = MultilinearIpa::setup(1 << row_num_vars, 0, rng)?;
+        let ipa = UnivariateIpa::setup(1 << row_k, 0, rng)?;
 
         Ok(Self::Param {
-            num_vars,
-            batch_num_vars,
-            row_num_vars,
+            k,
+            batch_k,
+            row_k,
             ipa,
         })
     }
@@ -140,44 +178,52 @@ where
         assert!(poly_size.is_power_of_two());
         assert!(batch_size > 0 && batch_size <= poly_size);
 
-        let num_vars = poly_size.ilog2() as usize;
-        let batch_num_vars = (poly_size * batch_size).next_power_of_two().ilog2() as usize;
-        let row_num_vars = div_ceil(batch_num_vars, 2);
-        if param.row_num_vars() < row_num_vars {
-            return Err(err_too_many_variates(
-                "trim",
-                param.row_num_vars(),
-                row_num_vars,
-            ));
+        let k = poly_size.ilog2() as usize;
+        let batch_k = (poly_size * batch_size).next_power_of_two().ilog2() as usize;
+        let row_k = div_ceil(batch_k, 2);
+        if param.row_k() < row_k {
+            return Err(err_too_large_deree("trim", param.degree(), poly_size - 1));
         }
 
-        let (ipa, _) = MultilinearIpa::trim(&param.ipa, 1 << row_num_vars, 0)?;
+        let (ipa_pp, ipa_vp) = UnivariateIpa::trim(&param.ipa, 1 << row_k, 0)?;
 
-        let param = Self::ProverParam {
-            num_vars,
-            batch_num_vars,
-            row_num_vars,
-            ipa,
+        let pp = Self::ProverParam {
+            k,
+            batch_k,
+            row_k,
+            ipa: ipa_pp,
         };
-        Ok((param.clone(), param))
+        let vp = Self::VerifierParam {
+            k,
+            batch_k,
+            row_k,
+            ipa: ipa_vp,
+        };
+        Ok((pp, vp))
     }
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
-        validate_input("commit", pp.num_vars(), [poly], None)?;
+        validate_input("commit", pp.degree(), [poly])?;
+
+        let bases = match poly.basis() {
+            Monomial => pp.monomial(),
+            Lagrange => pp.lagrange(),
+        };
 
         let row_len = pp.row_len();
-        let scalars = poly.evals();
+        let scalars = poly.coeffs();
         let comm = {
             let mut comm = vec![C::CurveExt::identity(); pp.num_chunks()];
             parallelize(&mut comm, |(comm, start)| {
                 for (comm, offset) in comm.iter_mut().zip((start * row_len..).step_by(row_len)) {
-                    *comm = variable_base_msm(&scalars[offset..offset + row_len], pp.g());
+                    let row = &scalars[offset..(offset + row_len).min(scalars.len())];
+                    *comm = variable_base_msm(row, &bases[..row.len()]);
                 }
             });
             batch_projective_to_affine(&comm)
         };
 
-        Ok(MultilinearHyraxCommitment(comm))
+        Ok(UnivariateHyraxCommitment(comm))
     }
 
     fn batch_commit<'a>(
@@ -188,17 +234,21 @@ where
         if polys.is_empty() {
             return Ok(Vec::new());
         }
-        validate_input("batch commit", pp.num_vars(), polys.iter().copied(), None)?;
+        validate_input("batch commit", pp.degree(), polys.iter().copied())?;
 
+        let row_len = pp.row_len();
         let scalars = polys
             .iter()
-            .flat_map(|poly| poly.evals().chunks(pp.row_len()))
+            .flat_map(|poly| {
+                chain![poly.coeffs().chunks(row_len), iter::repeat([].as_slice())]
+                    .take(pp.num_chunks())
+            })
             .collect_vec();
         let comms = {
             let mut comms = vec![C::CurveExt::identity(); scalars.len()];
             parallelize(&mut comms, |(comms, start)| {
                 for (comm, row) in comms.iter_mut().zip(&scalars[start..]) {
-                    *comm = variable_base_msm(*row, pp.g());
+                    *comm = variable_base_msm(*row, &pp.monomial()[..row.len()]);
                 }
             });
             batch_projective_to_affine(&comms)
@@ -208,7 +258,7 @@ where
             .into_iter()
             .chunks(pp.num_chunks())
             .into_iter()
-            .map(|comm| MultilinearHyraxCommitment(comm.collect_vec()))
+            .map(|comm| UnivariateHyraxCommitment(comm.collect_vec()))
             .collect_vec())
     }
 
@@ -221,32 +271,48 @@ where
         eval: &C::Scalar,
         transcript: &mut impl TranscriptWrite<C, C::Scalar>,
     ) -> Result<(), Error> {
-        validate_input("open", pp.num_vars(), [poly], [point])?;
+        assert_eq!(poly.basis(), Monomial);
+
+        validate_input("open", pp.degree(), [poly])?;
 
         if cfg!(feature = "sanity-check") {
+            assert_eq!(comm.0.len(), pp.num_chunks());
             assert_eq!(Self::commit(pp, poly).unwrap().0, comm.0);
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let (lo, hi) = point.split_at(pp.row_num_vars());
-        let poly = if hi.is_empty() {
+        let row_len = pp.row_len();
+        let scalars = powers(squares(*point).nth(pp.row_k()).unwrap())
+            .take(pp.num_chunks())
+            .collect_vec();
+        let poly = if pp.num_chunks() == 1 {
             Cow::Borrowed(poly)
         } else {
-            Cow::Owned(poly.fix_last_vars(hi))
+            let mut coeffs = vec![C::Scalar::ZERO; row_len];
+            if let Some(row) = poly.coeffs().chunks(row_len).next() {
+                coeffs[..row.len()].copy_from_slice(row);
+            }
+            izip!(&scalars, poly.coeffs().chunks(row_len))
+                .skip(1)
+                .for_each(|(scalar, row)| {
+                    parallelize(&mut coeffs, |(coeffs, start)| {
+                        let scalar = *scalar;
+                        izip!(coeffs, &row[start..]).for_each(|(lhs, rhs)| *lhs += scalar * rhs)
+                    });
+                });
+            Cow::Owned(UnivariatePolynomial::monomial(coeffs))
         };
         let comm = if cfg!(feature = "sanity-check") {
-            MultilinearIpaCommitment(if hi.is_empty() {
-                assert_eq!(comm.0.len(), 1);
+            UnivariateIpaCommitment(if pp.num_chunks() == 1 {
                 comm.0[0]
             } else {
-                let scalars = MultilinearPolynomial::eq_xy(hi).into_evals();
                 variable_base_msm(&scalars, &comm.0).into()
             })
         } else {
-            MultilinearIpaCommitment::default()
+            UnivariateIpaCommitment::default()
         };
 
-        MultilinearIpa::open(&pp.ipa, &poly, &comm, &lo.to_vec(), eval, transcript)
+        UnivariateIpa::open(&pp.ipa, &poly, &comm, point, eval, transcript)
     }
 
     fn batch_open<'a>(
@@ -259,7 +325,7 @@ where
     ) -> Result<(), Error> {
         let polys = polys.into_iter().collect_vec();
         let comms = comms.into_iter().collect_vec();
-        additive::batch_open::<_, Self>(pp, pp.num_vars(), polys, comms, points, evals, transcript)
+        additive::batch_open::<_, Self>(pp, polys, comms, points, evals, transcript)
     }
 
     fn read_commitments(
@@ -270,7 +336,7 @@ where
         iter::repeat_with(|| {
             transcript
                 .read_commitments(vp.num_chunks())
-                .map(MultilinearHyraxCommitment)
+                .map(UnivariateHyraxCommitment)
         })
         .take(num_polys)
         .collect()
@@ -285,17 +351,18 @@ where
     ) -> Result<(), Error> {
         assert_eq!(comm.0.len(), vp.num_chunks());
 
-        let (lo, hi) = point.split_at(vp.row_num_vars());
         let comm = {
-            MultilinearIpaCommitment(if hi.is_empty() {
-                assert_eq!(vp.num_chunks(), 1);
+            UnivariateIpaCommitment(if vp.num_chunks() == 1 {
                 comm.0[0]
             } else {
-                let scalars = MultilinearPolynomial::eq_xy(hi).into_evals();
+                let scalars = powers(squares(*point).nth(vp.row_k()).unwrap())
+                    .take(vp.num_chunks())
+                    .collect_vec();
                 variable_base_msm(&scalars, &comm.0).into()
             })
         };
-        MultilinearIpa::verify(&vp.ipa, &comm, &lo.to_vec(), eval, transcript)
+
+        UnivariateIpa::verify(&vp.ipa, &comm, point, eval, transcript)
     }
 
     fn batch_verify<'a>(
@@ -306,7 +373,7 @@ where
         transcript: &mut impl TranscriptRead<C, C::Scalar>,
     ) -> Result<(), Error> {
         let comms = comms.into_iter().collect_vec();
-        additive::batch_verify::<_, Self>(vp, vp.num_vars(), comms, points, evals, transcript)
+        additive::batch_verify::<_, Self>(vp, comms, points, evals, transcript)
     }
 }
 
@@ -314,14 +381,14 @@ where
 mod test {
     use crate::{
         pcs::{
-            multilinear::hyrax::MultilinearHyrax,
             test::{run_batch_commit_open_verify, run_commit_open_verify},
+            univariate::hyrax::UnivariateHyrax,
         },
         util::transcript::Keccak256Transcript,
     };
     use halo2_curves::pasta::pallas::Affine;
 
-    type Pcs = MultilinearHyrax<Affine>;
+    type Pcs = UnivariateHyrax<Affine>;
 
     #[test]
     fn commit_open_verify() {

@@ -23,14 +23,14 @@ use std::{iter, marker::PhantomData, ops::Neg, slice};
 pub struct MultilinearKzg<M: MultiMillerLoop>(PhantomData<M>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearKzgParams<M: MultiMillerLoop> {
+pub struct MultilinearKzgParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     eqs: Vec<Vec<M::G1Affine>>,
     g2: M::G2Affine,
     ss: Vec<M::G2Affine>,
 }
 
-impl<M: MultiMillerLoop> MultilinearKzgParams<M> {
+impl<M: MultiMillerLoop> MultilinearKzgParam<M> {
     pub fn num_vars(&self) -> usize {
         self.eqs.len()
     }
@@ -53,12 +53,12 @@ impl<M: MultiMillerLoop> MultilinearKzgParams<M> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearKzgProverParams<M: MultiMillerLoop> {
+pub struct MultilinearKzgProverParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     eqs: Vec<Vec<M::G1Affine>>,
 }
 
-impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
+impl<M: MultiMillerLoop> MultilinearKzgProverParam<M> {
     pub fn num_vars(&self) -> usize {
         self.eqs.len() - 1
     }
@@ -77,13 +77,13 @@ impl<M: MultiMillerLoop> MultilinearKzgProverParams<M> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearKzgVerifierParams<M: MultiMillerLoop> {
+pub struct MultilinearKzgVerifierParam<M: MultiMillerLoop> {
     g1: M::G1Affine,
     g2: M::G2Affine,
     ss: Vec<M::G2Affine>,
 }
 
-impl<M: MultiMillerLoop> MultilinearKzgVerifierParams<M> {
+impl<M: MultiMillerLoop> MultilinearKzgVerifierParam<M> {
     pub fn num_vars(&self) -> usize {
         self.ss.len()
     }
@@ -154,15 +154,16 @@ where
     M::G1Affine: Serialize + DeserializeOwned,
     M::G2Affine: Serialize + DeserializeOwned,
 {
-    type Param = MultilinearKzgParams<M>;
-    type ProverParam = MultilinearKzgProverParams<M>;
-    type VerifierParam = MultilinearKzgVerifierParams<M>;
+    type Param = MultilinearKzgParam<M>;
+    type ProverParam = MultilinearKzgProverParam<M>;
+    type VerifierParam = MultilinearKzgVerifierParam<M>;
     type Polynomial = MultilinearPolynomial<M::Scalar>;
     type Commitment = MultilinearKzgCommitment<M::G1Affine>;
     type CommitmentChunk = M::G1Affine;
 
     fn setup(poly_size: usize, _: usize, mut rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());
+
         let num_vars = poly_size.ilog2() as usize;
         let ss = iter::repeat_with(|| M::Scalar::random(&mut rng))
             .take(num_vars)

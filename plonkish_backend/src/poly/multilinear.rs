@@ -92,7 +92,7 @@ impl<F: Field> Polynomial<F> for MultilinearPolynomial<F> {
     }
 
     fn evaluate(&self, point: &Self::Point) -> F {
-        MultilinearPolynomial::evaluate(self, point.as_slice())
+        MultilinearPolynomial::evaluate(self, point)
     }
 
     #[cfg(any(test, feature = "benchmark"))]
@@ -165,23 +165,7 @@ impl<F: Field> MultilinearPolynomial<F> {
 
     pub fn evaluate(&self, x: &[F]) -> F {
         assert_eq!(x.len(), self.num_vars);
-
-        let mut evals = Cow::Borrowed(self.evals());
-        let mut bits = Vec::new();
-        let mut buf = Vec::with_capacity(self.evals.len() >> 1);
-        for x_i in x.iter() {
-            if x_i == &F::ZERO || x_i == &F::ONE {
-                bits.push(x_i == &F::ONE);
-                continue;
-            }
-
-            let distance = bits.len() + 1;
-            let skip = usize_from_bits_le(&bits);
-            merge_in_place(&mut evals, x_i, distance, skip, &mut buf);
-            bits.clear();
-        }
-
-        evals[usize_from_bits_le(&bits)]
+        evaluate(&self.evals, x)
     }
 
     pub fn fix_last_vars(&self, x: &[F]) -> Self {
@@ -456,6 +440,27 @@ impl<F: Field, BF: Borrow<F>, P: Borrow<MultilinearPolynomial<F>>> Sum<(BF, P)>
 }
 
 impl_index!(MultilinearPolynomial, evals);
+
+pub(crate) fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
+    assert_eq!(1 << x.len(), evals.len());
+
+    let mut evals = Cow::Borrowed(evals);
+    let mut bits = Vec::new();
+    let mut buf = Vec::with_capacity(evals.len() >> 1);
+    for x_i in x.iter() {
+        if x_i == &F::ZERO || x_i == &F::ONE {
+            bits.push(x_i == &F::ONE);
+            continue;
+        }
+
+        let distance = bits.len() + 1;
+        let skip = usize_from_bits_le(&bits);
+        merge_in_place(&mut evals, x_i, distance, skip, &mut buf);
+        bits.clear();
+    }
+
+    evals[usize_from_bits_le(&bits)]
+}
 
 pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: &[F]) -> F {
     if rotation == Rotation::cur() {

@@ -31,13 +31,13 @@ impl<F: PrimeField, H: Hash, S: BrakedownSpec> Clone for MultilinearBrakedown<F,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultilinearBrakedownParams<F: PrimeField> {
+pub struct MultilinearBrakedownParam<F: PrimeField> {
     num_vars: usize,
     num_rows: usize,
     brakedown: Brakedown<F>,
 }
 
-impl<F: PrimeField> MultilinearBrakedownParams<F> {
+impl<F: PrimeField> MultilinearBrakedownParam<F> {
     pub fn num_vars(&self) -> usize {
         self.num_vars
     }
@@ -92,9 +92,9 @@ where
     H: Hash,
     S: BrakedownSpec,
 {
-    type Param = MultilinearBrakedownParams<F>;
-    type ProverParam = MultilinearBrakedownParams<F>;
-    type VerifierParam = MultilinearBrakedownParams<F>;
+    type Param = MultilinearBrakedownParam<F>;
+    type ProverParam = MultilinearBrakedownParam<F>;
+    type VerifierParam = MultilinearBrakedownParam<F>;
     type Polynomial = MultilinearPolynomial<F>;
     type Commitment = MultilinearBrakedownCommitment<F, H>;
     type CommitmentChunk = Output<H>;
@@ -103,7 +103,7 @@ where
         assert!(poly_size.is_power_of_two());
         let num_vars = poly_size.ilog2() as usize;
         let brakedown = Brakedown::new_multilinear::<S>(num_vars, 20.min((1 << num_vars) - 1), rng);
-        Ok(MultilinearBrakedownParams {
+        Ok(MultilinearBrakedownParam {
             num_vars,
             num_rows: (1 << num_vars) / brakedown.row_len(),
             brakedown,
@@ -120,7 +120,7 @@ where
             Ok((param.clone(), param.clone()))
         } else {
             Err(Error::InvalidPcsParam(
-                "Can't trim MultilinearBrakedownParams into different poly_size".to_string(),
+                "Can't trim MultilinearBrakedownParam into different poly_size".to_string(),
             ))
         }
     }

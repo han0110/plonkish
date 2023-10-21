@@ -4,7 +4,7 @@
 use crate::{
     pcs::{
         multilinear::additive,
-        univariate::{UnivariateKzg, UnivariateKzgCommitment},
+        univariate::{err_too_large_deree, UnivariateKzg, UnivariateKzgCommitment},
         Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::{
@@ -54,11 +54,8 @@ where
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         if pp.degree() + 1 < poly.evals().len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to commit (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.evals().len()
-            )));
+            let got = poly.evals().len() - 1;
+            return Err(err_too_large_deree("commit", pp.degree(), got));
         }
 
         Ok(UnivariateKzg::commit_monomial(pp, poly.evals()))
@@ -84,11 +81,8 @@ where
     ) -> Result<(), Error> {
         let num_vars = point.len();
         if pp.degree() + 1 < poly.evals().len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to open (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.evals().len()
-            )));
+            let got = poly.evals().len() - 1;
+            return Err(err_too_large_deree("open", pp.degree(), got));
         }
 
         if cfg!(feature = "sanity-check") {

@@ -1,7 +1,10 @@
 use crate::{
     pcs::{
         multilinear::{additive, quotients},
-        univariate::{UnivariateKzg, UnivariateKzgProverParam, UnivariateKzgVerifierParam},
+        univariate::{
+            err_too_large_deree, UnivariateKzg, UnivariateKzgProverParam,
+            UnivariateKzgVerifierParam,
+        },
         Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::{multilinear::MultilinearPolynomial, univariate::UnivariatePolynomial},
@@ -78,6 +81,8 @@ where
         <UnivariateKzg<M> as PolynomialCommitmentScheme<M::Scalar>>::CommitmentChunk;
 
     fn setup(poly_size: usize, batch_size: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
+        assert!(poly_size.is_power_of_two());
+
         UnivariateKzg::<M>::setup(poly_size, batch_size, rng)
     }
 
@@ -86,11 +91,13 @@ where
         poly_size: usize,
         batch_size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
+        assert!(poly_size.is_power_of_two());
+
         let (commit_pp, vp) = UnivariateKzg::<M>::trim(param, poly_size, batch_size)?;
         let offset = param.monomial_g1().len() - poly_size;
         let open_pp = {
             let monomial_g1 = param.monomial_g1()[offset..].to_vec();
-            UnivariateKzgProverParam::new(monomial_g1, Vec::new())
+            UnivariateKzgProverParam::new(poly_size.ilog2() as usize, monomial_g1, Vec::new())
         };
         let s_offset_g2 = param.powers_of_s_g2()[offset];
 
@@ -102,11 +109,8 @@ where
 
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         if pp.degree() + 1 < poly.evals().len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to commit (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.evals().len()
-            )));
+            let got = poly.evals().len() - 1;
+            return Err(err_too_large_deree("commit", pp.degree(), got));
         }
 
         Ok(UnivariateKzg::commit_monomial(&pp.commit_pp, poly.evals()))
@@ -132,11 +136,8 @@ where
     ) -> Result<(), Error> {
         let num_vars = poly.num_vars();
         if pp.degree() + 1 < poly.evals().len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "Too large degree of poly to open (param supports degree up to {} but got {})",
-                pp.degree(),
-                poly.evals().len()
-            )));
+            let got = poly.evals().len() - 1;
+            return Err(err_too_large_deree("open", pp.degree(), got));
         }
 
         if cfg!(feature = "sanity-check") {

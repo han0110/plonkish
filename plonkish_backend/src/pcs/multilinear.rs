@@ -12,14 +12,14 @@ mod kzg;
 mod zeromorph;
 
 pub use brakedown::{
-    MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,
+    MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParam,
 };
 pub use gemini::Gemini;
-pub use hyrax::{MultilinearHyrax, MultilinearHyraxCommitment, MultilinearHyraxParams};
-pub use ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParams};
+pub use hyrax::{MultilinearHyrax, MultilinearHyraxCommitment, MultilinearHyraxParam};
+pub use ipa::{MultilinearIpa, MultilinearIpaCommitment, MultilinearIpaParam};
 pub use kzg::{
-    MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParams, MultilinearKzgProverParams,
-    MultilinearKzgVerifierParams,
+    MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParam, MultilinearKzgProverParam,
+    MultilinearKzgVerifierParam,
 };
 pub use zeromorph::{Zeromorph, ZeromorphKzgProverParam, ZeromorphKzgVerifierParam};
 

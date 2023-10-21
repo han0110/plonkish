@@ -2,7 +2,7 @@ use crate::{
     poly::univariate::{UnivariateBasis::*, UnivariatePolynomial},
     util::{
         arithmetic::{
-            batch_projective_to_affine, radix2_fft, root_of_unity_inv, CurveAffine, Field,
+            batch_projective_to_affine, radix2_fft, root_of_unity_inv, squares, CurveAffine, Field,
             PrimeField,
         },
         parallel::parallelize,
@@ -11,21 +11,29 @@ use crate::{
     Error,
 };
 
+mod hyrax;
+pub(super) mod ipa;
 mod kzg;
 
+pub use hyrax::{
+    UnivariateHyrax, UnivariateHyraxCommitment, UnivariateHyraxParam, UnivariateHyraxVerifierParam,
+};
+pub use ipa::{
+    UnivariateIpa, UnivariateIpaCommitment, UnivariateIpaParam, UnivariateIpaVerifierParam,
+};
 pub use kzg::{
     UnivariateKzg, UnivariateKzgCommitment, UnivariateKzgParam, UnivariateKzgProverParam,
     UnivariateKzgVerifierParam,
 };
 
-fn monomial_g1_to_lagrange_g1<C: CurveAffine>(monomial_g1: &[C]) -> Vec<C> {
-    assert!(monomial_g1.len().is_power_of_two());
+fn monomial_g_to_lagrange_g<C: CurveAffine>(monomial_g: &[C]) -> Vec<C> {
+    assert!(monomial_g.len().is_power_of_two());
 
-    let k = monomial_g1.len().ilog2() as usize;
-    let n_inv = C::Scalar::TWO_INV.pow_vartime([k as u64]);
+    let k = monomial_g.len().ilog2() as usize;
+    let n_inv = squares(C::Scalar::TWO_INV).nth(k).unwrap();
     let omega_inv = root_of_unity_inv(k);
 
-    let mut lagrange = monomial_g1.iter().map(C::to_curve).collect_vec();
+    let mut lagrange = monomial_g.iter().map(C::to_curve).collect_vec();
     radix2_fft(&mut lagrange, omega_inv, k);
     parallelize(&mut lagrange, |(g, _)| {
         g.iter_mut().for_each(|g| *g *= n_inv)
@@ -49,7 +57,7 @@ fn validate_input<'a, F: Field>(
             }
             Lagrange => {
                 if param_degree + 1 != poly.coeffs().len() {
-                    return Err(err_invalid_evals_len(param_degree + 1, poly.coeffs().len()));
+                    return Err(err_invalid_evals_len(param_degree, poly.coeffs().len() - 1));
                 }
             }
         }
@@ -57,7 +65,7 @@ fn validate_input<'a, F: Field>(
     Ok(())
 }
 
-fn err_too_large_deree(function: &str, upto: usize, got: usize) -> Error {
+pub(super) fn err_too_large_deree(function: &str, upto: usize, got: usize) -> Error {
     Error::InvalidPcsParam(if function == "trim" {
         format!("Too large degree to {function} (param supports degree up to {upto} but got {got})")
     } else {

@@ -1,6 +1,6 @@
 use crate::{
     pcs::{
-        univariate::{additive, err_too_large_deree, monomial_g1_to_lagrange_g1, validate_input},
+        univariate::{additive, err_too_large_deree, monomial_g_to_lagrange_g, validate_input},
         Additive, Evaluation, Point, PolynomialCommitmentScheme,
     },
     poly::univariate::{UnivariateBasis::*, UnivariatePolynomial},
@@ -45,12 +45,17 @@ impl<M: MultiMillerLoop> UnivariateKzg<M> {
     deserialize = "M::G1Affine: DeserializeOwned, M::G2Affine: DeserializeOwned",
 ))]
 pub struct UnivariateKzgParam<M: MultiMillerLoop> {
+    k: usize,
     monomial_g1: Vec<M::G1Affine>,
     lagrange_g1: Vec<M::G1Affine>,
     powers_of_s_g2: Vec<M::G2Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
     pub fn degree(&self) -> usize {
         self.monomial_g1.len() - 1
     }
@@ -78,16 +83,26 @@ impl<M: MultiMillerLoop> UnivariateKzgParam<M> {
     deserialize = "M::G1Affine: DeserializeOwned",
 ))]
 pub struct UnivariateKzgProverParam<M: MultiMillerLoop> {
+    k: usize,
     monomial_g1: Vec<M::G1Affine>,
     lagrange_g1: Vec<M::G1Affine>,
 }
 
 impl<M: MultiMillerLoop> UnivariateKzgProverParam<M> {
-    pub(crate) fn new(monomial_g1: Vec<M::G1Affine>, lagrange_g1: Vec<M::G1Affine>) -> Self {
+    pub(crate) fn new(
+        k: usize,
+        monomial_g1: Vec<M::G1Affine>,
+        lagrange_g1: Vec<M::G1Affine>,
+    ) -> Self {
         Self {
+            k,
             monomial_g1,
             lagrange_g1,
         }
+    }
+
+    pub fn k(&self) -> usize {
+        self.k
     }
 
     pub fn degree(&self) -> usize {
@@ -222,6 +237,7 @@ where
         };
 
         Ok(Self::Param {
+            k: poly_size.ilog2() as usize,
             monomial_g1,
             lagrange_g1,
             powers_of_s_g2,
@@ -243,9 +259,10 @@ where
         let lagrange_g1 = if param.lagrange_g1.len() == poly_size {
             param.lagrange_g1.clone()
         } else {
-            monomial_g1_to_lagrange_g1(&monomial_g1)
+            monomial_g_to_lagrange_g(&monomial_g1)
         };
-        let pp = Self::ProverParam::new(monomial_g1, lagrange_g1);
+
+        let pp = Self::ProverParam::new(poly_size.ilog2() as usize, monomial_g1, lagrange_g1);
         let vp = Self::VerifierParam {
             g1: param.g1(),
             g2: param.g2(),
@@ -281,6 +298,8 @@ where
         eval: &M::Scalar,
         transcript: &mut impl TranscriptWrite<M::G1Affine, M::Scalar>,
     ) -> Result<(), Error> {
+        assert_eq!(poly.basis(), Monomial);
+
         validate_input("open", pp.degree(), [poly])?;
 
         if cfg!(feature = "sanity-check") {
@@ -323,9 +342,8 @@ where
         num_polys: usize,
         transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<Vec<Self::Commitment>, Error> {
-        transcript
-            .read_commitments(num_polys)
-            .map(|comms| comms.into_iter().map(UnivariateKzgCommitment).collect_vec())
+        let comms = transcript.read_commitments(num_polys)?;
+        Ok(comms.into_iter().map(UnivariateKzgCommitment).collect())
     }
 
     fn verify(

@@ -1,7 +1,8 @@
 use crate::{
     backend::{
+        hyperplonk::{HyperPlonkProverParam, HyperPlonkVerifierParam},
         unihyperplonk::{
-            preprocessor::{batch_size, compose, permutation_polys},
+            preprocessor::{batch_size, preprocess},
             prover::{
                 instance_polys, lookup_compressed_polys, lookup_h_polys, lookup_m_polys,
                 permutation_z_polys, prove_zero_check,
@@ -11,72 +12,74 @@ use crate::{
         PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo, WitnessEncoding,
     },
     pcs::{Additive, PolynomialCommitmentScheme},
-    piop::multilinear_eval::ph23::{prove_multilinear_eval, s_polys, verify_multilinear_eval},
+    piop::multilinear_eval::ph23::{self, s_polys},
     poly::{multilinear::MultilinearPolynomial, univariate::UnivariatePolynomial},
     util::{
-        arithmetic::powers,
+        arithmetic::{powers, WithSmallOrderMulGroup},
         chain, end_timer,
-        expression::{
-            rotate::{Lexical, Rotatable},
-            Expression,
-        },
+        expression::rotate::{Lexical, Rotatable},
         start_timer,
         transcript::{TranscriptRead, TranscriptWrite},
         Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
-use halo2_curves::ff::WithSmallOrderMulGroup;
 use rand::RngCore;
-use std::{borrow::Cow, fmt::Debug, hash::Hash, iter, marker::PhantomData};
+use std::{borrow::Cow, fmt::Debug, hash::Hash, iter, marker::PhantomData, ops::Deref};
 
 pub(crate) mod preprocessor;
 pub(crate) mod prover;
 pub(crate) mod verifier;
 
 #[derive(Clone, Debug)]
-pub struct UniHyperPlonk<Pcs>(PhantomData<Pcs>);
+pub struct UniHyperPlonk<Pcs, const ADDITIVE_PCS: bool>(PhantomData<Pcs>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "F: Serialize", deserialize = "F: DeserializeOwned"))]
 pub struct UniHyperPlonkProverParam<F, Pcs>
 where
     F: WithSmallOrderMulGroup<3>,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    pub(crate) pcs: Pcs::ProverParam,
-    pub(crate) num_instances: Vec<usize>,
-    pub(crate) num_witness_polys: Vec<usize>,
-    pub(crate) num_challenges: Vec<usize>,
-    pub(crate) lookups: Vec<Vec<(Expression<F>, Expression<F>)>>,
-    pub(crate) num_permutation_z_polys: usize,
-    pub(crate) num_vars: usize,
-    pub(crate) expression: Expression<F>,
-    pub(crate) preprocess_polys: Vec<MultilinearPolynomial<F>>,
-    pub(crate) preprocess_comms: Vec<Pcs::Commitment>,
-    pub(crate) permutation_polys: Vec<(usize, MultilinearPolynomial<F>)>,
-    pub(crate) permutation_comms: Vec<Pcs::Commitment>,
+    pub(crate) pp: HyperPlonkProverParam<F, Pcs>,
     pub(crate) s_polys: Vec<Vec<F>>,
 }
 
+impl<F, Pcs> Deref for UniHyperPlonkProverParam<F, Pcs>
+where
+    F: WithSmallOrderMulGroup<3>,
+    Pcs: PolynomialCommitmentScheme<F>,
+{
+    type Target = HyperPlonkProverParam<F, Pcs>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pp
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "F: Serialize", deserialize = "F: DeserializeOwned"))]
 pub struct UniHyperPlonkVerifierParam<F, Pcs>
 where
     F: WithSmallOrderMulGroup<3>,
     Pcs: PolynomialCommitmentScheme<F>,
 {
-    pub(crate) pcs: Pcs::VerifierParam,
-    pub(crate) num_instances: Vec<usize>,
-    pub(crate) num_witness_polys: Vec<usize>,
-    pub(crate) num_challenges: Vec<usize>,
-    pub(crate) num_lookups: usize,
-    pub(crate) num_permutation_z_polys: usize,
-    pub(crate) num_vars: usize,
-    pub(crate) expression: Expression<F>,
-    pub(crate) preprocess_comms: Vec<Pcs::Commitment>,
-    pub(crate) permutation_comms: Vec<(usize, Pcs::Commitment)>,
+    pub(crate) vp: HyperPlonkVerifierParam<F, Pcs>,
 }
 
-impl<F, Pcs> PlonkishBackend<F> for UniHyperPlonk<Pcs>
+impl<F, Pcs> Deref for UniHyperPlonkVerifierParam<F, Pcs>
+where
+    F: WithSmallOrderMulGroup<3>,
+    Pcs: PolynomialCommitmentScheme<F>,
+{
+    type Target = HyperPlonkVerifierParam<F, Pcs>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.vp
+    }
+}
+
+impl<F, Pcs> PlonkishBackend<F> for UniHyperPlonk<Pcs, true>
 where
     F: WithSmallOrderMulGroup<3> + Hash + Serialize + DeserializeOwned,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = UnivariatePolynomial<F>>,
@@ -102,70 +105,14 @@ where
         param: &Pcs::Param,
         circuit_info: &PlonkishCircuitInfo<F>,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
-        assert!(circuit_info.is_well_formed());
-
-        let num_vars = circuit_info.k;
-        let poly_size = 1 << num_vars;
-        let batch_size = batch_size(circuit_info);
-        let (pcs_pp, pcs_vp) = Pcs::trim(param, poly_size, batch_size)?;
-
-        // Compute preprocesses comms
-        let preprocess_polys = circuit_info
-            .preprocess_polys
-            .iter()
-            .cloned()
-            .map(MultilinearPolynomial::new)
-            .collect_vec();
-        let (preprocess_polys, preprocess_comms) =
-            batch_commit::<_, Pcs>(&pcs_pp, preprocess_polys)?;
-
-        // Compute permutation polys and comms
-        let permutation_polys = permutation_polys(
-            num_vars,
-            &circuit_info.permutation_polys(),
-            &circuit_info.permutations,
-        );
-        let (permutation_polys, permutation_comms) =
-            batch_commit::<_, Pcs>(&pcs_pp, permutation_polys)?;
-
-        // Compose expression
-        let (num_permutation_z_polys, expression) = compose(circuit_info);
-        let vp = UniHyperPlonkVerifierParam {
-            pcs: pcs_vp,
-            num_instances: circuit_info.num_instances.clone(),
-            num_witness_polys: circuit_info.num_witness_polys.clone(),
-            num_challenges: circuit_info.num_challenges.clone(),
-            num_lookups: circuit_info.lookups.len(),
-            num_permutation_z_polys,
-            num_vars,
-            expression: expression.clone(),
-            preprocess_comms: preprocess_comms.clone(),
-            permutation_comms: circuit_info
-                .permutation_polys()
-                .into_iter()
-                .zip(permutation_comms.clone())
-                .collect(),
-        };
-        let pp = UniHyperPlonkProverParam {
-            pcs: pcs_pp,
-            num_instances: circuit_info.num_instances.clone(),
-            num_witness_polys: circuit_info.num_witness_polys.clone(),
-            num_challenges: circuit_info.num_challenges.clone(),
-            lookups: circuit_info.lookups.clone(),
-            num_permutation_z_polys,
-            num_vars,
-            expression,
-            preprocess_polys,
-            preprocess_comms,
-            permutation_polys: circuit_info
-                .permutation_polys()
-                .into_iter()
-                .zip(permutation_polys)
-                .collect(),
-            permutation_comms,
-            s_polys: s_polys(num_vars),
-        };
-        Ok((pp, vp))
+        let (pp, vp) = preprocess(param, circuit_info, |pp, polys| {
+            batch_commit::<_, Pcs>(pp, polys)
+        })?;
+        let s_polys = s_polys(circuit_info.k);
+        Ok((
+            UniHyperPlonkProverParam { pp, s_polys },
+            UniHyperPlonkVerifierParam { vp },
+        ))
     }
 
     fn prove(
@@ -281,7 +228,7 @@ where
             transcript,
         )?;
 
-        // Prove PH23
+        // Prove PH23 multilinear evaluation
 
         let polys = polys
             .into_iter()
@@ -299,7 +246,7 @@ where
         ]
         .collect_vec();
         let timer = start_timer(|| format!("prove_multilinear_eval-{}", evals.len()));
-        prove_multilinear_eval::<_, Pcs>(
+        ph23::additive::prove_multilinear_eval::<_, Pcs>(
             &pp.pcs,
             pp.num_vars,
             &pp.s_polys,
@@ -369,7 +316,7 @@ where
             transcript,
         )?;
 
-        // Verify PH23
+        // Verify PH23 multilinear evaluation
 
         let dummy_comm = Pcs::Commitment::default();
         let comms = chain![
@@ -381,13 +328,20 @@ where
             &lookup_h_permutation_z_comms,
         ]
         .collect_vec();
-        verify_multilinear_eval::<_, Pcs>(&vp.pcs, vp.num_vars, comms, &point, &evals, transcript)?;
+        ph23::additive::verify_multilinear_eval::<_, Pcs>(
+            &vp.pcs,
+            vp.num_vars,
+            comms,
+            &point,
+            &evals,
+            transcript,
+        )?;
 
         Ok(())
     }
 }
 
-impl<Pcs> WitnessEncoding for UniHyperPlonk<Pcs> {
+impl<Pcs, const ADDITIVE_PCS: bool> WitnessEncoding for UniHyperPlonk<Pcs, ADDITIVE_PCS> {
     fn row_mapping(k: usize) -> Vec<usize> {
         Lexical::new(k).usable_indices()
     }
@@ -456,27 +410,27 @@ mod test {
     use halo2_curves::bn256::Bn256;
 
     macro_rules! tests {
-        ($suffix:ident, $pcs:ty, $num_vars_range:expr) => {
+        ($suffix:ident, $pcs:ty, $additive:literal, $num_vars_range:expr) => {
             paste::paste! {
                 #[test]
                 fn [<vanilla_plonk_w_ $suffix>]() {
-                    run_plonkish_backend::<_, UniHyperPlonk<$pcs>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                    run_plonkish_backend::<_, UniHyperPlonk<$pcs, $additive>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         rand_vanilla_plonk_circuit::<_, Lexical>(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
 
                 #[test]
                 fn [<vanilla_plonk_w_lookup_w_ $suffix>]() {
-                    run_plonkish_backend::<_, UniHyperPlonk<$pcs>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
+                    run_plonkish_backend::<_, UniHyperPlonk<$pcs, $additive>, Keccak256Transcript<_>, _>($num_vars_range, |num_vars| {
                         rand_vanilla_plonk_w_lookup_circuit::<_, Lexical>(num_vars, seeded_std_rng(), seeded_std_rng())
                     });
                 }
             }
         };
-        ($suffix:ident, $pcs:ty) => {
-            tests!($suffix, $pcs, 2..16);
+        ($suffix:ident, $pcs:ty, $additive:literal) => {
+            tests!($suffix, $pcs, $additive, 2..16);
         };
     }
 
-    tests!(kzg, UnivariateKzg<Bn256>);
+    tests!(kzg, UnivariateKzg<Bn256>, true);
 }

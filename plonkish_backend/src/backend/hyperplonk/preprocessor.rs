@@ -1,5 +1,9 @@
 use crate::{
-    backend::PlonkishCircuitInfo,
+    backend::{
+        hyperplonk::{HyperPlonkProverParam, HyperPlonkVerifierParam},
+        PlonkishCircuitInfo,
+    },
+    pcs::PolynomialCommitmentScheme,
     poly::multilinear::MultilinearPolynomial,
     util::{
         arithmetic::{div_ceil, steps, PrimeField},
@@ -7,6 +11,7 @@ use crate::{
         expression::{Expression, Query, Rotation},
         Itertools,
     },
+    Error,
 };
 use std::{array, borrow::Cow, mem};
 
@@ -20,6 +25,84 @@ pub(crate) fn batch_size<F: PrimeField>(circuit_info: &PlonkishCircuitInfo<F>) -
         [num_lookups + div_ceil(num_permutation_polys, max_degree(circuit_info, None) - 1)],
     ]
     .sum()
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn preprocess<F: PrimeField, Pcs: PolynomialCommitmentScheme<F>>(
+    param: &Pcs::Param,
+    circuit_info: &PlonkishCircuitInfo<F>,
+    batch_commit: impl Fn(
+        &Pcs::ProverParam,
+        Vec<MultilinearPolynomial<F>>,
+    ) -> Result<(Vec<MultilinearPolynomial<F>>, Vec<Pcs::Commitment>), Error>,
+) -> Result<
+    (
+        HyperPlonkProverParam<F, Pcs>,
+        HyperPlonkVerifierParam<F, Pcs>,
+    ),
+    Error,
+> {
+    assert!(circuit_info.is_well_formed());
+
+    let num_vars = circuit_info.k;
+    let poly_size = 1 << num_vars;
+    let batch_size = batch_size(circuit_info);
+    let (pcs_pp, pcs_vp) = Pcs::trim(param, poly_size, batch_size)?;
+
+    // Compute preprocesses comms
+    let preprocess_polys = circuit_info
+        .preprocess_polys
+        .iter()
+        .cloned()
+        .map(MultilinearPolynomial::new)
+        .collect_vec();
+    let (preprocess_polys, preprocess_comms) = batch_commit(&pcs_pp, preprocess_polys)?;
+
+    // Compute permutation polys and comms
+    let permutation_polys = permutation_polys(
+        num_vars,
+        &circuit_info.permutation_polys(),
+        &circuit_info.permutations,
+    );
+    let (permutation_polys, permutation_comms) = batch_commit(&pcs_pp, permutation_polys)?;
+
+    // Compose expression
+    let (num_permutation_z_polys, expression) = compose(circuit_info);
+    let vp = HyperPlonkVerifierParam {
+        pcs: pcs_vp,
+        num_instances: circuit_info.num_instances.clone(),
+        num_witness_polys: circuit_info.num_witness_polys.clone(),
+        num_challenges: circuit_info.num_challenges.clone(),
+        num_lookups: circuit_info.lookups.len(),
+        num_permutation_z_polys,
+        num_vars,
+        expression: expression.clone(),
+        preprocess_comms: preprocess_comms.clone(),
+        permutation_comms: circuit_info
+            .permutation_polys()
+            .into_iter()
+            .zip(permutation_comms.clone())
+            .collect(),
+    };
+    let pp = HyperPlonkProverParam {
+        pcs: pcs_pp,
+        num_instances: circuit_info.num_instances.clone(),
+        num_witness_polys: circuit_info.num_witness_polys.clone(),
+        num_challenges: circuit_info.num_challenges.clone(),
+        lookups: circuit_info.lookups.clone(),
+        num_permutation_z_polys,
+        num_vars,
+        expression,
+        preprocess_polys,
+        preprocess_comms,
+        permutation_polys: circuit_info
+            .permutation_polys()
+            .into_iter()
+            .zip(permutation_polys)
+            .collect(),
+        permutation_comms,
+    };
+    Ok((pp, vp))
 }
 
 pub(crate) fn compose<F: PrimeField>(

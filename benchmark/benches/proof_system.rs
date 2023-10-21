@@ -88,7 +88,7 @@ fn bench_hyperplonk<C: CircuitExt<Fr>>(k: usize) {
 
 fn bench_unihyperplonk<C: CircuitExt<Fr>>(k: usize) {
     type UnivariateKzg = univariate::UnivariateKzg<Bn256>;
-    type UniHyperPlonk = backend::unihyperplonk::UniHyperPlonk<UnivariateKzg>;
+    type UniHyperPlonk = backend::unihyperplonk::UniHyperPlonk<UnivariateKzg, true>;
     bench_plonkish_backend::<UniHyperPlonk, C>(System::UniHyperPlonk, k)
 }
 

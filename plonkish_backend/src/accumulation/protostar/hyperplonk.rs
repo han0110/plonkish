@@ -27,7 +27,7 @@ use crate::{
         PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
     },
     pcs::{AdditiveCommitment, CommitmentChunk, PolynomialCommitmentScheme},
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{powers, PrimeField},
         end_timer, start_timer,
@@ -41,7 +41,6 @@ use std::{borrow::BorrowMut, hash::Hash, iter};
 
 mod preprocessor;
 mod prover;
-use std::ops::Add;
 
 impl<F, Pcs, const STRATEGY: usize> AccumulationScheme<F> for Protostar<HyperPlonk<Pcs>, STRATEGY>
 where
@@ -210,11 +209,11 @@ where
             CompressingWithSqrtPowers => {
                 assert_eq!(pp.num_vars % 2, 0, "L is not a perfect square");
                 let zeta = transcript.squeeze_challenge();
-                let l_sqrt = (1 << (pp.num_vars / 2));
+                let l_sqrt = 1 << (pp.num_vars / 2);
 
                 let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
                 let powers_of_zeta_first_poly  = powers_of_zeta_poly(pp.num_vars/2, zeta);
-                let powers_of_zeta_second_poly = powers_of_zeta_poly(pp.num_vars/2, zeta.pow(l_sqrt as u64));
+                let powers_of_zeta_second_poly = powers_of_zeta_poly(pp.num_vars/2, zeta.pow(&[l_sqrt as u64]));
                 let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_first_poly.evals().iter().chain(powers_of_zeta_second_poly.evals().iter()).cloned().collect());               
                 end_timer(timer);
 

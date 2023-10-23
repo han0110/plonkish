@@ -247,8 +247,8 @@ where
     let mut cross_term = vec![F::ZERO; size];
 
     let l_sqrt = 1usize << num_vars/2;
-    let incoming_zeta_sqrt = (powers(incoming_zeta).nth(l_sqrt).unwrap());
-    let acc_zeta_sqrt = (powers(acc_zeta).nth(l_sqrt).unwrap());
+    let incoming_zeta_sqrt = powers(*incoming_zeta).nth(l_sqrt).unwrap();
+    let acc_zeta_sqrt = powers(*acc_zeta).nth(l_sqrt).unwrap();
 
     let bh = BooleanHypercube::new(num_vars);
     let next_map = bh.rotation_map(Rotation::next());
@@ -269,7 +269,7 @@ where
     });
 
     let b_0 = 0;
-    let b_lsqrt = bh.rotate(1, Rotation(num_vars/2 as i32));
+    let b_lsqrt = bh.rotate(1, Rotation((num_vars/2) as i32));
     let b_lsqrt_next = bh.rotate(1, Rotation::next()); 
     let b_last = bh.rotate(1, Rotation((num_vars/2 - 1) as i32));
 

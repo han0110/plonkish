@@ -188,8 +188,8 @@ where
 
         // Round n+2
 
-        let (zeta, powers_of_zeta_poly, powers_of_zeta_comm) = match strategy {
-            NoCompressing => (None, None, None),
+        let (zeta, zeta_pow_lsqrt, powers_of_zeta_poly, powers_of_zeta_comm) = match strategy {
+            NoCompressing => (None, None, None, None),
             Compressing => {
                 let zeta = transcript.squeeze_challenge();
 
@@ -202,6 +202,7 @@ where
 
                 (
                     Some(zeta),
+                    None,
                     Some(powers_of_zeta_poly),
                     Some(powers_of_zeta_comm),
                 )
@@ -210,10 +211,11 @@ where
                 assert_eq!(pp.num_vars % 2, 0, "L is not a perfect square");
                 let zeta = transcript.squeeze_challenge();
                 let l_sqrt = 1 << (pp.num_vars / 2);
+                let zeta_pow_lsqrt = zeta.pow(&[l_sqrt as u64]);
 
                 let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
                 let powers_of_zeta_first_poly  = powers_of_zeta_poly(pp.num_vars/2, zeta);
-                let powers_of_zeta_second_poly = powers_of_zeta_poly(pp.num_vars/2, zeta.pow(&[l_sqrt as u64]));
+                let powers_of_zeta_second_poly = powers_of_zeta_poly(pp.num_vars/2, zeta_pow_lsqrt);
                 let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_first_poly.evals().iter().chain(powers_of_zeta_second_poly.evals().iter()).cloned().collect());               
                 end_timer(timer);
 
@@ -222,12 +224,13 @@ where
 
                 (
                     Some(zeta),
+                    Some(zeta_pow_lsqrt),
                     Some(powers_of_zeta_poly),
                     Some(powers_of_zeta_comm),
                 )
             }
         };
-
+                               
         // Round n+3
 
         let alpha_primes = powers(transcript.squeeze_challenge())
@@ -242,6 +245,7 @@ where
                 .chain(theta_primes)
                 .chain(Some(beta_prime))
                 .chain(zeta)
+                .chain(zeta_pow_lsqrt)
                 .chain(alpha_primes)
                 .collect(),
             iter::empty()
@@ -444,21 +448,23 @@ where
 
         // Round n+2
 
-        let (zeta, powers_of_zeta_comm) = match strategy {
-            NoCompressing => (None, None),
+        let (zeta, zeta_pow_lsqrt, powers_of_zeta_comm) = match strategy {
+            NoCompressing => (None, None, None),
             Compressing => {
                 let zeta = transcript.squeeze_challenge();
 
                 let powers_of_zeta_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
 
-                (Some(zeta), Some(powers_of_zeta_comm))
+                (Some(zeta), None, Some(powers_of_zeta_comm))
             },
             CompressingWithSqrtPowers => {
                 let zeta = transcript.squeeze_challenge();
+                let l_sqrt = 1 << (vp.num_vars / 2);
+                let zeta_pow_lsqrt = zeta.pow(&[l_sqrt as u64]);
 
                 let powers_of_zeta_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
 
-                (Some(zeta), Some(powers_of_zeta_comm))
+                (Some(zeta), Some(zeta_pow_lsqrt), Some(powers_of_zeta_comm))
             }
         };
 
@@ -476,6 +482,7 @@ where
                 .chain(theta_primes)
                 .chain(Some(beta_prime))
                 .chain(zeta)
+                .chain(zeta_pow_lsqrt)
                 .chain(alpha_primes)
                 .collect(),
             iter::empty()

@@ -22,6 +22,7 @@ use crate::{
     Error,
 };
 use std::{array, borrow::Cow, collections::BTreeSet, hash::Hash, iter};
+use num_integer::Roots;
 
 pub(crate) fn batch_size<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
@@ -219,6 +220,7 @@ where
                 products(&poly_set.preprocess, &compressed_constraint)
             };
             let powers_of_zeta_constraint = powers_of_zeta_constraint(zeta, powers_of_zeta);
+
             let zeta_products = products(&poly_set.preprocess, &powers_of_zeta_constraint);
 
             let num_folding_challenges = alpha_prime_offset + num_alpha_primes;
@@ -243,7 +245,8 @@ where
         }
         CompressingWithSqrtPowers => {
             let zeta = challenge_offset + num_theta_primes + 1;
-            let alpha_prime_offset = zeta + 1;
+            let zeta_sqrt = zeta + 1;
+            let alpha_prime_offset = zeta_sqrt + 1;
             let num_builtin_witness_polys = 3 * circuit_info.lookups.len() + 1;
             let builtin_witness_poly_offset =
                 witness_poly_offset + num_witness_polys + circuit_info.permutation_polys().len();
@@ -264,7 +267,7 @@ where
 
             let powers_of_zeta = builtin_witness_poly_offset + circuit_info.lookups.len() * 3;
             assert_eq!((powers_of_zeta as f64).sqrt().fract(), 0.0, "L is not a perfect square");
-            let l_sqrt = (powers_of_zeta as f64).sqrt() as usize;
+            let l_sqrt = powers_of_zeta.sqrt() as usize;
             let powers_of_zeta_sqrt = l_sqrt - 1;
             let compressed_products = {
                 let mut constraints = iter::empty()
@@ -300,7 +303,7 @@ where
             let powers_of_zeta_sqrt1_constraint = powers_of_zeta_constraint(zeta, powers_of_zeta_sqrt);
             let zeta_sqrt1_products = products(&poly_set.preprocess, &powers_of_zeta_sqrt1_constraint);
 
-            let powers_of_zeta_sqrt2_constraint = powers_of_zeta_constraint(zeta.pow(l_sqrt as u32), powers_of_zeta_sqrt);
+            let powers_of_zeta_sqrt2_constraint = powers_of_zeta_constraint(zeta_sqrt, powers_of_zeta_sqrt);
             let zeta_sqrt2_products = products(&poly_set.preprocess, &powers_of_zeta_sqrt2_constraint);
 
             let zeta_products = iter::empty()
@@ -315,7 +318,7 @@ where
             let u = num_folding_challenges;
             let relexed_compressed_constraint = relaxed_expression(&compressed_products, u);
             let relexed_zeta_constraint = {
-                let e = powers_of_zeta + num_permutation_z_polys + 1;
+                let e = 2*powers_of_zeta_sqrt + num_permutation_z_polys + 1;
                 relaxed_expression(&zeta_products, u)
                     - Expression::Polynomial(Query::new(e, Rotation::cur()))
             };

@@ -172,6 +172,7 @@ pub trait ClassicSumCheckRoundMessage<F: Field>: Sized + Debug {
 
     fn evaluate(&self, aux: &Self::Auxiliary, challenge: &F) -> F;
 
+    // todo pow_zeta_sqrt sum_check eval here
     fn verify_consistency(
         degree: usize,
         mut sum: F,

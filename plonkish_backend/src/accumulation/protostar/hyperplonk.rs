@@ -214,9 +214,9 @@ where
                 let zeta_pow_lsqrt = zeta.pow(&[l_sqrt as u64]);
 
                 let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
-                let powers_of_zeta_first_poly  = powers_of_zeta_poly(pp.num_vars/2, zeta);
-                let powers_of_zeta_second_poly = powers_of_zeta_poly(pp.num_vars/2, zeta_pow_lsqrt);
-                let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_first_poly.evals().iter().chain(powers_of_zeta_second_poly.evals().iter()).cloned().collect());               
+                let powers_of_zeta_lo  = powers_of_zeta_poly(pp.num_vars/2, zeta);
+                let powers_of_zeta_hi = powers_of_zeta_poly(pp.num_vars/2, zeta_pow_lsqrt);
+                let powers_of_zeta_poly = MultilinearPolynomial::new(powers_of_zeta_lo.evals().iter().chain(powers_of_zeta_hi.evals().iter()).cloned().collect());               
                 end_timer(timer);
 
                 let powers_of_zeta_comm =
@@ -351,7 +351,7 @@ where
                 end_timer(timer);
             }
             CompressingWithSqrtPowers => {
-                let timer = start_timer(|| "evaluate_zeta_cross_term_poly");
+                let timer = start_timer(|| "evaluate_zeta_root_cross_term_poly");
                 let zeta_cross_term_poly = evaluate_zeta_root_cross_term_poly(
                     pp.num_vars,
                     *num_alpha_primes,

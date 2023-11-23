@@ -4,13 +4,13 @@ use crate::{
             hyperplonk::{
                 preprocessor::{batch_size, preprocess},
                 prover::{
-                    evaluate_compressed_cross_term_sums, evaluate_cross_term_polys,
-                    evaluate_zeta_cross_term_poly, lookup_h_polys, powers_of_zeta_poly,
+                    evaluate_compressed_cross_term_sums, evaluate_cross_term_polys, evaluate_zeta_root_cross_term_poly,
+                    evaluate_zeta_cross_term_poly, lookup_h_polys, powers_of_zeta_poly, powers_of_zeta_sum_check_poly_lo, powers_of_zeta_sum_check_poly_hi,
                 },
             },
             ivc::ProtostarAccumulationVerifierParam,
             Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance, ProtostarProverParam,
-            ProtostarStrategy::{Compressing, NoCompressing},
+            ProtostarStrategy::{Compressing, NoCompressing, CompressingWithSqrtPowers},
             ProtostarVerifierParam,
         },
         AccumulationScheme, PlonkishNark, PlonkishNarkInstance,
@@ -27,7 +27,7 @@ use crate::{
         PlonkishBackend, PlonkishCircuit, PlonkishCircuitInfo,
     },
     pcs::{AdditiveCommitment, CommitmentChunk, PolynomialCommitmentScheme},
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{powers, PrimeField},
         end_timer, start_timer,
@@ -37,10 +37,10 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{borrow::BorrowMut, hash::Hash, iter};
+use std::{borrow::BorrowMut, hash::Hash, iter::{self, repeat}};
 
 mod preprocessor;
-mod prover;
+pub mod prover;
 
 impl<F, Pcs, const STRATEGY: usize> AccumulationScheme<F> for Protostar<HyperPlonk<Pcs>, STRATEGY>
 where
@@ -188,8 +188,8 @@ where
 
         // Round n+2
 
-        let (zeta, powers_of_zeta_poly, powers_of_zeta_comm) = match strategy {
-            NoCompressing => (None, None, None),
+        let (zeta, powers_of_zeta_poly_lo, powers_of_zeta_poly_hi, powers_of_zeta_comm_lo, powers_of_zeta_comm_hi) = match strategy {
+            NoCompressing => (None, None, None, None, None),
             Compressing => {
                 let zeta = transcript.squeeze_challenge();
 
@@ -203,11 +203,40 @@ where
                 (
                     Some(zeta),
                     Some(powers_of_zeta_poly),
+                    None,
                     Some(powers_of_zeta_comm),
+                    None,
+                )
+            },
+            CompressingWithSqrtPowers => {
+                assert_eq!(pp.num_vars % 2, 0, "L is not a perfect square");
+                let zeta = transcript.squeeze_challenge();
+                let l_sqrt = 1 << (pp.num_vars/2);
+                let zeta_pow_lsqrt = zeta.pow(&[l_sqrt as u64]);
+
+                let timer = start_timer(|| "powers_of_zeta_sqrt_poly");
+                let powers_of_zeta_lo  = powers_of_zeta_poly(pp.num_vars/2, zeta);
+                let powers_of_zeta_hi  = powers_of_zeta_poly(pp.num_vars/2, zeta_pow_lsqrt);
+                let powers_of_zeta_sum_check_lo  = powers_of_zeta_sum_check_poly_lo(pp.num_vars, zeta);
+                let powers_of_zeta_sum_check_hi  = powers_of_zeta_sum_check_poly_hi(pp.num_vars, zeta_pow_lsqrt);
+                end_timer(timer);
+
+                let powers_of_zeta_comm_lo =
+                Pcs::commit_and_write(&pp.pcs, &powers_of_zeta_lo, transcript)?;
+
+                let powers_of_zeta_comm_hi =
+                Pcs::commit_and_write(&pp.pcs, &powers_of_zeta_hi, transcript)?;
+
+                (
+                    Some(zeta),
+                    Some(powers_of_zeta_sum_check_lo),
+                    Some(powers_of_zeta_sum_check_hi),
+                    Some(powers_of_zeta_comm_lo),
+                    Some(powers_of_zeta_comm_hi),
                 )
             }
         };
-
+                               
         // Round n+3
 
         let alpha_primes = powers(transcript.squeeze_challenge())
@@ -228,13 +257,15 @@ where
                 .chain(witness_comms)
                 .chain(lookup_m_comms)
                 .chain(lookup_h_comms)
-                .chain(powers_of_zeta_comm)
+                .chain(powers_of_zeta_comm_lo)
+                .chain(powers_of_zeta_comm_hi)
                 .collect(),
             iter::empty()
                 .chain(witness_polys)
                 .chain(lookup_m_polys)
                 .chain(lookup_h_polys.into_iter().flatten())
-                .chain(powers_of_zeta_poly)
+                .chain(powers_of_zeta_poly_lo)
+                .chain(powers_of_zeta_poly_hi)
                 .collect(),
         ))
     }
@@ -326,6 +357,47 @@ where
                 );
                 end_timer(timer);
             }
+            CompressingWithSqrtPowers => {
+                let timer = start_timer(|| "evaluate_zeta_root_cross_term_poly");
+                let zeta_cross_term_poly = evaluate_zeta_root_cross_term_poly(
+                    pp.num_vars,
+                    *num_alpha_primes,
+                    accumulator,
+                    incoming,
+                );
+                end_timer(timer);
+
+                let timer = start_timer(|| {
+                    let len = cross_term_expressions.len();
+                    format!("evaluate_compressed_cross_term_sums-{len}")
+                });
+                let compressed_cross_term_sums = evaluate_compressed_cross_term_sums(
+                    cross_term_expressions,
+                    pp.num_vars,
+                    &pp.preprocess_polys,
+                    accumulator,
+                    incoming,
+                );
+                end_timer(timer);
+
+                let zeta_cross_term_comm =
+                    Pcs::commit_and_write(&pp.pcs, &zeta_cross_term_poly, transcript)?;
+                transcript.write_field_elements(&compressed_cross_term_sums)?;
+
+                // Round 0
+
+                let r = transcript.squeeze_challenge();
+
+                let timer = start_timer(|| "fold_compressed_sqrt");
+                accumulator.fold_compressed(
+                    incoming,
+                    &zeta_cross_term_poly,
+                    &zeta_cross_term_comm,
+                    &compressed_cross_term_sums,
+                    &r,
+                );
+                end_timer(timer);
+            }
         }
 
         Ok(())
@@ -391,6 +463,13 @@ where
                 let powers_of_zeta_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
 
                 (Some(zeta), Some(powers_of_zeta_comm))
+            },
+            CompressingWithSqrtPowers => {
+                let zeta = transcript.squeeze_challenge();
+
+                let powers_of_zeta_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
+
+                (Some(zeta), Some(powers_of_zeta_comm))
             }
         };
 
@@ -432,6 +511,22 @@ where
                 accumulator.fold_uncompressed(&incoming, &cross_term_comms, &r);
             }
             Compressing => {
+                let zeta_cross_term_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
+                let compressed_cross_term_sums =
+                    transcript.read_field_elements(*num_cross_terms)?;
+
+                // Round n+4
+
+                let r = transcript.squeeze_challenge();
+
+                accumulator.fold_compressed(
+                    &incoming,
+                    &zeta_cross_term_comm,
+                    &compressed_cross_term_sums,
+                    &r,
+                );
+            }
+            CompressingWithSqrtPowers => {
                 let zeta_cross_term_comm = Pcs::read_commitment(&vp.pcs, transcript)?;
                 let compressed_cross_term_sums =
                     transcript.read_field_elements(*num_cross_terms)?;
@@ -609,6 +704,7 @@ where
             .chain(match vp.strategy {
                 NoCompressing => None,
                 Compressing => Some(1),
+                CompressingWithSqrtPowers => Some(2),
             })
             .collect();
         let num_challenges = {
@@ -623,6 +719,7 @@ where
                 .chain(match vp.strategy {
                     NoCompressing => None,
                     Compressing => Some(vec![1]),
+                    CompressingWithSqrtPowers => Some(vec![1]),
                 })
                 .chain([vec![vp.num_alpha_primes]])
                 .collect()

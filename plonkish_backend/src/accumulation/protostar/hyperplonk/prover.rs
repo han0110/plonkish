@@ -2,7 +2,7 @@ use crate::{
     accumulation::protostar::ProtostarAccumulator,
     backend::hyperplonk::prover::instance_polys,
     pcs::PolynomialCommitmentScheme,
-    poly::multilinear::MultilinearPolynomial,
+    poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, powers, sum, BatchInvert, BooleanHypercube, PrimeField},
         expression::{evaluator::ExpressionRegistry, Expression, Rotation},
@@ -11,7 +11,7 @@ use crate::{
         Itertools,
     },
 };
-use std::{borrow::Cow, hash::Hash, iter};
+use std::{borrow::Cow, hash::Hash, iter::{self, repeat}};
 
 pub(crate) fn lookup_h_polys<F: PrimeField + Hash>(
     compressed_polys: &[[MultilinearPolynomial<F>; 2]],
@@ -71,13 +71,36 @@ fn lookup_h_poly<F: PrimeField + Hash>(
     ]
 }
 
-pub(super) fn powers_of_zeta_poly<F: PrimeField>(
+pub(crate) fn powers_of_zeta_poly<F: PrimeField>(
     num_vars: usize,
     zeta: F,
 ) -> MultilinearPolynomial<F> {
-    let powers_of_zeta = powers(zeta).take(1 << num_vars).collect_vec();
+    let powers_of_zeta: Vec<F> = powers(zeta).take(1 << num_vars).collect_vec();
     let nth_map = BooleanHypercube::new(num_vars).nth_map();
     MultilinearPolynomial::new(par_map_collect(&nth_map, |b| powers_of_zeta[*b]))
+}
+
+pub(crate) fn powers_of_zeta_sum_check_poly_hi<F: PrimeField>(
+    num_vars: usize,
+    zeta: F,
+) -> MultilinearPolynomial<F> {
+    assert_eq!(num_vars % 2, 0, "L is not a perfect square");
+    let l_sqrt = 1 << (num_vars/2);
+    let zeta_pow_lsqrt = zeta.pow(&[l_sqrt as u64]);
+    let powers_of_zeta: Vec<F> = powers(zeta_pow_lsqrt).take(1 << num_vars/2).collect_vec();
+    let powers_of_zeta_hi: Vec<F> = powers_of_zeta.iter().flat_map(|zeta| repeat(zeta).take(1 << num_vars/2)).cloned().collect_vec();
+    let nth_map = BooleanHypercube::new(num_vars).nth_map();
+    MultilinearPolynomial::new(par_map_collect(&nth_map, |b| powers_of_zeta_hi[*b]))
+}
+
+pub(crate) fn powers_of_zeta_sum_check_poly_lo<F: PrimeField>(
+    num_vars: usize,
+    zeta: F,
+) -> MultilinearPolynomial<F> {
+    let powers_of_zeta: Vec<F> = powers(zeta).take(1 << num_vars/2).collect_vec();
+    let powers_of_zeta_lo: Vec<F> = repeat(powers_of_zeta.iter().cloned()).take(1 << num_vars/2).flatten().collect_vec();
+    let nth_map = BooleanHypercube::new(num_vars).nth_map();
+    MultilinearPolynomial::new(par_map_collect(&nth_map, |b| powers_of_zeta_lo[*b]))
 }
 
 pub(crate) fn evaluate_cross_term_polys<F, Pcs>(
@@ -126,7 +149,7 @@ where
         .collect_vec()
 }
 
-pub(super) fn evaluate_compressed_cross_term_sums<F, Pcs>(
+pub(crate) fn evaluate_compressed_cross_term_sums<F, Pcs>(
     cross_term_expressions: &[Expression<F>],
     num_vars: usize,
     preprocess_polys: &[MultilinearPolynomial<F>],
@@ -207,7 +230,59 @@ where
             .zip(start..)
             .for_each(|(cross_term, b)| {
                 *cross_term = acc_pow[next_map[b]] + acc_u * incoming_pow[next_map[b]]
-                    - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
+                     - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
+            })
+    });
+    let b_0 = 0;
+    let b_last = bh.rotate(1, Rotation::prev());
+    cross_term[b_0] += acc_pow[b_0] * incoming_zeta + incoming_pow[b_0] * acc_zeta - acc_u.double();
+    cross_term[b_last] += acc_pow[b_last] * incoming_zeta + incoming_pow[b_last] * acc_zeta
+        - acc_u * incoming_zeta
+        - acc_zeta;
+
+    MultilinearPolynomial::new(cross_term)
+}
+
+pub(crate) fn evaluate_zeta_root_cross_term_poly<F, Pcs>(
+    num_vars: usize,
+    zeta_nth_back: usize,
+    accumulator: &ProtostarAccumulator<F, Pcs>,
+    incoming: &ProtostarAccumulator<F, Pcs>,
+) -> MultilinearPolynomial<F>
+where
+    F: PrimeField,
+    Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
+{
+    let [(acc_pow, acc_zeta, acc_u), (incoming_pow, incoming_zeta, incoming_u)] =
+        [accumulator, incoming].map(|witness| {
+            let evals_lo = witness.witness_polys[witness.witness_polys.len() - 2].evals().clone();
+            let evals_hi = witness.witness_polys.last().unwrap().evals().clone();
+            let pow = MultilinearPolynomial::new(evals_lo.iter()
+            .zip(evals_hi.iter())
+            .map(|(&x, &y)| x * y)
+            .collect_vec());
+            let zeta = witness
+                .instance
+                .challenges
+                .iter()
+                .nth_back(zeta_nth_back)
+                .unwrap();
+            (pow, zeta, witness.instance.u)
+        });
+    assert_eq!(incoming_u, F::ONE);
+
+    let size = 1 << num_vars;
+    let mut cross_term = vec![F::ZERO; size];
+
+    let bh = BooleanHypercube::new(num_vars);
+    let next_map = bh.rotation_map(Rotation::next());
+    parallelize(&mut cross_term, |(cross_term, start)| {
+        cross_term
+            .iter_mut()
+            .zip(start..)
+            .for_each(|(cross_term, b)| {
+                *cross_term = acc_pow[next_map[b]] + acc_u * incoming_pow[next_map[b]]
+                     - (acc_pow[b] * incoming_zeta + incoming_pow[b] * acc_zeta);
             })
     });
     let b_0 = 0;
@@ -330,5 +405,70 @@ impl<'a, F: PrimeField> HadamardEvaluator<'a, F> {
             .iter()
             .zip(self.reg.offsets().calculations()..)
             .for_each(|(calculation, idx)| calculation.calculate(cache, idx));
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    use crate::{
+        poly::{
+            multilinear::{rotation_eval, zip_self, MultilinearPolynomial, test::fix_vars},
+            Polynomial,
+        },
+        util::{
+            arithmetic::{BooleanHypercube, Field, powers},
+            expression::Rotation,
+            test::rand_vec,
+            Itertools,
+        }, accumulation::protostar::hyperplonk::prover::{powers_of_zeta_poly, powers_of_zeta_sum_check_poly_lo, powers_of_zeta_sum_check_poly_hi},
+    };
+    use halo2_curves::bn256::Fr;
+    use rand::{rngs::OsRng, RngCore};
+    use std::{iter::{self, repeat}, ops::Mul};
+
+    #[test]
+    fn fix_lo() {
+   
+        let rand_x_i = || match OsRng.next_u32() % 3 {
+            0 => Fr::zero(),
+            1 => Fr::one(),
+            2 => Fr::random(OsRng),
+            _ => unreachable!(),
+        };
+
+            let zeta = Fr::from(2); //Fr::random(OsRng);
+            let num_vars = 14;
+            let powers_of_zeta_full_poly = powers_of_zeta_poly(num_vars, zeta);
+            let powers_of_zeta_root_poly = powers_of_zeta_poly(num_vars/2, zeta);
+            let powers_of_zeta_sum_check_hi_poly = powers_of_zeta_sum_check_poly_hi(num_vars, zeta);
+            let powers_of_zeta_sum_check_lo_poly = powers_of_zeta_sum_check_poly_lo(num_vars, zeta);
+            let powers_of_zeta_sum_check_poly = MultilinearPolynomial::new(
+                powers_of_zeta_sum_check_lo_poly.evals().iter()
+                .zip(powers_of_zeta_sum_check_hi_poly.evals().iter())
+                .map(|(&x, &y)| x * y)
+                .collect_vec());
+            let x = iter::repeat_with(rand_x_i).take(num_vars).collect_vec();
+            // println!("x {:?}", x);
+            let x_lo = x.iter().take(num_vars/2).cloned().collect_vec();
+            // println!("x_lo {:?}", x_lo);
+            let x_lo_sumcheck =  x.iter().take(num_vars/2).cloned()
+            .chain(vec![Fr::ONE; num_vars/2].into_iter())
+            .collect_vec();
+            let x_hi_sumcheck = vec![Fr::ONE; num_vars/2].into_iter()
+            .chain(x.iter().skip(num_vars/2).cloned())
+            .collect_vec();
+
+            // let powers_of_zeta_full_poly_fixed_var = powers_of_zeta_full_poly.fix_last_vars(&vec![Fr::ZERO; num_vars/2]);
+            // let powers_of_zeta_sum_check_poly_fixed_var = powers_of_zeta_sum_check_poly.fix_last_vars(&vec![Fr::ZERO; num_vars/2]);
+            // let powers_of_zeta_sum_check_lo_poly_fixed_var = powers_of_zeta_sum_check_lo_poly.fix_vars(&vec![Fr::ZERO; num_vars/2]);
+            // let powers_of_zeta_sum_check_lo_poly_fixed_var = fix_vars(powers_of_zeta_sum_check_lo_poly.evals(), &x_lo);
+            // println!("powers_of_zeta_root_poly {:?}", powers_of_zeta_root_poly);
+            // println!("powers_of_zeta_sum_check_lo_poly_fixed_var {:?}", powers_of_zeta_sum_check_lo_poly_fixed_var);
+            // println!("x_lo_sumcheck {:?}", x_lo_sumcheck);
+            // assert_eq!(powers_of_zeta_full_poly.evaluate(&x), powers_of_zeta_sum_check_poly.evaluate(&x));
+            // let sum_check_eval = powers_of_zeta_sum_check_lo_poly.evaluate(&x_lo_sumcheck) + powers_of_zeta_sum_check_lo_poly.evaluate(&x_hi_sumcheck);
+            // assert_eq!(powers_of_zeta_root_poly.evaluate(&x_lo), sum_check_eval);
+            // assert_eq!(powers_of_zeta_root_poly.evaluate(&x_lo), powers_of_zeta_sum_check_poly_fixed_var.evaluate(&x_lo));
+
     }
 }

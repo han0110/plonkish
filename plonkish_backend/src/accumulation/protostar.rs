@@ -22,7 +22,7 @@ pub mod hyperplonk;
 pub mod ivc;
 
 #[derive(Clone, Debug)]
-pub struct Protostar<Pb, const STRATEGY: usize = { Compressing as usize }>(PhantomData<Pb>);
+pub struct Protostar<Pb, const STRATEGY: usize = { CompressingWithSqrtPowers as usize }>(PhantomData<Pb>);
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub enum ProtostarStrategy {
@@ -108,7 +108,6 @@ where
         num_challenges: usize,
     ) -> Self {
         let zero_poly = Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]);
-        let zero_poly_sqrt = Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << (k/2 as usize + 1usize)]);
 
         Self {
             instance: ProtostarAccumulatorInstance::init(
@@ -121,11 +120,6 @@ where
             .take(num_witness_polys)
             .collect(),
             e_poly: zero_poly,
-            // witness_polys: iter::repeat_with(|| zero_poly.clone())
-            //     .take(num_witness_polys - 1)
-            //     .chain(iter::once(zero_poly_sqrt.clone()))
-            //     .collect(),
-            // e_poly: zero_poly_sqrt,
             _marker: PhantomData,
         }
     }
@@ -136,7 +130,6 @@ where
             instance: ProtostarAccumulatorInstance::from_nark(strategy, nark.instance),
             witness_polys,
             e_poly: Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
-            //e_poly: Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << (k/2 as usize + 1usize)]),
             _marker: PhantomData,
         }
     }

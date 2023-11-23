@@ -147,7 +147,7 @@ where
     fn commit(pp: &Self::ProverParam, poly: &Self::Polynomial) -> Result<Self::Commitment, Error> {
         validate_input("commit", pp.num_vars(), [poly], None)?;
 
-        Ok(variable_base_msm(poly.evals(), pp.g()).into()).map(MultilinearIpaCommitment)
+        Ok(variable_base_msm(poly.evals(), &pp.g()[..poly.evals().len()]).into()).map(MultilinearIpaCommitment)
     }
 
     fn batch_commit<'a>(

@@ -11,7 +11,7 @@ use crate::{
         classic::{ClassicSumCheck, EvaluationsProver},
         SumCheck, VirtualPolynomial,
     },
-    poly::{multilinear::MultilinearPolynomial, Polynomial},
+    poly::{multilinear::{MultilinearPolynomial, test::fix_vars}, Polynomial},
     util::{
         arithmetic::{div_ceil, steps_by, sum, BatchInvert, BooleanHypercube, PrimeField},
         end_timer,
@@ -21,7 +21,7 @@ use crate::{
         transcript::FieldTranscriptWrite,
         Itertools,
     },
-    Error,
+    Error, accumulation::protostar::hyperplonk::prover::powers_of_zeta_poly,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -396,7 +396,17 @@ pub(crate) fn prove_sum_check<F: PrimeField>(
                 .zip(if query.rotation() == Rotation::cur() {
                     vec![evals[query.poly()]]
                 } else {
-                    polys[query.poly()].evaluate_for_rotation(&x, query.rotation())
+                    let (x_lo, x_hi) = x.split_at(num_vars >> 2);
+                    if query.poly() == 36 { 
+                        polys[query.poly()].fix_last_vars(x_hi).evaluate_for_rotation(&x_lo, query.rotation())                                            
+                    }
+                    else if query.poly() == 37 { 
+                        MultilinearPolynomial::new(fix_vars(polys[query.poly()].evals(), x_lo)).evaluate_for_rotation(&x_hi, query.rotation())                      
+                    }
+                    else {
+                        polys[query.poly()].evaluate_for_rotation(&x, query.rotation())
+                    }
+                    // polys[query.poly()].evaluate_for_rotation(&x, query.rotation())
                 })
                 .map(|(point, eval)| Evaluation::new(query.poly(), point, eval))
         })

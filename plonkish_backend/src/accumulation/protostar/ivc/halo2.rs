@@ -4,7 +4,7 @@ use crate::{
             ivc::ProtostarAccumulationVerifierParam,
             PlonkishNarkInstance, Protostar, ProtostarAccumulator, ProtostarAccumulatorInstance,
             ProtostarProverParam,
-            ProtostarStrategy::{Compressing, NoCompressing},
+            ProtostarStrategy::{Compressing, NoCompressing, CompressingWithSqrtPowers},
             ProtostarVerifierParam,
         },
         AccumulationScheme,
@@ -37,6 +37,7 @@ use crate::{
         BitIndex, DeserializeOwned, Itertools, Serialize,
     },
 };
+use ark_std::iterable::Iterable;
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, Value},
     plonk::{Circuit, ConstraintSystem, Error},
@@ -437,6 +438,7 @@ pub trait TranscriptInstruction<C: TwoChainCurve>: Debug {
             + match avp.strategy {
                 NoCompressing => avp.num_cross_terms * uncompressed_comm_size,
                 Compressing => uncompressed_comm_size + avp.num_cross_terms * scalar_size,
+                CompressingWithSqrtPowers => uncompressed_comm_size + avp.num_cross_terms * scalar_size,
             };
         vec![0; proof_size]
     }
@@ -618,13 +620,14 @@ where
         .try_collect::<_, Vec<_>, _>()?;
         let challenges =
             iter::repeat_with(|| tcc_chip.assign_constant_base(layouter, C::Base::ZERO))
-                .take(self.avp.num_folding_challenges())
+                .take(self.avp.num_folding_challenges() + 1)
                 .try_collect::<_, Vec<_>, _>()?;
         let u = tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?;
         let e_comm = tcc_chip.assign_constant_secondary(layouter, C::Secondary::identity())?;
         let compressed_e_sum = match self.avp.strategy {
             NoCompressing => None,
             Compressing => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
+            CompressingWithSqrtPowers => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
         };
 
         Ok(ProtostarAccumulatorInstance {
@@ -671,7 +674,7 @@ where
             .try_collect::<_, Vec<_>, _>()?;
         let challenges = acc
             .map(|acc| &acc.challenges)
-            .transpose_vec(avp.num_folding_challenges())
+            .transpose_vec(avp.num_folding_challenges() + 1)
             .into_iter()
             .map(|challenge| tcc_chip.assign_witness_base(layouter, challenge.copied()))
             .try_collect::<_, Vec<_>, _>()?;
@@ -680,6 +683,10 @@ where
         let compressed_e_sum = match avp.strategy {
             NoCompressing => None,
             Compressing => Some(
+                tcc_chip
+                    .assign_witness_base(layouter, acc.map(|acc| acc.compressed_e_sum.unwrap()))?,
+            ),
+            CompressingWithSqrtPowers => Some(
                 tcc_chip
                     .assign_witness_base(layouter, acc.map(|acc| acc.compressed_e_sum.unwrap()))?,
             ),
@@ -715,6 +722,7 @@ where
         let compressed_e_sum = match self.avp.strategy {
             NoCompressing => None,
             Compressing => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
+            CompressingWithSqrtPowers => Some(tcc_chip.assign_constant_base(layouter, C::Base::ZERO)?),
         };
 
         Ok(ProtostarAccumulatorInstance {
@@ -748,6 +756,7 @@ where
         let tcc_chip = &self.tcc_chip;
         let ProtostarAccumulationVerifierParam {
             strategy,
+            num_vars,
             num_witness_polys,
             num_challenges,
             num_cross_terms,
@@ -776,6 +785,18 @@ where
             }
         }
 
+        println!("num_witness_comm: {:?}", num_witness_polys);
+        println!("num_challenges: {:?}", num_challenges);
+        println!("challenges_without_zeta_pow_lsqrt: {:?}", challenges.len());
+
+        // insert zeta^l_sqrt into challenges
+        let num_alpha_prime = num_challenges.iter().nth_back(0).unwrap()[0];
+        let l_sqrt = 1 << (num_vars/2);
+        let zeta = challenges.iter().nth_back(num_alpha_prime).unwrap();
+        let zeta_pow_lsqrt = tcc_chip.powers_base(layouter, &zeta, l_sqrt + 1)?.iter().last().unwrap().clone();
+        challenges.insert(challenges.len() - num_alpha_prime, zeta_pow_lsqrt);
+        println!("challenges_after_tracking_zeta_pow_lsqrt: {:?}", challenges.len());
+
         let nark = PlonkishNarkInstance::new(vec![instances], challenges, witness_comms);
         transcript.absorb_accumulator(acc)?;
 
@@ -786,6 +807,13 @@ where
                 (cross_term_comms, None)
             }
             Compressing => {
+                let zeta_cross_term_comm = vec![transcript.read_commitment(layouter)?];
+                let compressed_cross_term_sums =
+                    transcript.read_field_elements(layouter, *num_cross_terms)?;
+
+                (zeta_cross_term_comm, Some(compressed_cross_term_sums))
+            }
+            CompressingWithSqrtPowers => {
                 let zeta_cross_term_comm = vec![transcript.read_commitment(layouter)?];
                 let compressed_cross_term_sums =
                     transcript.read_field_elements(layouter, *num_cross_terms)?;
@@ -908,6 +936,18 @@ where
                         &rhs,
                     )?)
                 }
+                CompressingWithSqrtPowers => {
+                    let rhs = tcc_chip.inner_product_base(
+                        layouter,
+                        &powers_of_r[1..],
+                        compressed_cross_term_sums.unwrap(),
+                    )?;
+                    Some(tcc_chip.add_base(
+                        layouter,
+                        acc.compressed_e_sum.as_ref().unwrap(),
+                        &rhs,
+                    )?)
+                }
             };
 
             ProtostarAccumulatorInstance {
@@ -970,6 +1010,12 @@ where
         let compressed_e_sum = match self.avp.strategy {
             NoCompressing => None,
             Compressing => Some(tcc_chip.select_base(
+                layouter,
+                condition,
+                when_true.compressed_e_sum.as_ref().unwrap(),
+                when_false.compressed_e_sum.as_ref().unwrap(),
+            )?),
+            CompressingWithSqrtPowers => Some(tcc_chip.select_base(
                 layouter,
                 condition,
                 when_true.compressed_e_sum.as_ref().unwrap(),
@@ -1177,7 +1223,6 @@ where
         let h_prime = tcc_chip.assign_witness(layouter, self.h_prime)?;
 
         self.check_initial_condition(layouter, &is_base_case, &initial_input, &input)?;
-
         let acc = acc_verifier.assign_accumulator(layouter, self.acc.as_ref())?;
 
         let (nark, acc_r_nark, acc_prime) = {
@@ -1264,7 +1309,7 @@ where
         mut layouter: impl Layouter<C::Scalar>,
     ) -> Result<(), Error> {
         let (input, output) =
-            StepCircuit::synthesize(&self.step_circuit, config, layouter.namespace(|| ""))?;
+          StepCircuit::synthesize(&self.step_circuit, config, layouter.namespace(|| ""))?;
         self.synthesize_accumulation_verifier(layouter.namespace(|| ""), &input, &output)?;
         Ok(())
     }

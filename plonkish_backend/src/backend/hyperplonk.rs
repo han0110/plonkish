@@ -120,6 +120,7 @@ where
             &circuit_info.permutation_polys(),
             &circuit_info.permutations,
         );
+
         let permutation_comms = Pcs::batch_commit(&pcs_pp, &permutation_polys)?;
 
         // Compose `VirtualPolynomialInfo`
@@ -253,7 +254,7 @@ where
 
         // Round n+2
 
-        let alpha = transcript.squeeze_challenge();
+        let alpha  = transcript.squeeze_challenge();
         let y = transcript.squeeze_challenges(pp.num_vars);
 
         let polys = iter::empty()

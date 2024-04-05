@@ -1,6 +1,6 @@
 use crate::{
     accumulation::{
-        protostar::ProtostarStrategy::{Compressing, NoCompressing},
+        protostar::ProtostarStrategy::{Compressing, NoCompressing, CompressingWithSqrtPowers},
         PlonkishNark, PlonkishNarkInstance,
     },
     backend::PlonkishBackend,
@@ -22,7 +22,7 @@ pub mod hyperplonk;
 pub mod ivc;
 
 #[derive(Clone, Debug)]
-pub struct Protostar<Pb, const STRATEGY: usize = { Compressing as usize }>(PhantomData<Pb>);
+pub struct Protostar<Pb, const STRATEGY: usize = { CompressingWithSqrtPowers as usize }>(PhantomData<Pb>);
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub enum ProtostarStrategy {
@@ -33,12 +33,12 @@ pub enum ProtostarStrategy {
     Compressing = 1,
     // TODO:
     // Compressing verification with square-root optimization applied as described in 2023/620 section 3.5
-    // CompressingWithSqrtPowers = 3,
+    CompressingWithSqrtPowers = 2,
 }
 
 impl From<usize> for ProtostarStrategy {
     fn from(strategy: usize) -> Self {
-        [NoCompressing, Compressing][strategy]
+        [NoCompressing, Compressing, CompressingWithSqrtPowers][strategy]
     }
 }
 
@@ -107,28 +107,41 @@ where
         num_witness_polys: usize,
         num_challenges: usize,
     ) -> Self {
-        let zero_poly = Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]);
+
+        let witness_zero_poly = Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]);
+        let error_zero_poly = match strategy {
+            NoCompressing => Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            Compressing => Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            CompressingWithSqrtPowers => Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << (k/2 + 1)])
+        };
+
         Self {
             instance: ProtostarAccumulatorInstance::init(
                 strategy,
                 num_instances,
-                num_witness_polys,
+                num_witness_polys - 1,
                 num_challenges,
             ),
-            witness_polys: iter::repeat_with(|| zero_poly.clone())
+            witness_polys: iter::repeat_with(|| witness_zero_poly.clone())
                 .take(num_witness_polys)
                 .collect(),
-            e_poly: zero_poly,
+            e_poly: error_zero_poly,
             _marker: PhantomData,
         }
     }
 
     fn from_nark(strategy: ProtostarStrategy, k: usize, nark: PlonkishNark<F, Pcs>) -> Self {
         let witness_polys = nark.witness_polys;
+        let zero_poly = match strategy {
+            NoCompressing => Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            Compressing => Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            CompressingWithSqrtPowers => Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << (k/2 + 1)])
+        };
+
         Self {
             instance: ProtostarAccumulatorInstance::from_nark(strategy, nark.instance),
             witness_polys,
-            e_poly: Pcs::Polynomial::from_evals(vec![F::ZERO; 1 << k]),
+            e_poly: zero_poly,
             _marker: PhantomData,
         }
     }
@@ -169,11 +182,11 @@ where
         izip_eq!(&mut self.witness_polys, &rhs.witness_polys)
             .for_each(|(lhs, rhs)| *lhs += (r, rhs));
         izip!(powers(*r).skip(1), [zeta_cross_term_poly, &rhs.e_poly])
-            .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));
+            .for_each(|(power_of_r, poly)| self.e_poly += (&power_of_r, poly));   
     }
-
+    
     pub fn instance(&self) -> &ProtostarAccumulatorInstance<F, Pcs::Commitment> {
-        &self.instance
+            &self.instance
     }
 }
 
@@ -215,6 +228,7 @@ where
             compressed_e_sum: match strategy {
                 NoCompressing => None,
                 Compressing => Some(F::ZERO),
+                CompressingWithSqrtPowers => Some(F::ZERO),
             },
         }
     }
@@ -255,6 +269,7 @@ where
             compressed_e_sum: match strategy {
                 NoCompressing => None,
                 Compressing => Some(F::ZERO),
+                CompressingWithSqrtPowers => Some(F::ZERO),
             },
         }
     }

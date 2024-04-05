@@ -215,7 +215,6 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             }))
             .collect();
         circuit_info.permutations = preprocess_collector.permutation.into_cycles();
-
         Ok(circuit_info)
     }
 

@@ -10,6 +10,7 @@ pub mod halo2;
 pub struct ProtostarAccumulationVerifierParam<F> {
     pub(crate) vp_digest: F,
     pub(crate) strategy: ProtostarStrategy,
+    pub(crate) num_vars: usize,
     pub(crate) num_instances: Vec<usize>,
     pub(crate) num_witness_polys: Vec<usize>,
     pub(crate) num_challenges: Vec<Vec<usize>>,
@@ -32,7 +33,7 @@ impl<N: PrimeField> ProtostarAccumulationVerifierParam<N> {
             self.strategy,
             &self.num_instances,
             self.num_folding_witness_polys(),
-            self.num_folding_challenges(),
+            self.num_folding_challenges() + 1,
         )
     }
 }

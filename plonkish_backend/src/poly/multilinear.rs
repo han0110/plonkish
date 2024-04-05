@@ -612,6 +612,59 @@ pub(crate) fn merge_into<F: Field>(
     });
 }
 
+// pub fn evals_bh<F: Field>(evals: Vec<F>) -> Vec<F> {
+//     let num_vars = (usize::BITS - evals.len().leading_zeros() - 1) as usize;
+//     let nth_map = BooleanHypercube::new(num_vars).nth_map();
+//     let mut evals_bh = vec![F::ZERO; 1 << num_vars];
+//     for (a, &b) in (0..(1 << num_vars)).zip(&nth_map) {
+//         evals_bh[b] = evals[a];
+//     };
+//     evals_bh     
+// }
+
+// pub fn evals_lo_lexical<F: Field>(evals_lo: Vec<F>) -> Vec<F>{        
+//     let num_vars = (usize::BITS - evals_lo.len().leading_zeros() - 1) as usize;
+//     let evals_lo_chunks = evals_lo
+//         .chunks(1 << num_vars/2)
+//         .map(|chunk| chunk.to_vec())
+//         .collect_vec();
+
+//     let evals_lo_lexical_chunks = evals_lo_chunks
+//         .into_iter()
+//         .map(|mut chunk| {
+//             chunk = evals_bh(chunk);
+//             chunk
+//         })
+//         .collect_vec();
+
+//     let evals_lo_lexical = evals_lo_lexical_chunks.into_iter().flatten().collect_vec();
+//     evals_lo_lexical
+// }
+
+// pub fn evals_hi_lexical<F: Field>(evals_hi: Vec<F>) -> Vec<F>{        
+//     let num_vars = (usize::BITS - evals_hi.len().leading_zeros() - 1) as usize;
+//     let evals_hi_chunks = evals_hi
+//         .chunks(1 << num_vars/2)
+//         .map(|chunk| chunk.to_vec())
+//         .collect_vec();
+
+//     let nth_map = BooleanHypercube::new(num_vars/2).nth_map();
+
+//     let evals_hi_lexical_chunks = evals_hi_chunks
+//         .into_iter()
+//         .map(|chunk| {
+//             let mut evals_hi_lexical_chunks = vec![F::ZERO; (1 << num_vars/2)];
+//             for (i, &index) in nth_map.iter().enumerate() {
+//                 evals_hi_lexical_chunks[index] = chunk[i];
+//             }
+//             evals_hi_lexical_chunks
+//         })
+//         .collect_vec();
+
+//     let evals_hi_lexical = evals_hi_lexical_chunks.into_iter().flatten().collect_vec();
+//     evals_hi_lexical
+// }
+
 macro_rules! zip_self {
     (@ $iter:expr, $step:expr, $skip:expr) => {
         $iter.skip($skip).step_by($step).zip($iter.skip($skip + ($step >> 1)).step_by($step))
@@ -630,24 +683,25 @@ macro_rules! zip_self {
 pub(crate) use zip_self;
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use crate::{
         poly::{
             multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
             Polynomial,
         },
         util::{
-            arithmetic::{BooleanHypercube, Field},
+            arithmetic::{BooleanHypercube, Field, powers},
             expression::Rotation,
             test::rand_vec,
-            Itertools,
-        },
+            Itertools, parallel::par_map_collect,
+        }, accumulation::protostar::hyperplonk::prover::powers_of_zeta_poly,
     };
     use halo2_curves::bn256::Fr;
     use rand::{rngs::OsRng, RngCore};
-    use std::iter;
+    use std::iter::{self, repeat};
+    use rayon::iter::IntoParallelIterator;
 
-    fn fix_vars<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
+    pub fn fix_vars<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
         x.iter().fold(evals.to_vec(), |evals, x_i| {
             zip_self!(evals.iter())
                 .map(|(eval_0, eval_1)| (*eval_1 - eval_0) * x_i + eval_0)

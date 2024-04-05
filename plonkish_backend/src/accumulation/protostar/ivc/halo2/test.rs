@@ -433,7 +433,7 @@ where
         secondary_proof,
     ) = {
         let secondary_acc_before_last = secondary_acc.instance.clone();
-
+        
         let mut primary_transcript = strawman::PoseidonTranscript::new(primary_dtp.clone());
         let mut secondary_transcript = strawman::PoseidonTranscript::new(secondary_dtp.clone());
         prove_decider(
@@ -633,7 +633,7 @@ fn gemini_kzg_ipa_protostar_hyperplonk_ivc_with_aggregation() {
     }
 }
 
-mod strawman {
+pub mod strawman {
     use crate::{
         accumulation::protostar::{
             ivc::halo2::{

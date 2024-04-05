@@ -35,8 +35,7 @@ pprof = { version = "0.11.0", features = ["criterion", "flamegraph"] }
 halo2_wrong_v2 = { git = "https://github.com/han0110/halo2wrong.git", branch = "feature/for-benchmark-v2", package = "halo2wrong" }
 
 [features]
-default = ["parallel", "frontend-halo2"]
-
+default = ["parallel", "frontend-halo2", "timer"]
 timer = ["dep:ark-std", "ark-std?/print-trace", "halo2_proofs?/print-trace"]
 parallel = ["dep:rayon"]
 frontend-halo2 = ["dep:halo2_proofs"]

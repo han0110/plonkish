@@ -168,6 +168,30 @@ mod additive {
                         merged_polys[eval.point()].0 = F::ONE;
                         *merged_polys[eval.point()].1.to_mut() *= &coeff;
                     }
+
+                    // let points = 
+                    //     (0..active_vars)
+                    //         .map(|i| {
+                    //             let mut point = vec![F::zero(); num_vars];
+                    //             point[i] = F::one();
+                    //             point
+                    //         })          
+                    //         .collect();
+                    // if eval.poly() == 36 { 
+                    //     let mut x_lo =  vec![F::ZERO; num_vars/2].into_iter()
+                    //     .chain(x.iter().take(num_vars/2).cloned())
+                    //     .collect_vec();
+                    //     polys[eval.poly()].evaluate_for_rotation(&x_lo, query.rotation())                                             
+                    // }
+                    // else if eval.poly() == 37 { 
+                    //     let mut x_hi = vec![F::ZERO; num_vars/2].into_iter()
+                    //     .chain(x.iter().skip(num_vars/2).cloned())
+                    //     .collect_vec();
+                    //     polys[eval.poly()].evaluate_for_rotation(&x_hi, query.rotation())                      
+                    // }
+                    // else {
+                    //     polys[eval.poly()].evaluate_for_rotation(&x, query.rotation())
+                    // };
                     *merged_polys[eval.point()].1.to_mut() += (eq_xt_i, polys[eval.poly()]);
                 }
                 merged_polys

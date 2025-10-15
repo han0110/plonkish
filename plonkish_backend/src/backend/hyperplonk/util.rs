@@ -34,7 +34,7 @@ pub fn vanilla_plonk_circuit_info<F: PrimeField>(
     preprocess_polys: [Vec<F>; 5],
     permutations: Vec<Vec<(usize, usize)>>,
 ) -> PlonkishCircuitInfo<F> {
-    let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] =
+    let [pi, q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o]: &[Expression<F>; 9] =
         &array::from_fn(|poly| Query::new(poly, Rotation::cur())).map(Expression::Polynomial);
     PlonkishCircuitInfo {
         k: num_vars,

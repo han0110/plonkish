@@ -9,6 +9,7 @@ mod gemini;
 mod hyrax;
 mod ipa;
 mod kzg;
+mod mercury;
 mod zeromorph;
 
 pub use brakedown::{
@@ -21,6 +22,7 @@ pub use kzg::{
     MultilinearKzg, MultilinearKzgCommitment, MultilinearKzgParam, MultilinearKzgProverParam,
     MultilinearKzgVerifierParam,
 };
+pub use mercury::Mercury;
 pub use zeromorph::{Zeromorph, ZeromorphKzgProverParam, ZeromorphKzgVerifierParam};
 
 fn validate_input<'a, F: Field>(

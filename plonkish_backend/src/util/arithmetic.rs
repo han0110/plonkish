@@ -69,6 +69,35 @@ pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
         .fold(F::ZERO, |acc, coeff| acc * x + coeff)
 }
 
+// Computes the quotient polynomial coefficients of univariate division using Horner's method
+pub fn horner_univariate_div<F: Field>(coeffs: &[F], x: &F) -> Vec<F> {
+    let horners = coeffs
+        .iter()
+        .skip(1)
+        .rev()
+        .scan(F::ZERO, |acc, coeff| {
+            *acc = *acc * x + coeff;
+            Some(*acc)
+        })
+        .collect_vec();
+    horners.into_iter().rev().collect()
+}
+
+pub fn transpose<F: Field>(matrix: &[&[F]]) -> Vec<Vec<F>> {
+    if matrix.is_empty() {
+        return vec![];
+    }
+    let rows = matrix.len();
+    let cols = matrix[0].len();
+    let mut transposed = vec![vec![F::ZERO; rows]; cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            transposed[c][r] = matrix[r][c];
+        }
+    }
+    transposed
+}
+
 pub fn steps<F: Field>(start: F) -> impl Iterator<Item = F> {
     steps_by(start, F::ONE)
 }

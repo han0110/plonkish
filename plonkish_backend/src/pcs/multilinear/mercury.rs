@@ -16,6 +16,7 @@ use crate::{
             transpose, Field, MultiMillerLoop,
         },
         izip_eq,
+        parallel::parallelize,
         transcript::{TranscriptRead, TranscriptWrite},
         DeserializeOwned, Itertools, Serialize,
     },
@@ -126,15 +127,19 @@ where
             //      = ∑ X^i • ((X^b - \alpha) • q_i(X^b) + f_i(\alpha))
             //      = (X^b - \alpha) • ∑ X^i • q_i(X^b)  + ∑ X^i • f_i(\alpha)
             //      = (X^b - \alpha) • q(X)              + g(X)
-            let mut g_coeffs = Vec::with_capacity(b);
-            for f_i in &f_is {
-                g_coeffs.push(f_i.evaluate(&alpha));
-            }
+            let mut g_coeffs = vec![M::Scalar::ZERO; b];
+            parallelize(&mut g_coeffs, |(g_coeffs, start)| {
+                for (g_coeff, f_i) in g_coeffs.iter_mut().zip(f_is[start..].iter()) {
+                    *g_coeff = f_i.evaluate(&alpha);
+                }
+            });
             let g = UnivariatePolynomial::monomial(g_coeffs);
-            let mut q_is = Vec::with_capacity(b);
-            for f_i in f_is {
-                q_is.push(horner_univariate_div(f_i.coeffs(), &alpha));
-            }
+            let mut q_is = vec![vec![]; b];
+            parallelize(&mut q_is, |(q_is, start)| {
+                for (q_i, f_i) in q_is.iter_mut().zip(f_is[start..].iter()) {
+                    *q_i = horner_univariate_div(f_i.coeffs(), &alpha);
+                }
+            });
             let q_coeffs = transpose(&q_is.iter().map(|q_i| q_i.as_slice()).collect_vec())
                 .into_iter()
                 .flatten()

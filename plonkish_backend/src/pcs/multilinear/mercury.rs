@@ -119,7 +119,7 @@ where
         let f_is = {
             let f_is = transpose(&f.coeffs().chunks(b).collect_vec());
             f_is.into_iter()
-                .map(|coeffs| UnivariatePolynomial::monomial(coeffs))
+                .map(UnivariatePolynomial::monomial)
                 .collect_vec()
         };
         let (g, q) = {
@@ -265,7 +265,7 @@ where
 
         // f(X) - q(X) • (X^b - \alpha)
         let (phi_poly, phi_comm) = {
-            let c = zeta.pow(&[b as u64]) - alpha;
+            let c = zeta.pow([b as u64]) - alpha;
             let phi_poly = &f - &q * &c;
             let phi_comm: M::G1Affine = (comm.0 - (q_comm.0 * c).into()).into();
             (phi_poly, phi_comm.into())
@@ -273,7 +273,7 @@ where
 
         let polys = vec![&g, &h, &s, &d, &phi_poly];
         let comms = vec![&g_comm, &h_comm, &s_comm, &d_comm, &phi_comm];
-        let points = vec![zeta.clone(), zeta_inv.clone(), alpha.clone()];
+        let points = vec![zeta, zeta_inv, alpha];
         let g_zeta = g.evaluate(&zeta);
         let evals = vec![
             Evaluation::new(0, 0, g_zeta),                // g(ζ)

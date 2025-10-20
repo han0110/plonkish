@@ -94,7 +94,7 @@ where
             assert_eq!(poly.evaluate(point), *eval);
         }
 
-        let t = (num_vars >> 1) + 1;
+        let t = num_vars.div_ceil(2);
         let b: usize = 1 << t; // Folding factor
         let f = UnivariatePolynomial::monomial(poly.evals().to_vec());
 
@@ -324,7 +324,7 @@ where
         transcript: &mut impl TranscriptRead<Self::CommitmentChunk, M::Scalar>,
     ) -> Result<(), Error> {
         let num_vars = point.len();
-        let t = (num_vars >> 1) + 1;
+        let t = num_vars.div_ceil(2);
 
         let h_comm = transcript.read_commitment()?;
 
@@ -342,11 +342,7 @@ where
 
         let zeta_squares = squares(zeta).take(t).collect_vec();
         let zeta_inv_squares = squares(zeta_inv).take(t).collect_vec();
-        let zeta_pow_to_b = zeta_squares
-            .last()
-            .copied()
-            .map(|zeta_pow| zeta_pow.square())
-            .unwrap();
+        let zeta_pow_to_b = zeta_squares.last().unwrap().square();
         let expected_d_zeta = { zeta_pow_to_b * zeta_inv * evals[1] };
         // h(α) = (g(ζ) P_{u_1}(1 / ζ) + g(1 / ζ) P_{u_1}(ζ) + γ • (h(ζ) P_{u_2}(1 / ζ) + h(1 / ζ) P_{u_2}(ζ) - 2 * v)
         //        - ζ * s(ζ) - (1 / ζ) * s(1 / ζ)) / 2

@@ -148,12 +148,21 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
             })
             .collect_vec();
 
+        let num_challenges = {
+            let mut num_challenges = num_by_phase(&cs.challenge_phase());
+            // if the last phase has no challenges
+            if num_phases(&cs.challenge_phase()) < num_phases(&cs.advice_column_phase()) {
+                num_challenges.push(0);
+            }
+            num_challenges
+        };
+
         Ok(PlonkishCircuitInfo {
             k: *k as usize,
             num_instances,
             preprocess_polys,
             num_witness_polys: num_by_phase(&cs.advice_column_phase()),
-            num_challenges: num_by_phase(&cs.challenge_phase()),
+            num_challenges,
             constraints,
             lookups,
             permutations,
@@ -221,15 +230,19 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
         &self.instances
     }
 
-    fn synthesize(&self, phase: usize, challenges: &[F]) -> Result<Vec<Vec<F>>, crate::Error> {
+    fn synthesize(
+        &self,
+        current_phase: usize,
+        challenges: &[F],
+    ) -> Result<Vec<Vec<F>>, crate::Error> {
         let instances = self.instances.iter().map(Vec::as_slice).collect_vec();
         let mut witness_collector = WitnessCollector {
             k: self.k,
-            phase: phase as u8,
+            phase: current_phase as u8,
             advice_idx_in_phase: &self.advice_idx_in_phase,
             challenge_idx: &self.challenge_idx,
             instances: instances.as_slice(),
-            advices: vec![vec![F::ZERO.into(); 1 << self.k]; self.num_witness_polys[phase]],
+            advices: vec![vec![F::ZERO.into(); 1 << self.k]; self.num_witness_polys.iter().sum()],
             challenges,
             row_mapping: &self.row_mapping,
         };
@@ -242,7 +255,22 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
         )
         .map_err(|err| crate::Error::InvalidSnark(format!("Synthesize failure: {err:?}")))?;
 
-        Ok(batch_invert_assigned(witness_collector.advices))
+        let column_indices = self
+            .cs
+            .advice_column_phase()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &phase)| (phase as usize == current_phase).then_some(idx))
+            .collect_vec();
+
+        Ok(batch_invert_assigned(
+            witness_collector
+                .advices
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, advices)| column_indices.contains(&idx).then_some(advices))
+                .collect(),
+        ))
     }
 }
 
@@ -520,7 +548,10 @@ impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
-        if self.phase != column.column_type().phase() {
+        // Ignore assignment of advice column in later phase than current one.
+        // Okay: Assigning Phase 1 value to Phase 2 column
+        // Not okay: Assigning Phase 2 value to Phase 1 column
+        if self.phase < column.column_type().phase() {
             return Ok(());
         }
 
@@ -530,7 +561,7 @@ impl<'a, F: Field> Assignment<F> for WitnessCollector<'a, F> {
 
         *self
             .advices
-            .get_mut(self.advice_idx_in_phase[column.index()])
+            .get_mut(column.index())
             .and_then(|v| v.get_mut(row))
             .ok_or(Error::BoundsFailure)? = to().into_field().assign()?;
 
@@ -591,13 +622,19 @@ fn advice_idx<F: Field>(cs: &ConstraintSystem<F>) -> Vec<usize> {
 
 fn column_idx<F: Field>(cs: &ConstraintSystem<F>) -> HashMap<(Any, usize), usize> {
     let advice_idx = advice_idx(cs);
+    let advice_phases = cs.advice_column_phase();
     chain![
         (0..cs.num_instance_columns()).map(|idx| (Any::Instance, idx)),
         (0..cs.num_fixed_columns() + cs.num_selectors()).map(|idx| (Any::Fixed, idx)),
     ]
     .enumerate()
     .map(|(idx, column)| (column, idx))
-    .chain((0..advice_idx.len()).map(|idx| ((Any::advice(), idx), advice_idx[idx])))
+    .chain((0..advice_idx.len()).map(|idx| match advice_phases[idx] {
+        0 => ((Any::advice_in(plonk::FirstPhase), idx), advice_idx[idx]),
+        1 => ((Any::advice_in(plonk::SecondPhase), idx), advice_idx[idx]),
+        2 => ((Any::advice_in(plonk::ThirdPhase), idx), advice_idx[idx]),
+        _ => unimplemented!(),
+    }))
     .collect()
 }
 

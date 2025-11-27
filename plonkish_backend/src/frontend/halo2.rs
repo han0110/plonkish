@@ -48,7 +48,6 @@ pub struct Halo2Circuit<F: Field, C: Circuit<F>> {
     config: C::Config,
     constants: Vec<Column<Fixed>>,
     num_witness_polys: Vec<usize>,
-    advice_idx_in_phase: Vec<usize>,
     challenge_idx: Vec<usize>,
     row_mapping: Vec<usize>,
 }
@@ -63,7 +62,6 @@ impl<F: Field, C: CircuitExt<F>> Halo2Circuit<F, C> {
         let constants = cs.constants().clone();
 
         let num_witness_polys = num_by_phase(&cs.advice_column_phase());
-        let advice_idx_in_phase = idx_in_phase(&cs.advice_column_phase());
         let challenge_idx = idx_order_by_phase(&cs.challenge_phase(), 0);
         let row_mapping = E::row_mapping(k);
 
@@ -75,7 +73,6 @@ impl<F: Field, C: CircuitExt<F>> Halo2Circuit<F, C> {
             config,
             constants,
             num_witness_polys,
-            advice_idx_in_phase,
             challenge_idx,
             row_mapping,
         }
@@ -239,7 +236,6 @@ impl<F: Field, C: Circuit<F>> PlonkishCircuit<F> for Halo2Circuit<F, C> {
         let mut witness_collector = WitnessCollector {
             k: self.k,
             phase: current_phase as u8,
-            advice_idx_in_phase: &self.advice_idx_in_phase,
             challenge_idx: &self.challenge_idx,
             instances: instances.as_slice(),
             advices: vec![vec![F::ZERO.into(); 1 << self.k]; self.num_witness_polys.iter().sum()],
@@ -494,7 +490,6 @@ impl Permutation {
 struct WitnessCollector<'a, F: Field> {
     k: u32,
     phase: u8,
-    advice_idx_in_phase: &'a [usize],
     challenge_idx: &'a [usize],
     instances: &'a [&'a [F]],
     advices: Vec<Vec<Assigned<F>>>,

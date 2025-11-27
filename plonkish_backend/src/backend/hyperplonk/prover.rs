@@ -249,6 +249,7 @@ pub(super) fn lookup_h_poly<F: PrimeField + Hash>(
 }
 
 pub(crate) fn permutation_z_polys<F: PrimeField, R: Rotatable + From<usize>>(
+    chunk_size: usize,
     num_chunks: usize,
     permutation_polys: &[(usize, MultilinearPolynomial<F>)],
     polys: &[impl Borrow<MultilinearPolynomial<F>>],
@@ -259,7 +260,6 @@ pub(crate) fn permutation_z_polys<F: PrimeField, R: Rotatable + From<usize>>(
         return Vec::new();
     }
 
-    let chunk_size = div_ceil(permutation_polys.len(), num_chunks);
     let polys = polys.iter().map(Borrow::borrow).collect_vec();
     let num_vars = polys[0].num_vars();
 

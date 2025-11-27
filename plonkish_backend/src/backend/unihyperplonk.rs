@@ -193,6 +193,7 @@ where
 
         let timer = start_timer(|| format!("permutation_z_polys-{}", pp.permutation_polys.len()));
         let permutation_z_polys = permutation_z_polys::<_, Lexical>(
+            pp.max_degree - 1,
             pp.num_permutation_z_polys,
             &pp.permutation_polys,
             &polys,

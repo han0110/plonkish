@@ -48,7 +48,6 @@ pub(crate) fn preprocess<F: PrimeField, Pcs: PolynomialCommitmentScheme<F>>(
     let poly_size = 1 << num_vars;
     let batch_size = batch_size(circuit_info);
     let (pcs_pp, pcs_vp) = Pcs::trim(param, poly_size, batch_size)?;
-
     // Compute preprocesses comms
     let preprocess_polys = circuit_info
         .preprocess_polys
@@ -67,7 +66,7 @@ pub(crate) fn preprocess<F: PrimeField, Pcs: PolynomialCommitmentScheme<F>>(
     let (permutation_polys, permutation_comms) = batch_commit(&pcs_pp, permutation_polys)?;
 
     // Compose expression
-    let (num_permutation_z_polys, expression) = compose(circuit_info);
+    let (num_permutation_z_polys, expression, max_degree) = compose(circuit_info);
     let vp = HyperPlonkVerifierParam {
         pcs: pcs_vp,
         num_instances: circuit_info.num_instances.clone(),
@@ -85,6 +84,7 @@ pub(crate) fn preprocess<F: PrimeField, Pcs: PolynomialCommitmentScheme<F>>(
             .collect(),
     };
     let pp = HyperPlonkProverParam {
+        max_degree,
         pcs: pcs_pp,
         num_instances: circuit_info.num_instances.clone(),
         num_witness_polys: circuit_info.num_witness_polys.clone(),
@@ -107,7 +107,7 @@ pub(crate) fn preprocess<F: PrimeField, Pcs: PolynomialCommitmentScheme<F>>(
 
 pub(crate) fn compose<F: PrimeField>(
     circuit_info: &PlonkishCircuitInfo<F>,
-) -> (usize, Expression<F>) {
+) -> (usize, Expression<F>, usize) {
     let challenge_offset = circuit_info.num_challenges.iter().sum::<usize>();
     let [beta, gamma, alpha] =
         &array::from_fn(|idx| Expression::<F>::Challenge(challenge_offset + idx));
@@ -138,7 +138,7 @@ pub(crate) fn compose<F: PrimeField>(
         )
     };
 
-    (num_permutation_z_polys, expression)
+    (num_permutation_z_polys, expression, max_degree)
 }
 
 pub(super) fn max_degree<F: PrimeField>(

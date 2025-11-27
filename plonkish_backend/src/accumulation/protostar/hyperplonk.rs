@@ -458,6 +458,7 @@ where
         ]
         .collect_vec();
         let permutation_z_polys = permutation_z_polys::<_, BinaryField>(
+            pp.max_degree - 1,
             pp.num_permutation_z_polys,
             &pp.permutation_polys,
             &polys,

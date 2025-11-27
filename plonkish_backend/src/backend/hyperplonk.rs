@@ -44,6 +44,7 @@ where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F>,
 {
+    pub(crate) max_degree: usize,
     pub(crate) pcs: Pcs::ProverParam,
     pub(crate) num_instances: Vec<usize>,
     pub(crate) num_witness_polys: Vec<usize>,
@@ -178,6 +179,7 @@ where
 
         let timer = start_timer(|| format!("permutation_z_polys-{}", pp.permutation_polys.len()));
         let permutation_z_polys = permutation_z_polys::<_, BinaryField>(
+            pp.max_degree - 1,
             pp.num_permutation_z_polys,
             &pp.permutation_polys,
             &polys,

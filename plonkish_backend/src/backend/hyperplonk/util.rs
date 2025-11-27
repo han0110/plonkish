@@ -56,7 +56,7 @@ pub fn vanilla_plonk_expression<F: PrimeField>(num_vars: usize) -> Expression<F>
         Default::default(),
         vec![vec![(6, 1)], vec![(7, 1)], vec![(8, 1)]],
     );
-    let (num_permutation_z_polys, expression) = compose(&circuit_info);
+    let (num_permutation_z_polys, expression, _) = compose(&circuit_info);
     assert_eq!(num_permutation_z_polys, 1);
     expression
 }
@@ -93,7 +93,7 @@ pub fn vanilla_plonk_w_lookup_expression<F: PrimeField>(num_vars: usize) -> Expr
         Default::default(),
         vec![vec![(10, 1)], vec![(11, 1)], vec![(12, 1)]],
     );
-    let (num_permutation_z_polys, expression) = compose(&circuit_info);
+    let (num_permutation_z_polys, expression, _) = compose(&circuit_info);
     assert_eq!(num_permutation_z_polys, 1);
     expression
 }
@@ -190,6 +190,7 @@ pub fn rand_vanilla_plonk_assignment<F: PrimeField, R: Rotatable + From<usize>>(
 
     let permutation_polys = permutation_polys(num_vars, &[6, 7, 8], &permutations);
     let permutation_z_polys = permutation_z_polys::<_, R>(
+        3,
         1,
         &[6, 7, 8]
             .into_iter()
@@ -348,6 +349,7 @@ pub fn rand_vanilla_plonk_w_lookup_assignment<F: PrimeField + Hash, R: Rotatable
 
     let permutation_polys = permutation_polys(num_vars, &[10, 11, 12], &permutations);
     let permutation_z_polys = permutation_z_polys::<_, R>(
+        3,
         1,
         &[10, 11, 12]
             .into_iter()
